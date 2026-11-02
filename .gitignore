@@ -1,0 +1,11 @@
+.board/
+.DS_Store
+.env
+.env.*
+!.env.example
+*.pem
+node_modules/
+.venv/
+__pycache__/
+dist/
+.next/
