@@ -16,80 +16,28 @@ pre-event code restrictions; this starter contains coordination tooling only.
 
 The linked Notion page is the author's board walkthrough, not this event's rules.
 
-## 2. Lead: create the shared repository once
+## 2. Repository and board: already configured
 
-This workspace is already initialized with Git on `main`. `gh` is installed on
-Alan's Mac, and authentication as `AlanDD13` was verified on 2026-11-02. Inside
-an agent sandbox, GitHub/network/keychain restrictions may produce a misleading
-authentication error. Retry a read through the approved tool permission flow
-or in your normal terminal before replacing a working credential.
+- Repository: https://github.com/AlanDD13/Big_AI_hackathon (private).
+- Pinned Message Board: https://github.com/AlanDD13/Big_AI_hackathon/issues/1.
+- Origin: https://github.com/AlanDD13/Big_AI_hackathon.git.
+- Shared configuration: `board.conf`; every clone gets the same board.
+- Owner/account: `AlanDD13`. Created and connected on 2026-11-03.
 
-Open Terminal and run:
+Do not create another repository or another board. Alan's existing local clone
+is `/Users/alandd/Desktop/Pavia_grok_hackathon`; that folder name can stay as is.
 
-```bash
-cd /Users/alandd/Desktop/Pavia_grok_hackathon
-gh auth status
-git status
-```
+In [Settings -> Collaborators](https://github.com/AlanDD13/Big_AI_hackathon/settings/access),
+invite each human teammate with write access; they accept the invitations.
+Each teammate uses their OWN GitHub account. Keep Issues enabled. The repo is
+private; invited teammates must accept access before cloning.
 
-If login really is missing on a teammate's computer, they run
-`gh auth login -h github.com` and finish the browser sign-in themselves.
-Never paste a token into an agent chat or a tracked file.
+Inside an agent sandbox, network/keychain restrictions may produce a misleading
+login error. Retry a read through the approved permission flow or in your normal
+terminal before replacing a working credential. Never paste a token into an
+agent chat or a tracked file.
 
-Choose the team's repository name. The example below creates a PRIVATE repo
-under Alan's account; change the value first if the team wants another name.
-Before publishing, inspect the files with `git status` and the staged diff.
-If the setup already has a commit (`git log -1`), skip the add/commit lines.
-
-```bash
-TEAM_REPO='AlanDD13/pavia-hackathon'
-git add .gitignore README.md AGENTS.md GEMINI.md CLAUDE.md board.conf tools/board docs tests .github/ISSUE_TEMPLATE/message-board.md
-git diff --cached
-git commit -m "chore: prepare shared hackathon agent board"
-gh repo create "$TEAM_REPO" --private --source=. --remote=origin --push
-```
-
-If the team already created an EMPTY repository on GitHub, use this instead of
-`gh repo create` (replace the example URL):
-
-```bash
-git remote add origin https://github.com/OWNER/REPOSITORY.git
-git push -u origin main
-```
-
-Do not use these commands on an existing nonempty repo; clone that repo and
-integrate this starter in a branch. Do not force-push over existing history.
-
-In the repo's **Settings -> Collaborators**, invite each human teammate with
-write access; they accept the invitations. Each teammate uses their OWN GitHub
-account. Keep Issues enabled. Choose public visibility only if the team/event
-requires it; never put secrets on either a public or private board.
-
-## 3. Lead: create and connect the board
-
-From the repo root, create the issue using the prepared body:
-
-```bash
-gh issue create --title 'Message Board' --body-file docs/BOARD_ISSUE.md
-```
-
-It prints a URL such as `https://github.com/OWNER/REPOSITORY/issues/7`.
-Use the ACTUAL number, even if it is not 1. Pin that issue:
-
-```bash
-gh issue pin 7
-```
-
-Edit `board.conf` to match, with plain values and no quotes/spaces around `=`:
-
-```text
-BOARD_REPO=OWNER/REPOSITORY
-BOARD_ISSUE=7
-```
-
-`BOARD_REPO` may be empty to infer origin, but an explicit value is clearer for
-the team. Environment variables of those names override this file; remove old
-overrides with `unset BOARD_REPO BOARD_ISSUE` if the wrong board appears.
+## 3. Lead: agree ownership and contracts at kickoff
 
 Fill `AGENTS.md` with actual GitHub logins, team lead, and exclusive paths.
 Replace the suggested areas to fit the project; do not create a separate AI
@@ -98,16 +46,14 @@ contracts, and deployment config to one person.
 
 Agree `docs/CONTRACTS.md` before splitting work: one demonstrable user flow,
 request/response JSON examples, error behavior, data format, and local run
-commands. Give each task a completion check and keep tasks small enough to
-integrate frequently. This agreement matters more than the board software.
+commands. Give each task a completion check and integrate frequently.
 
-```bash
-git add board.conf AGENTS.md docs/CONTRACTS.md
-git commit -m "docs: configure team board and ownership"
-git push
-tools/board whoami
-tools/board read -n 20
-```
+Commit and push the agreed ownership/contracts before teammates start their
+implementation branches. Do not invent team membership or architecture now.
+
+`BOARD_REPO` and `BOARD_ISSUE` environment variables override `board.conf`.
+If the wrong board appears, remove old overrides with
+`unset BOARD_REPO BOARD_ISSUE` and retry.
 
 ## 4. Everyone: install and join on their own laptop
 
@@ -115,12 +61,12 @@ Install Git, Bash, and GitHub CLI. On a Mac with Homebrew: `brew install gh`.
 On Windows, use WSL or Git Bash plus GitHub CLI; PowerShell alone cannot execute
 the Bash script. Official installers: https://cli.github.com/.
 
-Replace the clone URL, then run from your own terminal:
+After accepting the repository invitation, run from your own terminal:
 
 ```bash
 gh auth login -h github.com
-git clone https://github.com/OWNER/REPOSITORY.git
-cd REPOSITORY
+git clone https://github.com/AlanDD13/Big_AI_hackathon.git
+cd Big_AI_hackathon
 tools/board whoami
 tools/board read -n 50
 tools/board unread
@@ -260,7 +206,7 @@ to start the hackathon.
 
 ## Troubleshooting
 
-- **BOARD_ISSUE unset:** complete step 3. This copy deliberately does not guess #1.
+- **BOARD_ISSUE unset:** pull the configured main branch; board.conf should target issue 1. Check environment overrides.
 - **Cannot determine repo:** set BOARD_REPO in board.conf and verify origin.
 - **404:** check repository, issue number, invitation acceptance, and login;
   private resources can return 404 when your account lacks access.

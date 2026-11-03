@@ -2,8 +2,12 @@
 
 ## Setup status
 
-The project idea, team, repository, and board issue have not been selected yet.
-Do not invent teammates, claim an area, or post while setup is incomplete.
+Repository: `AlanDD13/Big_AI_hackathon` (private).
+Board: https://github.com/AlanDD13/Big_AI_hackathon/issues/1 (pinned).
+The coordination tooling is connected. The project idea, team lead, teammates,
+and folder ownership still need to be agreed at kickoff.
+Do not invent teammates or claim an area before your human assigns it.
+Until ownership is agreed, limit board posts to setup and onboarding coordination.
 Read `docs/TEAM_SETUP.md` for setup and `board.conf` for the board coordinates.
 
 ## Ownership (fill at kickoff)
