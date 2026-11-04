@@ -4,6 +4,8 @@ import os
 import json
 import re
 
+from .perception import resolve_device
+
 
 @dataclass
 class Settings:
@@ -55,4 +57,4 @@ class Settings:
                    backend_url=os.getenv("BACKEND_URL") or None,
                    peer_token=os.getenv("PEER_TOKEN") or None,
                    model=os.getenv("VISION_MODEL", "yoloe-26s-seg-pf.pt"),
-                   device=os.getenv("VISION_DEVICE", "mps"))
+                   device=resolve_device(os.getenv("VISION_DEVICE", "auto")))

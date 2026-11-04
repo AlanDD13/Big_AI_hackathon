@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import base64
 import math
+import os
 from pathlib import Path
 import sys
 import time
@@ -31,12 +32,61 @@ from typing import Any, Callable, Sequence
 
 import cv2
 
+from .perception import Detection, YoloDetector, _living, resolve_device
+
 DEFAULT_CCTV_BASE_URL = "http://192.168.5.146:8081"
 DEFAULT_CCTV_URL = f"{DEFAULT_CCTV_BASE_URL}/video"
 DEFAULT_BURST_MIN_FRAMES = 5
 DEFAULT_BURST_MAX_FRAMES = 10
 DEFAULT_BURST_COUNT = 8
 DEFAULT_BURST_BUFFER_SECONDS = 2.0
+DEFAULT_YOLO_MODEL = "yoloe-26s-seg-pf.pt"
+
+_DETECTOR_CACHE: dict[tuple[str, str, float], YoloDetector] = {}
+
+
+def resolve_local_model_path(model: str = DEFAULT_YOLO_MODEL) -> str:
+    """Resolve local YOLOE weights from vision/.local/ if present, otherwise return model name."""
+    candidate = Path(model)
+    if candidate.exists():
+        return str(candidate)
+    bundled = Path(__file__).resolve().parent / ".local" / model
+    if bundled.exists():
+        return str(bundled)
+    return model
+
+
+def get_default_detector(
+    model: str | None = None,
+    device: str | None = None,
+    confidence: float = 0.25,
+) -> YoloDetector:
+    """Return a cached cross-platform YoloDetector (CUDA on Windows/Linux GPU, MPS on Mac, or CPU)."""
+    resolved_model = resolve_local_model_path(model or os.getenv("VISION_MODEL", DEFAULT_YOLO_MODEL))
+    resolved_device = resolve_device(device or os.getenv("VISION_DEVICE", "auto"))
+    key = (resolved_model, resolved_device, float(confidence))
+    if key not in _DETECTOR_CACHE:
+        _DETECTOR_CACHE[key] = YoloDetector(
+            model=resolved_model,
+            device=resolved_device,
+            confidence=confidence,
+        )
+    return _DETECTOR_CACHE[key]
+
+
+def detect_frame_objects(
+    frame: Any,
+    detector: YoloDetector | None = None,
+) -> list[Detection]:
+    """Run the local YOLOE detector on an OpenCV BGR frame and exclude living subjects."""
+    if not _is_valid_frame(frame):
+        raise ValueError("Cannot run object detection on an empty or None frame")
+    ok, buf = cv2.imencode(".jpg", frame)
+    if not ok or buf is None or getattr(buf, "size", 0) == 0:
+        raise ValueError("Failed to encode frame as JPEG for YOLO detection")
+    active_detector = detector or get_default_detector()
+    detections = active_detector.detect(buf.tobytes())
+    return [d for d in detections if not _living(d.label)]
 
 
 def _is_valid_frame(frame: Any) -> bool:
@@ -256,7 +306,7 @@ def build_burst_payload(
         elif detector is not None:
             raw_dets = detector(frame)
         else:
-            raw_dets = []
+            raw_dets = detect_frame_objects(frame)
 
         normalized_dets = [_normalize_detection(d) for d in raw_dets]
         for det in normalized_dets:
@@ -284,6 +334,34 @@ def build_burst_payload(
         "multiFrameDetections": multi_frame_detections,
         "highestConfidenceFrame": best_entry,
     }
+
+
+def capture_and_detect_burst(
+    url: str = DEFAULT_CCTV_URL,
+    burst_count: int = DEFAULT_BURST_COUNT,
+    min_frames: int = DEFAULT_BURST_MIN_FRAMES,
+    max_frames: int = DEFAULT_BURST_MAX_FRAMES,
+    buffer_seconds: float = DEFAULT_BURST_BUFFER_SECONDS,
+    warmup_seconds: float = 1.0,
+    discard_frames: int = 5,
+    detector: Callable[[Any], Sequence[Any]] | None = None,
+) -> dict[str, Any]:
+    """Capture a 5-10 frame burst from the IP camera and run local YOLOE detection across the burst."""
+    frames = get_frame_burst(
+        url=url,
+        burst_count=burst_count,
+        min_frames=min_frames,
+        max_frames=max_frames,
+        buffer_seconds=buffer_seconds,
+        warmup_seconds=warmup_seconds,
+        discard_frames=discard_frames,
+    )
+    return build_burst_payload(
+        frames,
+        detector=detector,
+        min_frames=min_frames,
+        max_frames=max_frames,
+    )
 
 
 def main(

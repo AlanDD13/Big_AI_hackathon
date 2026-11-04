@@ -146,10 +146,29 @@ class Tracker:
         return updates
 
 
+def resolve_device(requested: str | None = 'auto') -> str:
+    """Resolve an inference device across Windows/Linux (CUDA/CPU) and macOS (MPS/CPU)."""
+    req = (requested or 'auto').strip().lower()
+    if req not in ('', 'auto', 'mps'):
+        return req
+    try:
+        import torch
+        if req == 'mps':
+            if getattr(torch.backends, 'mps', None) is not None and torch.backends.mps.is_available():
+                return 'mps'
+        if torch.cuda.is_available():
+            return 'cuda'
+        if getattr(torch.backends, 'mps', None) is not None and torch.backends.mps.is_available():
+            return 'mps'
+    except Exception:
+        pass
+    return 'cpu'
+
+
 class YoloDetector:
     def __init__(self, model='yoloe-26s-seg-pf.pt', device='mps', confidence=.25):
         self.model_name = model
-        self.device = device
+        self.device = resolve_device(device)
         self.confidence = confidence
         self._model = None
 

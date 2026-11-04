@@ -256,3 +256,59 @@ def test_burst_helpers_fail_closed_on_empty_burst_tie_unknown_sector_or_zero_ori
     ]
     with pytest.raises(ValueError, match="0, 0"):
         cctv_monitor.build_burst_payload(frames, frame_detections=zero_contact)
+
+
+def test_build_burst_payload_uses_local_yolo_detector_by_default_and_excludes_living_subjects(monkeypatch):
+    frames = [_sample_frame((i * 12, 60, 140)) for i in range(5)]
+    fake_outputs = [
+        [Detection("person", 0.99, (1.0, 1.0, 20.0, 40.0), (10.5, 40.0)), Detection("bottle", 0.72, (10.0, 12.0, 30.0, 50.0), (20.0, 50.0))],
+        [Detection("bottle", 0.95, (11.0, 12.0, 31.0, 50.0), (21.0, 50.0))],
+        [],
+        [Detection("bottle", 0.81, (10.5, 12.0, 30.5, 50.0), (20.5, 50.0))],
+        [],
+    ]
+    call_idx = {"i": 0}
+
+    class _FakeYolo:
+        def detect(self, jpeg_bytes: bytes):
+            assert jpeg_bytes.startswith(b"\xff\xd8")
+            idx = call_idx["i"]
+            call_idx["i"] += 1
+            return fake_outputs[idx]
+
+    monkeypatch.setattr(cctv_monitor, "get_default_detector", lambda *a, **kw: _FakeYolo())
+
+    payload = cctv_monitor.build_burst_payload(frames)
+
+    assert payload["frameCount"] == 5
+    # Living subject ("person") was filtered out before burst selection
+    assert all(d["detectorLabel"] != "person" for d in payload["multiFrameDetections"])
+    assert len(payload["multiFrameDetections"]) == 3
+    assert payload["highestConfidenceFrame"]["frameIndex"] == 1
+    assert payload["highestConfidenceFrame"]["maxConfidence"] == pytest.approx(0.95)
+
+
+def test_resolve_device_falls_back_cleanly_on_non_mac(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    from vision.perception import resolve_device
+
+    # Simulate Windows/Linux with NVIDIA GPU (no MPS)
+    fake_torch_cuda = SimpleNamespace(
+        cuda=SimpleNamespace(is_available=lambda: True),
+        backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: False)),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch_cuda)
+    assert resolve_device("mps") == "cuda"
+    assert resolve_device("auto") == "cuda"
+
+    # Simulate Windows/Linux CPU-only (no MPS, no CUDA)
+    fake_torch_cpu = SimpleNamespace(
+        cuda=SimpleNamespace(is_available=lambda: False),
+        backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: False)),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch_cpu)
+    assert resolve_device("mps") == "cpu"
+    assert resolve_device("auto") == "cpu"
+    assert resolve_device("cpu") == "cpu"
+
