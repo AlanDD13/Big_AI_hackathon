@@ -5,11 +5,11 @@ migrations, consumer clients, module dependencies, tests and local fakes.
 Consume mapped observations/plans and dispatch missions to the bridge.
 Coordinate shared wire-contract changes with AlanDD13.
 
-The FastAPI process serves the draft dashboard stream and mapping observations.
-It keeps that state in memory. Postgres migrations in `migrations/` are the
-durable schema and are not applied to the shared Supabase project from this
-process. Mission admission and dispatch coordination remain library calls
-until that database is authorized.
+The FastAPI process serves the dashboard stream and mapping observations.
+Observations are written to `rover_backend` when `BACKEND_DATABASE_URL` is set,
+and reloaded when the process starts. Session cursors stay in process memory,
+so a restart asks the dashboard for a new snapshot. Mission admission and
+dispatch coordination remain library calls.
 
 ## Run
 
@@ -28,6 +28,8 @@ demo. The default is Secure, matching the draft stream contract.
 
 Operator routes use the `session` cookie from `POST /api/session`. Mapping
 calls `POST /api/observations` with `Authorization: Bearer $PEER_TOKEN`.
+Set `BACKEND_DATABASE_URL` to the runtime Postgres URL to store observations
+in `rover_backend`. Without it, the process keeps observations in memory.
 
 ## Test
 

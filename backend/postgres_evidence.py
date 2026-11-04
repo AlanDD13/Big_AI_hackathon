@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import asdict
 import json
 from math import isfinite
@@ -21,7 +21,9 @@ class PostgresEvidenceStore:
         self._connect = connect
 
     def record_observation(
-        self, producer: str, event_id: str, sample: MetricSample, *, frame_id: int
+        self, producer: str, event_id: str, sample: MetricSample, *, frame_id: int,
+        wire_evidence: Mapping[str, object] | None = None,
+        source: Mapping[str, object] | None = None,
     ) -> str:
         """Record a trusted, normalized metric sample or replay its exact frame."""
         if type(frame_id) is not int or frame_id < 0 or not isfinite(sample.received_at):
@@ -41,7 +43,12 @@ class PostgresEvidenceStore:
                    FOR UPDATE""",
                 (context.camera_id, context.session_id, context.track_id),
             ).fetchone()
-            envelope = json.dumps({"frameId": frame_id, "sample": asdict(sample)}, allow_nan=False)
+            payload = {"frameId": frame_id, "sample": asdict(sample)}
+            if wire_evidence is not None:
+                payload["wireEvidence"] = dict(wire_evidence)
+                payload["source"] = dict(source or {})
+            envelope = json.dumps(payload, allow_nan=False)
+            wire = json.dumps(wire_evidence, allow_nan=False)
             inserted = connection.execute(
                 """INSERT INTO rover_backend.ingest_events (producer, event_id, payload)
                    VALUES (%s, %s, %s::jsonb)
@@ -50,18 +57,26 @@ class PostgresEvidenceStore:
             ).fetchone()
             if inserted is None:
                 matches, = connection.execute(
-                    """SELECT payload = %s::jsonb FROM rover_backend.ingest_events
+                    """SELECT payload - 'source' - 'wireEvidence' =
+                                  %s::jsonb - 'source' - 'wireEvidence'
+                              AND (payload -> 'wireEvidence' IS NULL
+                                   OR payload -> 'wireEvidence' = %s::jsonb)
+                       FROM rover_backend.ingest_events
                        WHERE producer = %s AND event_id = %s""",
-                    (envelope, producer, event_id),
+                    (envelope, wire, producer, event_id),
                 ).fetchone()
                 if not matches:
                     raise ValueError("Observation event ID was reused with different evidence")
                 return str(object_id)
 
             frame = connection.execute(
-                """SELECT data = %s::jsonb FROM rover_backend.observations
+                """SELECT observation.data = %s::jsonb
+                          AND (ingest.payload -> 'wireEvidence' IS NULL
+                               OR ingest.payload -> 'wireEvidence' = %s::jsonb)
+                   FROM rover_backend.observations AS observation
+                   JOIN rover_backend.ingest_events AS ingest USING (producer, event_id)
                    WHERE object_id = %s AND geometry_version = %s AND frame_id = %s""",
-                (data, object_id, context.geometry_version, frame_id),
+                (data, wire, object_id, context.geometry_version, frame_id),
             ).fetchone()
             if frame is not None:
                 if not frame[0]:
