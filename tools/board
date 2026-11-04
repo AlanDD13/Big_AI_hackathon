@@ -38,6 +38,8 @@ fi
 CONFIG_REPO=""; CONFIG_ISSUE=""
 if [ -f "$ROOT/board.conf" ]; then
   while IFS='=' read -r key value || [ -n "$key" ]; do
+    key="${key%$'\r'}"
+    value="${value%$'\r'}"
     case "$key" in
       BOARD_REPO) CONFIG_REPO="$value" ;;
       BOARD_ISSUE) CONFIG_ISSUE="$value" ;;

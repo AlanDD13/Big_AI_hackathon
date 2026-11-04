@@ -14,8 +14,14 @@ and 17 RPCs) and **must not** be used or modified by this project. All hackathon
 tables, views, sequences and routines must live in the dedicated Postgres schema
 **`rover_backend`** (`SUPABASE_DB_SCHEMA=rover_backend`). The schema bootstrap
 script is [`infrastructure/supabase-rover-backend-schema.sql`](../infrastructure/supabase-rover-backend-schema.sql)
- and shared environment variable names are in [`.env.example`](../.env.example).
-The migration role and the runtime role stay separate, both owned by `zekihxh`.
+and shared environment variable names are in [`.env.example`](../.env.example).
+`rover_backend` revokes all privileges from `PUBLIC, anon, authenticated` and is
+not exposed via PostgREST; `backend/` connects directly over Postgres using the
+separate migration role (`BACKEND_MIGRATION_DATABASE_URL`, `rover_backend_migrator`),
+the narrower DML-only runtime role (`BACKEND_DATABASE_URL`, `rover_backend_runtime`),
+and `BACKEND_TEST_DATABASE_URL` for tests, all owned by `zekihxh`.
+`SUPABASE_SERVICE_ROLE_KEY` does not replace the narrower `BACKEND_DATABASE_URL`
+runtime login and never reaches browser or peer modules.
 Frontend, mapping, and robot use backend APIs and get no database role and no
 service key. Never put credentials in Git, board comments, or frontend code.
 The vision producer's versioned interface is specified in
@@ -51,18 +57,24 @@ Only `robot/` connects to the physical rover.
 
 ## Proposed wire surface
 
-- Vision to mapping: `POST /detections`; `GET /frames/{frameId}` on vision.
+- Vision to mapping: `POST /detections`; `GET /api/frames/{cameraId}/{sessionId}/{frameId}` on vision.
 - Mapping to backend: `POST /api/observations`, `POST /api/poses` on backend.
 - Backend to mapping: `GET /map`, `POST /plans` on mapping.
-- UI reads: `GET /api/map`, `/api/objects`, `/api/missions`, `/api/robots`,
-  `/api/events`. Writes: `POST /api/missions`, `/api/missions/{id}/cancel`,
-  `/api/robots/{id}/stop`.
+- Dashboard (`frontend/` <-> `backend/`, per [`contracts/backend-stream-v1.md`](../contracts/backend-stream-v1.md)):
+  - Session & reads: `POST /api/session`, `DELETE /api/session`, `GET /api/snapshot`,
+    `GET /api/events?after=<cursor>`, `GET /api/evidence/{evidenceId}`, `GET /api/map`
+    (`GET /api/objects` is only `vision/`'s local non-durable diagnostic endpoint,
+    not the dashboard source; expired/missing session returns `401 Unauthorized`).
+  - Operator writes: `POST /api/missions`, `POST /api/missions/{id}/cancel`,
+    `POST /api/robots/{id}/stop`.
 - Bridge: `POST /commands`, `/poses`, `/stop`, `/rearm`; `GET /commands/{id}`.
   Robot reports to backend `POST /api/robot-events`.
 
 Tracks carry camera/frame/track IDs, capture time, class, detector score, pixel
-bounding box and floor-contact pixel. Mapping adds map/calibration IDs, metric
-floor point and uncertainty; invalid position is null, never a fabricated origin.
+bounding box and floor-contact pixel. Wire `objectId` is always
+`cameraId:sessionId:trackId` (while internal Postgres primary keys in
+`rover_backend` remain UUIDs). Mapping adds map/calibration IDs, metric floor
+point and uncertainty; invalid position is null, never a fabricated origin.
 Rover pose uses metres and yaw radians in the same map frame. Fix origin, axes
 and timestamp format in schemas before integration.
 

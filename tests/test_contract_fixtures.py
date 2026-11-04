@@ -38,6 +38,20 @@ class ContractFixtureTest(unittest.TestCase):
         fixture = load("fixtures/backend-stream.json")
         self.assertIsNone(fixture["snapshotRequired"]["id"])
         self.assertEqual(fixture["snapshotRequired"]["event"], "snapshot_required")
+        self.assertEqual(len(fixture["snapshot"]["objects"]), 1)
+        self.assertEqual(
+            fixture["durableEvent"]["body"]["objectId"],
+            "phone-1:session1:cccccccccccccccccccccccccccccccc",
+        )
+        self.assertEqual(fixture["durableEvent"]["body"]["backendRevision"], 4)
+        self.assertEqual(
+            fixture["durableAlertEvent"]["body"]["alertId"],
+            "alert-0001",
+        )
+        self.assertEqual(
+            fixture["durableAlertEvent"]["body"]["visionEventId"],
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:10",
+        )
 
     def test_documents_exist(self):
         for name in ("vision-v1.md", "backend-stream-v1.md", "robot-simulator-v1.md", "manual-control-v1.md"):

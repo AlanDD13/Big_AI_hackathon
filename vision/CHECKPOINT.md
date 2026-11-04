@@ -5,7 +5,7 @@ local and rover adapters, YOLOE wrapper, conservative pixel tracking, Grok
 classification/confirmation, metric evidence gating, diagnostic REST/SSE and
 bounded peer delivery. It does not implement teammates' dashboard or database.
 
-Validation at this checkpoint: 91 vision tests and 16 root tests pass. A real
+Validation at this checkpoint: 91 vision tests and 17 root tests pass. A real
 YOLOE-26s prompt-free inference ran on this Mac using MPS and PyTorch 2.15.0
 with a synthetic image. That proves runtime loading, not detector accuracy or
 multi-camera throughput. Initial loading/download/warm-up took about 16.7 s.
