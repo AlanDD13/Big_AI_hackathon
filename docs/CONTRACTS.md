@@ -5,7 +5,12 @@ Persistence decision: `zekihxh` owns a shared Supabase Postgres database,
 replacing the initial SQLite proposal. Backend owns schema/migrations and
 durable object/event/classification/alert/mission state. All five agents use
 documented APIs or individually authorized project access; secret/service-role
-keys remain backend-only. Project provisioning and access still need verification.
+keys remain backend-only. The human selected the existing **AlanDD13's Project**
+(`buojgmoumyzqxmerckjm`, `eu-west-1`) on 2026-11-04. Backend must inspect its
+existing schema and preserve unrelated data before adding hackathon tables.
+Project selection does not grant access: individual teammate/agent permissions,
+runtime credentials and migration access still need verification by the backend
+owner. Never put credentials in Git, board comments or frontend code.
 The vision producer's versioned interface is now specified in
 [`contracts/vision-v1.md`](../contracts/vision-v1.md), with JSON schemas and
 fixtures. Consumer acknowledgement is pending; this does not freeze unrelated

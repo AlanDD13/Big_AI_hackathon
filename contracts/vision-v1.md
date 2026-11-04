@@ -125,7 +125,9 @@ Revocation means HOLD_BEFORE_PICKUP; expected motion during authorized PICKING
 is handled by mission state, not blindly turned into another pickup command.
 
 Lead decision after checkpoint e3976c1: backend persistence uses shared Supabase
-Postgres instead of SQLite. Backend owns schema/migrations and project setup;
+Postgres instead of SQLite. The human selected existing project
+`buojgmoumyzqxmerckjm` (AlanDD13's Project, eu-west-1); inspect and preserve
+existing unrelated data. Backend owns schema/migrations and project setup;
 all teammates receive documented APIs, fixtures and individually authorized
 project/agent access where needed. Secret/service-role credentials remain
 backend-only and are never shared in Git, board posts or browser code.
