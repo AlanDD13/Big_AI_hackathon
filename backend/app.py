@@ -28,6 +28,9 @@ from backend.postgres_collection import PostgresCollectionStore
 from backend.postgres_evidence import PostgresEvidenceStore
 from backend.postgres_projection import PostgresObservationLog, StorageUnavailable
 from backend.state import BackendState, StreamItem
+from backend.vision_ingest import (
+    CLASSIFICATIONS, DETECTIONS, VISION_EVENTS, InvalidVision, VisionConflict, parse_vision_event,
+)
 
 
 def _match_secret(presented: str, expected: str) -> bool:
@@ -256,6 +259,43 @@ def create_app(
                 "objectId": result.object_id,
                 "backendRevision": result.backend_revision,
                 "replayed": result.replayed,
+            }
+        )
+
+    @app.post("/api/detections")
+    async def detections(request: Request) -> Response:
+        return await _ingest_vision(request, DETECTIONS)
+
+    @app.post("/api/classifications")
+    async def classifications(request: Request) -> Response:
+        return await _ingest_vision(request, CLASSIFICATIONS)
+
+    @app.post("/api/vision-events")
+    async def vision_events(request: Request) -> Response:
+        return await _ingest_vision(request, VISION_EVENTS)
+
+    async def _ingest_vision(request: Request, allowed: frozenset[str]) -> Response:
+        if len(app.state.peer_token) < 16:
+            return _error(503, "AUTH_UNCONFIGURED", "Peer authentication is not configured")
+        if not peer_authorized(request):
+            return _error(401, "UNAUTHORIZED", "Peer bearer token was rejected")
+        try:
+            payload = await request.json()
+        except Exception:
+            return _error(400, "INVALID_BODY", "Vision body must be JSON")
+        try:
+            event = parse_vision_event(payload, allowed)
+            result = app.state.backend.ingest_vision(event)
+        except InvalidVision as exc:
+            return _error(422, "VALIDATION_ERROR", str(exc))
+        except VisionConflict as exc:
+            return _error(409, "CONFLICT", str(exc))
+        return JSONResponse(
+            {
+                "objectId": result.object_id,
+                "backendRevision": result.backend_revision,
+                "replayed": result.replayed,
+                "discarded": result.discarded,
             }
         )
 
