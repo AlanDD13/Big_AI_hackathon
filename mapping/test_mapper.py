@@ -37,10 +37,10 @@ class ConsensusTests(unittest.TestCase):
 
 class CoordinateTests(unittest.TestCase):
     def test_half_metre_sector_centres(self) -> None:
-        self.assertEqual(sector_to_coordinates("A1"), (0.25, 0.25))
-        self.assertEqual(sector_to_coordinates("B2"), (0.75, 0.75))
-        self.assertEqual(sector_to_coordinates("C2"), (0.75, 1.25))
-        self.assertEqual(sector_to_coordinates("D4"), (1.75, 1.75))
+        self.assertEqual(sector_to_coordinates("A1"), (-0.75, 1.75))
+        self.assertEqual(sector_to_coordinates("B2"), (-0.25, 1.25))
+        self.assertEqual(sector_to_coordinates("C2"), (-0.25, 0.75))
+        self.assertEqual(sector_to_coordinates("D4"), (0.75, 0.25))
 
     def test_hyphenated_name_uses_the_same_cell(self) -> None:
         self.assertEqual(sector_to_coordinates("A-1"), sector_to_coordinates("A1"))
@@ -57,18 +57,18 @@ class CoordinateTests(unittest.TestCase):
 
 
 class PixelSectorTests(unittest.TestCase):
-    def test_paper_centre_on_the_phone_frame_is_c2(self) -> None:
-        self.assertEqual(pixel_to_sector(855, 423, 1920, 1080), "C2")
-        self.assertEqual(sector_to_coordinates("C2"), (0.75, 1.25))
+    def test_paper_centre_on_the_phone_frame_is_b2(self) -> None:
+        self.assertEqual(pixel_to_sector(855, 423, 1920, 1080), "B2")
+        self.assertEqual(sector_to_coordinates("B2"), (-0.25, 1.25))
 
     def test_frame_corners_use_the_outer_cells(self) -> None:
-        self.assertEqual(pixel_to_sector(0, 0, 1920, 1080), "D1")
-        self.assertEqual(pixel_to_sector(1919, 1079, 1920, 1080), "A4")
-        self.assertNotEqual(sector_to_coordinates("D1"), (0.0, 0.0))
+        self.assertEqual(pixel_to_sector(0, 0, 1920, 1080), "A1")
+        self.assertEqual(pixel_to_sector(1919, 1079, 1920, 1080), "D4")
+        self.assertNotEqual(sector_to_coordinates("A1"), (0.0, 0.0))
 
     def test_cell_boundaries_belong_to_the_next_cell(self) -> None:
-        self.assertEqual(pixel_to_sector(480, 270, 1920, 1080), "C2")
-        self.assertEqual(pixel_to_sector(479, 269, 1920, 1080), "D1")
+        self.assertEqual(pixel_to_sector(480, 270, 1920, 1080), "B2")
+        self.assertEqual(pixel_to_sector(479, 269, 1920, 1080), "A1")
 
     def test_point_outside_the_frame_fails(self) -> None:
         with self.assertRaises(ValueError):
@@ -106,7 +106,7 @@ class BurstPayloadTests(unittest.TestCase):
             waypoint_from_burst(payload),
             {
                 "sector": "B2",
-                "demoPointM": [0.75, 0.75],
+                "demoPointM": [-0.25, 1.25],
                 "mapId": "demo-grid",
                 "calibrated": False,
             },

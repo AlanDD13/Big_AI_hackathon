@@ -1,15 +1,15 @@
 """Turn a camera point or a burst of sector labels into one demo waypoint.
 
-Sector names are a row letter plus a column number, such as ``C2`` or ``A-1``.
-The demo room is four columns by four rows of 0.5 metre cells, 2.0 m by 2.0 m.
-Column 1 is the left side of the camera frame. Row A is the bottom row, because
-map +y points up, so the top row is D. The returned point is the cell centre:
-A1 is (0.25, 0.25) and C2 is (0.75, 1.25).
+Sector names are a row letter plus a column number, such as ``B2`` or ``A-1``.
+The demo room is four columns by four rows of 0.5 metre cells covering the
+whole camera frame, 2.0 m by 2.0 m. Column 1 is the left strip. Row A is the
+top strip and row D is the bottom strip. The origin is the bottom centre of
+that frame, the rover home: B2 is (-0.25, 1.25).
 
 ``pixel_to_sector`` only splits the frame into those equal cells. It does not
-measure the floor. These metres stay a local demo grid until a measured map is
-agreed. An unknown sector, a point outside the frame, or a burst with no
-strict majority fails instead of inventing a point.
+measure the floor. These metres are an image-proportion estimate until a
+measured map is agreed. An unknown sector, a point outside the frame, or a
+burst with no strict majority fails instead of inventing a point.
 
 A camera burst is accepted only as already-labelled sector names. This result
 is not calibrated MappingEvidence.
@@ -129,18 +129,24 @@ def waypoint_from_burst(payload: dict) -> dict[str, object]:
 
 
 def sector_to_coordinates(sector_name: str) -> tuple[float, float]:
-    """Return the 0.5 m sector centre as ``(x, y)`` metres.
+    """Return the estimated 0.5 m sector centre as ``(x, y)`` metres.
 
-    The centre is half a cell in from the sector's lower-left corner. A sector
-    outside the 4 by 4 demo room fails instead of returning a point past the room.
+    ``x`` is metres right of the frame's horizontal centre. ``y`` is metres
+    forward from the bottom edge, where the rover home sits. Row A is the far
+    strip at the top of the image. A sector outside the 4 by 4 demo room fails
+    instead of returning a point past the room.
     """
     canonical = _canonical(sector_name)
     column = int(canonical[1:])
-    row = ord(canonical[0]) - ord("A")
-    if row < 0 or row >= GRID_ROWS or column > GRID_COLUMNS:
+    row_from_top = ord(canonical[0]) - ord("A")
+    if row_from_top < 0 or row_from_top >= GRID_ROWS or column > GRID_COLUMNS:
         raise ValueError(f"sector outside the demo room: {canonical}")
     centre = CELL_METRES / 2
-    point = ((column - 1) * CELL_METRES + centre, row * CELL_METRES + centre)
+    room_width = GRID_COLUMNS * CELL_METRES
+    x = (column - 1) * CELL_METRES + centre - room_width / 2
+    row_from_bottom = GRID_ROWS - 1 - row_from_top
+    y = row_from_bottom * CELL_METRES + centre
+    point = (x, y)
     if point == (0.0, 0.0):
         raise ValueError("refusing (0, 0) waypoint")
     return point
@@ -151,8 +157,8 @@ def pixel_to_sector(cx: float, cy: float, img_width: int, img_height: int) -> st
 
     The frame is split into ``GRID_COLUMNS`` equal vertical strips and
     ``GRID_ROWS`` equal horizontal strips. Left is column 1. Image y grows
-    downward, so the top strip is the highest row letter. A point outside the
-    frame fails. The label is an uncalibrated demo sector, not a floor measurement.
+    downward, so the top strip is row A. A point on or outside the far edge
+    fails. The label is an uncalibrated demo sector, not a floor measurement.
     """
     if isinstance(cx, bool) or not isinstance(cx, (int, float)):
         raise ValueError("cx must be a number")
@@ -167,8 +173,7 @@ def pixel_to_sector(cx: float, cy: float, img_width: int, img_height: int) -> st
 
     column = _image_band(float(cx), img_width, GRID_COLUMNS) + 1
     row_from_top = _image_band(float(cy), img_height, GRID_ROWS)
-    row = GRID_ROWS - 1 - row_from_top
-    return f"{chr(ord('A') + row)}{column}"
+    return f"{chr(ord('A') + row_from_top)}{column}"
 
 
 def _image_band(position: float, size: int, count: int) -> int:
