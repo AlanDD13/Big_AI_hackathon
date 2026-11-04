@@ -1,5 +1,9 @@
 # Team setup and daily use
 
+For the current five-person assignments, copy-paste teammate message and first
+tasks, start with [ONBOARDING.md](ONBOARDING.md). That document and `AGENTS.md`
+contain current ownership; the examples below explain the tooling.
+
 ## 1. Decide whether to use it
 
 Use this if several teammates will build interdependent parts using coding
@@ -39,17 +43,17 @@ agent chat or a tracked file.
 
 ## 3. Lead: agree ownership and contracts at kickoff
 
-Fill `AGENTS.md` with actual GitHub logins, team lead, and exclusive paths.
-Replace the suggested areas to fit the project; do not create a separate AI
-service unless your architecture needs one. Assign shared manifests, lockfiles,
-contracts, and deployment config to one person.
+The five GitHub logins and exclusive paths are recorded in `AGENTS.md`.
+`AlanDD13` is the human lead and shared-file owner. Module owners keep their
+dependencies, tests and mocks inside their own directory.
 
 Agree `docs/CONTRACTS.md` before splitting work: one demonstrable user flow,
 request/response JSON examples, error behavior, data format, and local run
 commands. Give each task a completion check and integrate frequently.
 
 Commit and push the agreed ownership/contracts before teammates start their
-implementation branches. Do not invent team membership or architecture now.
+implementation branches. FigJam is the design proposal; `docs/CONTRACTS.md`
+must explicitly record which interfaces have been agreed.
 
 `BOARD_REPO` and `BOARD_ISSUE` environment variables override `board.conf`.
 If the wrong board appears, remove old overrides with

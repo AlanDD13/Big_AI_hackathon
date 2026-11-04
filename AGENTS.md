@@ -4,26 +4,34 @@
 
 Repository: `AlanDD13/Big_AI_hackathon` (private).
 Board: https://github.com/AlanDD13/Big_AI_hackathon/issues/1 (pinned).
-The coordination tooling is connected. The project idea, team lead, teammates,
-and folder ownership still need to be agreed at kickoff.
-Do not invent teammates or claim an area before your human assigns it.
-Until ownership is agreed, limit board posts to setup and onboarding coordination.
+The coordination tooling is connected. We are building a rover object recovery
+system. The human assigned the five areas below on 2026-11-04.
+API details and the physical demo still need agreement before implementation.
+Do not reassign areas or infer additional teammates. During onboarding, post only
+setup coordination; post implementation CLAIMs after contracts are agreed.
 Read `docs/TEAM_SETUP.md` for setup and `board.conf` for the board coordinates.
+Read `docs/ONBOARDING.md` for teammate instructions and first tasks.
 
-## Ownership (fill at kickoff)
+## Ownership
 
-Lead/integrator: TBD. Only the human lead reassigns areas and merges PRs.
-The rows below are examples; replace them with actual project paths and logins.
+Lead/integrator: `AlanDD13`. Only the human lead reassigns areas and merges PRs.
+Each human chooses their own coding agent; agent names remain unassigned.
 
 | Area | Human / GitHub login | Agent | Exclusive paths |
 | --- | --- | --- | --- |
-| UI | TBD | TBD | TBD (example: frontend/) |
-| API | TBD | TBD | TBD (example: backend/) |
-| AI / data | TBD | TBD | TBD (example: ai/) |
-| Integration / demo | TBD | TBD | TBD (example: docs/, infrastructure) |
+| Dashboard | LcyShox | TBD | `frontend/**` |
+| Object detection and tracking | AlanDD13 | TBD | `vision/**` |
+| Backend and Grok | zekihxh | TBD | `backend/**` |
+| Robot execution | platonyesin-dev | TBD | `robot/**` |
+| Mapping, localization and route planning | Tezqx | TBD | `mapping/**` |
 
-Assign one owner to shared files: lockfiles, root package manifests, schema,
-deployment config, `board.conf`, these rules, and `docs/CONTRACTS.md`.
+Shared owner: `AlanDD13` for `contracts/**`, `integration/**`, `infrastructure/**`,
+`docs/**`, `.github/**`, `tools/**`, root `tests/**`, root manifests/config,
+`board.conf`, and these rules. Module owners own manifests, lockfiles, tests
+and mocks inside their own directory. `zekihxh` owns backend storage schema
+and migrations; shared wire schemas belong in `contracts/`.
+All five owners participate in integration; this is not a sixth person's job.
+Folder ownership is a working agreement, not a GitHub filesystem permission.
 One active board reader per checkout; use separate clones for separate agents.
 
 ## Read, work, report

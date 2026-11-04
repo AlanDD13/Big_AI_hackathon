@@ -1,23 +1,34 @@
-# Big_AI_hackathon
+# Big AI hackathon: rover object recovery
 
-Local starter for a team using different coding agents. The project itself is
-not chosen or implemented yet. Coordination runs through a shared GitHub issue
-using `tools/board`, adapted from
-[hackathon-agent-board](https://github.com/azizu06/hackathon-agent-board).
+A camera detects an object, mapping locates it, the backend schedules a mission,
+and the rover attempts a tested pickup and delivery. The dashboard shows objects,
+rover position, mission progress and alerts.
 
-**The private repository and [pinned Message Board](https://github.com/AlanDD13/Big_AI_hackathon/issues/1) are connected.**
-Start with [the teammate onboarding guide](docs/TEAM_SETUP.md). The remaining
-steps are to invite teammates, agree ownership/contracts, and run the two-person
-test in your actual coding agents.
+Design: [FigJam plan](https://www.figma.com/board/bmW81xDifPQz5Icv98D8Hd/Big-AI?node-id=26-995).
+This repository currently contains onboarding and coordination scaffolding;
+the application and hardware integration are not implemented yet.
 
-- `AGENTS.md`: shared instructions for Codex, Cursor, and other agents.
-- `GEMINI.md` / `CLAUDE.md`: entry files for Gemini CLI and Claude Code.
-- `board.conf`: configured for `AlanDD13/Big_AI_hackathon`, issue #1.
-- `docs/CONTRACTS.md`: decisions to make before splitting implementation.
-- `docs/UPSTREAM.md`: pinned upstream revision and local changes.
+| Area | Owner | Exclusive directory |
+| --- | --- | --- |
+| Dashboard | `LcyShox` | [frontend/](frontend/README.md) |
+| Detection and tracking | `AlanDD13` | [vision/](vision/README.md) |
+| Backend and Grok | `zekihxh` | [backend/](backend/README.md) |
+| Robot execution | `platonyesin-dev` | [robot/](robot/README.md) |
+| Mapping and route planning | `Tezqx` | [mapping/](mapping/README.md) |
 
-Runtime requirements: Bash, Git, and authenticated GitHub CLI (`gh`). No model
-API key, MCP server, Node service, or board hosting is required. Your coding
-agents still use their normal accounts/subscriptions.
+`AlanDD13` is the human lead and shared-file owner. Everyone owns their module's
+tests, mocks and dependencies. Only the human lead merges PRs.
 
-Local offline checks: `python3 -m unittest discover -s tests -v`.
+**Start here: [teammate onboarding and messages](docs/ONBOARDING.md).**
+Read [agent rules](AGENTS.md) and [draft contracts](docs/CONTRACTS.md) before work.
+Coordination uses the [pinned Message Board](https://github.com/AlanDD13/Big_AI_hackathon/issues/1)
+through `tools/board`; [detailed setup](docs/TEAM_SETUP.md) explains the tooling.
+
+Existing coordination-tool checks:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+Module owners will add actual install/run/test commands to their own README files
+as they implement their first slices.
