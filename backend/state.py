@@ -170,7 +170,10 @@ class BackendState:
         with self._lock:
             if object_id not in self._objects:
                 return
-            self._classifications[object_id] = (status.upper(), dict(data))
+            projection = (status.upper(), dict(data))
+            if self._classifications.get(object_id) == projection:
+                return
+            self._classifications[object_id] = projection
             body = dict(self._objects[object_id])
             revision = self._next_revision_unlocked("object", object_id)
             body.update(

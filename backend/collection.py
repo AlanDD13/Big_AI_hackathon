@@ -37,6 +37,7 @@ class Admission:
     mission_id: str | None = None
     mission_state: str | None = None
     status_revision: int | None = None
+    classification: Classification | None = None
 
 
 class CollectionStore(Protocol):

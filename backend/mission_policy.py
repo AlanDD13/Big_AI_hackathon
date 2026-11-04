@@ -20,6 +20,9 @@ class Classification:
     subject_kind: str
     carrying: str
     confidence: str
+    provider: str | None = None
+    description: str | None = None
+    reason: str | None = None
 
 
 def collection_rejection(

@@ -148,4 +148,10 @@ class PostgresCollectionStore:
                     "SELECT status_revision FROM rover_backend.missions WHERE id = %s",
                     (mission_id,),
                 ).fetchone()[0]
-            return Admission(outcome, str(mission_id) if mission_id is not None else None, mission_state, status_revision)
+            return Admission(
+                outcome,
+                str(mission_id) if mission_id is not None else None,
+                mission_state,
+                status_revision,
+                classification=evidence.classification if outcome == "created" else None,
+            )

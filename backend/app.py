@@ -7,6 +7,7 @@ Neither credential is accepted in place of the other.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from dataclasses import asdict
 import json
 import os
 import secrets
@@ -200,6 +201,17 @@ def create_app(
             return _error(*MISSION_ERRORS[admission.outcome])
         if admission.mission_id is None or admission.mission_state is None:
             raise RuntimeError("Accepted mission has no stored identity or state")
+        classification = admission.classification
+        if classification is not None and classification.provider in ("fixture", "grok"):
+            app.state.backend.record_classification(
+                mission_request.object_id,
+                classification.status,
+                {
+                    field: value
+                    for field, value in asdict(classification).items()
+                    if field != "status" and value is not None
+                },
+            )
         mission_state = admission.mission_state.upper()
         mission = app.state.backend.record_mission(
             admission.mission_id,

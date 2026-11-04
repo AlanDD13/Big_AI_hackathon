@@ -149,6 +149,9 @@ class PostgresEvidenceStore:
                 classification.get("subject_kind", ""),
                 classification.get("carrying", ""),
                 classification.get("confidence", ""),
+                classification.get("provider"),
+                classification.get("description"),
+                classification.get("reason"),
             )
         typed_samples = []
         for sample in samples:

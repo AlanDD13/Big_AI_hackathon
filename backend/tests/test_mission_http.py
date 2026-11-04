@@ -56,30 +56,29 @@ class MissionQueueTests(unittest.TestCase):
         camera = f"queue-{uuid4()}"
         body = {"objectId": f"{camera}:session1:track1", "destinationZoneId": "zone-1", "source": "manual"}
         headers = {"Idempotency-Key": "queue-intent"}
-        with TestClient(self.app("a" * 32)) as client:
+        with TestClient(self.app("b" * 32)) as client:
             for frame in range(11):
                 sample = {**evidence(frame, 100.0 + frame / 2), "cameraId": camera}
                 response = client.post("/api/observations", json=sample, headers={"Authorization": f"Bearer {PEER}"})
                 self.assertEqual(response.status_code, 200, response.text)
 
-        with self.database() as connection:
-            object_id, = connection.execute(
-                """UPDATE rover_backend.objects SET state = '{"pickupProfileId":"demo"}'
-                   WHERE camera_id = %s RETURNING id""", (camera,),
-            ).fetchone()
-            connection.execute(
-                """INSERT INTO rover_backend.classifications (object_id, status, data)
-                   VALUES (%s, 'completed',
-                           '{"category":"TRASH","subject_kind":"INANIMATE",
-                             "carrying":"NO","confidence":"HIGH","provider":"fixture"}')""",
-                (object_id,),
-            )
+            with self.database() as connection:
+                object_id, = connection.execute(
+                    """UPDATE rover_backend.objects SET state = '{"pickupProfileId":"demo"}'
+                       WHERE camera_id = %s RETURNING id""", (camera,),
+                ).fetchone()
+                connection.execute(
+                    """INSERT INTO rover_backend.classifications (object_id, status, data)
+                       VALUES (%s, 'completed',
+                               '{"category":"TRASH","subject_kind":"INANIMATE",
+                                 "carrying":"NO","confidence":"HIGH","provider":"fixture"}')""",
+                    (object_id,),
+                )
 
-        with TestClient(self.app("b" * 32)) as client:
             self.assertEqual(client.post("/api/session", json={"token": OPERATOR}).status_code, 204)
             initial = client.get("/api/snapshot").json()
             target = next(item for item in initial["objects"] if item["objectId"] == body["objectId"])
-            self.assertEqual(target["classificationProvider"], "fixture")
+            self.assertEqual(target["classificationStatus"], "PENDING")
             self.assertFalse(target["dispatchEligible"])
             missing = client.post(
                 "/api/missions", json={**body, "objectId": "absent:session:track"}, headers=headers
@@ -100,6 +99,9 @@ class MissionQueueTests(unittest.TestCase):
             self.assertEqual((reserved.status_code, reserved.json()["error"]["code"]), (409, "EVIDENCE_CHANGED"))
             snapshot = client.get("/api/snapshot").json()
             self.assertIn(mission, snapshot["missions"])
+            target = next(item for item in snapshot["objects"] if item["objectId"] == body["objectId"])
+            self.assertEqual(target["classificationProvider"], "fixture")
+            self.assertFalse(target["dispatchEligible"])
             stream = client.get("/api/events", params={"after": initial["cursor"]})
             events = [item for item in parse_sse(stream.text) if item["event"] == "mission.updated"]
             self.assertEqual(len(events), 1)
