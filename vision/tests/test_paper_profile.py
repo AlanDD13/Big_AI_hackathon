@@ -82,3 +82,45 @@ def test_tiled_paper_proposals_keep_original_coordinates_and_living_exclusions()
     assert any(d.label == 'person' for d in detections)
     assert any(d.label == 'paper ball' and d.bbox == (266, 212, 286, 232) for d in detections)
     assert detector._model.calls == 5
+
+
+@pytest.mark.parametrize('label', ['can', 'plastic bottle'])
+def test_zoom_tiles_propose_cans_and_bottles_not_only_paper(label):
+    class Array:
+        def tolist(self): return [10, 20, 30, 40]
+    class Model:
+        def __init__(self, name): self.names = {}; self.calls = 0
+        def set_classes(self, classes): self.names = dict(enumerate(classes))
+        def predict(self, **kwargs):
+            self.calls += 1
+            boxes = [] if self.calls == 1 else [SimpleNamespace(
+                xyxy=[Array()], cls=[list(self.names.values()).index(label)], conf=[.7])]
+            return [SimpleNamespace(names=self.names, boxes=boxes)]
+    out = BytesIO(); Image.new('RGB', (640, 480)).save(out, 'JPEG')
+    with patch.dict('sys.modules', {'ultralytics': SimpleNamespace(YOLOE=Model)}):
+        detector = YoloDetector(model='yoloe-26s-seg.pt', profile='paper', device='cpu')
+        detections = detector.detect(out.getvalue())
+    assert any(d.label == label and d.bbox == (266, 212, 286, 232) for d in detections)
+
+
+def test_prompt_free_detector_boxes_any_object_without_a_class_list():
+    class Array:
+        def tolist(self): return [10, 20, 30, 40]
+    class Model:
+        def __init__(self, name):
+            self.names = {0: 'shoe'}
+            self.calls = 0
+        def set_classes(self, classes):
+            raise AssertionError('YOLO must not apply a classification vocabulary')
+        def predict(self, **kwargs):
+            self.calls += 1
+            boxes = [] if self.calls == 1 else [SimpleNamespace(
+                xyxy=[Array()], cls=[0], conf=[.4])]
+            return [SimpleNamespace(names=self.names, boxes=boxes)]
+    out = BytesIO(); Image.new('RGB', (640, 480)).save(out, 'JPEG')
+    with patch.dict('sys.modules', {'ultralytics': SimpleNamespace(YOLOE=Model)}):
+        detector = YoloDetector(model='yoloe-26s-seg-pf.pt', profile='default', device='cpu')
+        detections = detector.detect(out.getvalue())
+    assert detector.classes == ()
+    assert any(d.label == 'shoe' and d.bbox == (266, 212, 286, 232) for d in detections)
+    assert detector._model.calls == 5

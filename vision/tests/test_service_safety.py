@@ -199,6 +199,26 @@ async def test_real_loss_during_frame_pending_still_revokes(fixture):
 
 
 @pytest.mark.asyncio
+async def test_slow_inference_still_publishes_aligned_boxes_without_a_target(fixture):
+    service, _, _, clock, data = fixture
+
+    class SlowDetector:
+        def detect(self, image):
+            clock.value += 2
+            return [Detection('shoe', .58, (20, 20, 50, 90))]
+
+    service.detector = SlowDetector()
+    first = frame(service, clock, data, 0)
+    await service.process_frame(first)
+    objects = [item for item in service.snapshot() if item['status'] != 'LOST']
+    assert objects[0]['bboxPx'] == [20, 20, 50, 90]
+    assert objects[0]['detectorLabel'] == 'shoe'
+    assert objects[0]['frameId'] == 0
+    assert objects[0]['potentialTarget'] is False
+    await service.close()
+
+
+@pytest.mark.asyncio
 async def test_faster_ingress_does_not_discard_fresh_inference(fixture):
     import threading
     service, _, _, clock, data = fixture

@@ -132,7 +132,9 @@ class DetectorTests(unittest.TestCase):
             self.assertEqual(detector.detect(data.getvalue()), first)
         self.assertEqual(first[0].bbox, (10, 20, 110, 70))
         self.assertEqual(first[0].contact_point, (60, 70))
-        self.assertEqual(calls, [('init', 'yoloe-26s-seg-pf.pt'), ('predict', (200, 100)), ('predict', (200, 100))])
+        tiled = [('predict', (200, 100)), ('predict', (120, 60)), ('predict', (120, 60)),
+                 ('predict', (120, 60)), ('predict', (120, 60))]
+        self.assertEqual(calls, [('init', 'yoloe-26s-seg-pf.pt'), *tiled, *tiled])
 
 
 if __name__ == '__main__':

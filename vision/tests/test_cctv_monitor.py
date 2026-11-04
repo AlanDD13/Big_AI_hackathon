@@ -348,15 +348,13 @@ def test_remote_detect_frame_endpoint_and_cctv_monitor_remote_offload(monkeypatc
 
     # cctv_monitor.detect_frame_objects automatically offloads when VISION_REMOTE_URL is set
     import httpx
-    monkeypatch.setenv("VISION_REMOTE_URL", "http://192.168.5.192:8002")
+    monkeypatch.setenv("VISION_REMOTE_URL", "https://192.168.5.192:8443")
     monkeypatch.setenv("PEER_TOKEN", "p" * 24)
-    monkeypatch.setattr(
-        httpx,
-        "post",
-        lambda url, content, headers, timeout: client.post(
-            "/api/detect-frame", content=content, headers=headers
-        ),
-    )
+    def post_frame(url, content, headers, timeout, verify):
+        assert url == 'https://192.168.5.192:8443/api/detect-frame'
+        assert verify is True  # pinning is optional, certificate verification is not
+        return client.post('/api/detect-frame', content=content, headers=headers)
+    monkeypatch.setattr(httpx, 'post', post_frame)
     remote_dets = cctv_monitor.detect_frame_objects(frame)
     assert len(remote_dets) == 1
     assert remote_dets[0].label == "bottle"
