@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools==80.9.0", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rover-media-compat"
+version = "0.1.0"
+description = "Real PyAV decoding adapter for DJI's legacy libmedia_codec API"
+requires-python = ">=3.11,<3.12"
+dependencies = ["av==16.0.1", "numpy==1.26.4"]
+
+[tool.setuptools]
+py-modules = ["libmedia_codec"]
