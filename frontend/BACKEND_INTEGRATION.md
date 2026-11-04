@@ -48,19 +48,18 @@ setup stops automatic retries and offers manual retry after configuration.
 
 Alert read markers are local, scoped to backend boot and alert ID. They reset
 when the Connected view is closed. They are not backend acknowledgements.
+Camera/detector notices may have `objectId: null`; the UI labels them by camera
+instead of requiring an object selection, and subscribes to their stream events.
 Evidence URLs must be same-origin `/api/evidence/<id>`; a missing/expired image
 gets an unavailable placeholder. The UI never fetches camera/vision URLs.
 
-Implemented against `backend/app.py` and `backend/state.py` on main `94cb8bc`
-(PR #11 persistence and nested mapping included), with compatibility for the
-earlier flat object shape.
-It also accepts the nested mapping/classification shape from the lead's draft
-`contracts/backend-stream-v1.md` on `task/AlanDD13/vision-pipeline`; richer classification/evidence fields are optional. Live vision ingest is still pending. Main may project trusted classification
-after queue admission; objects awaiting classification remain PENDING, and no
-exact evidence URL is supplied. Database persistence
-requires the backend owner’s BACKEND_DATABASE_URL configuration.
+Validated against `backend/app.py` and `backend/state.py` on main `9a237fd`,
+including mission queue, vision ingest and vision persistence. Backend ingest
+accepts peer events; the browser still reads only the projected snapshot/SSE.
+Classification remains PENDING until its event arrives. Exact evidence frames
+remain unavailable unless the backend supplies and serves their evidence URL.
+Persistence requires BACKEND_DATABASE_URL in the backend process; this value
+never belongs in the browser.
 
-Validation: `npm.cmd test`, `npm.cmd run build`, and browser QA against an
-isolated real FastAPI app with generated credentials and test-only observations.
-No warehouse camera, hardware command, production database or external write
-is used by that QA setup.
+Full local database/restart/browser results and the safe repeatable test runner:
+[FULL_STACK_VALIDATION.md](FULL_STACK_VALIDATION.md).

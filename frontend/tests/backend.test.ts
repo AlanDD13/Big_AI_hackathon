@@ -40,6 +40,15 @@ test('deduplicate alert ID and retained vision event ID without losing newer rev
   state = applyEvent(state, { ...alert, backendRevision: 2, body: { ...body, backendRevision: 2, reason: 'updated' } });
   assert.equal(state.alerts[0].reason, 'updated');
 });
+test('camera-wide alerts need no object ID and must not prevent a complete snapshot', () => {
+  const alert = { alertId: 'camera-offline', objectId: null, cameraId: 'test-camera', backendRevision: 1, kind: 'camera_unavailable' };
+  const state = parseSnapshot({ ...snapshot(), alerts: [alert] });
+  assert.equal(state.objects.length, 1);
+  assert.equal(state.alerts[0].objectId, null);
+  const updated = applyEvent(state, { ...event(), entity: 'alert', type: 'alert.camera_unavailable', backendRevision: 2, body: { ...alert, backendRevision: 2 } });
+  assert.equal(updated.alerts.length, 1);
+  assert.equal(updated.alerts[0].backendRevision, 2);
+});
 
 class FakeStream {
   onopen: EventSource['onopen'] = null;
@@ -102,5 +111,16 @@ test('session refresh retrieves new snapshot; connection failure retains stale d
   assert.equal(h.states.at(-1)?.status, 'retrying');
   assert.equal(h.states.at(-1)?.store?.objects.length, 1);
   assert.equal(h.streams[0].closed, true);
+  h.client.close();
+});
+test('camera-wide SSE notices display without an object and preserve existing object data', async () => {
+  const h = harness([response()]);
+  await flush();
+  const body = { alertId: 'camera1', objectId: null, cameraId: 'test-camera', backendRevision: 1, kind: 'camera_unavailable' };
+  h.streams[0].send('alert.camera_unavailable', { ...event(), entity: 'alert', type: 'alert.camera_unavailable', backendRevision: 1, body });
+  assert.equal(h.states.at(-1)?.store?.alerts[0].objectId, null);
+  assert.equal(h.states.at(-1)?.store?.alerts[0].cameraId, 'test-camera');
+  assert.equal(h.states.at(-1)?.store?.objects.length, 1);
+  assert.equal(h.streams.length, 1);
   h.client.close();
 });

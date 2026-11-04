@@ -1,7 +1,7 @@
 // Backend wire data is validated at the boundary; absent perception fields stay absent.
 export type RecordData = Record<string, unknown>;
 export type BackendObject = RecordData & { objectId: string; backendRevision: number };
-export type BackendAlert = RecordData & { alertId: string; objectId: string; backendRevision: number };
+export type BackendAlert = RecordData & { alertId: string; objectId: string | null; backendRevision: number };
 export type Snapshot = {
   schemaVersion: 'backend.v1'; backendBootId: string; cursor: string;
   objects: BackendObject[]; alerts: BackendAlert[]; missions: RecordData[]; robots: RecordData[];
@@ -25,7 +25,7 @@ export function parseSnapshot(value: unknown): Store {
   const objects = s.objects.map(o => entity(o, 'objectId') as BackendObject);
   const alerts = s.alerts.map(a => {
     const row = entity(a, 'alertId');
-    if (typeof row.objectId !== 'string') throw new Error('Unsupported backend alert.');
+    if (row.objectId !== null && (typeof row.objectId !== 'string' || !row.objectId)) throw new Error('Unsupported backend alert.');
     return row as BackendAlert;
   });
   return { schemaVersion: 'backend.v1', backendBootId: s.backendBootId, cursor: s.cursor, objects, alerts,
@@ -44,7 +44,7 @@ export function applyEvent(state: Store, value: unknown): Store {
     const old = state.objects.find(o => o.objectId === body.objectId);
     if (!old || old.backendRevision < (body.backendRevision as number)) next.objects = [...state.objects.filter(o => o.objectId !== body.objectId), body as BackendObject];
   } else {
-    if (typeof body.objectId !== 'string') throw new Error('Missing alert object.');
+    if (body.objectId !== null && (typeof body.objectId !== 'string' || !body.objectId)) throw new Error('Missing alert object.');
     const old = state.alerts.find(a => a.alertId === body.alertId);
     const visionId = typeof event.visionEventId === 'string' ? event.visionEventId : typeof body.visionEventId === 'string' ? body.visionEventId : null;
     if (visionId && state.seen.has(visionId) && !old) return next;
@@ -97,10 +97,10 @@ export function connectBackend(publish: (state: Connection) => void, supplied?: 
       if (!response.ok) throw new Error(`Backend unavailable (HTTP ${response.status}).`);
       const store = parseSnapshot(await response.json());
       if (!current()) return;
-      emit({ store, updatedAt: Date.now(), message: 'Opening event stream…' });
+      emit({ store, updatedAt: Date.now(), status: 'loading', message: 'Snapshot loaded · waiting for event stream…' });
       source = deps.stream(`/api/events?after=${encodeURIComponent(store.cursor)}`);
       source.onopen = () => { if (current()) { retries = 0; emit({ status: 'connected', message: 'Backend connected · read-only' }); } };
-      for (const name of ['object.observed', 'object.classified', 'object.updated', 'alert.potential_target', 'alert.target_revoked']) source.addEventListener(name, ((event: MessageEvent<string>) => {
+      for (const name of ['object.observed', 'object.classified', 'object.updated', 'alert.potential_target', 'alert.target_revoked', 'alert.camera_unavailable', 'alert.detector_unavailable']) source.addEventListener(name, ((event: MessageEvent<string>) => {
         if (!current() || !state.store) return;
         try { emit({ store: applyEvent(state.store, JSON.parse(event.data)), updatedAt: Date.now() }); }
         catch { void load(); }
