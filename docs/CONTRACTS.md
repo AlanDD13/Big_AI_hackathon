@@ -8,15 +8,16 @@ documented APIs or individually authorized project access; secret/service-role
 keys remain backend-only. The human selected the existing **AlanDD13's Project**
 (`buojgmoumyzqxmerckjm`, `eu-west-1`) on 2026-11-04. Backend must inspect its
 existing schema and preserve unrelated data before adding hackathon tables.
-Project selection does not grant access. On 2026-11-04 the read-only Supabase
-MCP server `supabase-hackathon` is configured for this project and was not
-connected in the lead Cursor session, so no schema or table inventory was
-produced. Alan still needs to complete that server's OAuth before the lead can
-answer with catalog metadata. Until an inventory shows the name is free,
-`zekihxh` must not create `rover_backend` or apply migrations. The migration
-role and the runtime role stay separate, both owned by `zekihxh`. Frontend,
-mapping, and robot use backend APIs and get no database role and no service key.
-Never put credentials in Git, board comments, or frontend code.
+Project selection does not grant access. The existing `public` schema in
+`buojgmoumyzqxmerckjm` is actively used by `adaptive-python-mentor` (24 tables
+and 17 RPCs) and **must not** be used or modified by this project. All hackathon
+tables, views, sequences and routines must live in the dedicated Postgres schema
+**`rover_backend`** (`SUPABASE_DB_SCHEMA=rover_backend`). The schema bootstrap
+script is [`infrastructure/supabase-rover-backend-schema.sql`](../infrastructure/supabase-rover-backend-schema.sql)
+ and shared environment variable names are in [`.env.example`](../.env.example).
+The migration role and the runtime role stay separate, both owned by `zekihxh`.
+Frontend, mapping, and robot use backend APIs and get no database role and no
+service key. Never put credentials in Git, board comments, or frontend code.
 The vision producer's versioned interface is specified in
 [`contracts/vision-v1.md`](../contracts/vision-v1.md). Backend durable
 snapshot/SSE/session rules are in
