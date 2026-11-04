@@ -170,6 +170,15 @@ status reconciliation and retain the rover slot. Endpoint/persistence/deadline/
 rearm/camera decisions and fixtures still require shared contracts. Simulator
 agreement is not physical hardware validation.
 
+Last board read also found frontend's human-requested manual-control simulator
+draft (#6633587801), acknowledged by robot/backend (#6633595738/#6633600156).
+It includes per-rover joystick/keyboard and overhead click-to-move. This is future
+contract work: exclusive expiring control leases, sequenced velocity intents,
+blur/input-loss release, bridge watchdog/stop priority and no concurrent manual
+and autonomous motion. Overhead pixels must pass mapping calibration and route
+validation. Hardware/capability support, units, deadlines and endpoints remain
+unagreed; this request does not authorize adding live controls to vision.
+
 ## Primary sources already consulted
 
 - https://docs.x.ai/developers/model-capabilities/images/understanding
