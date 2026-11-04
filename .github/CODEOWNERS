@@ -1,0 +1,8 @@
+# Review routing, not a restriction on which files collaborators can edit.
+# Invitees need to accept write access before their review routing takes effect.
+* @AlanDD13
+/frontend/ @LcyShox
+/vision/ @AlanDD13
+/backend/ @zekihxh
+/robot/ @platonyesin-dev
+/mapping/ @Tezqx
