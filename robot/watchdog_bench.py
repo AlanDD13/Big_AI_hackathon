@@ -45,6 +45,7 @@ class Telemetry:
         self.yaw = self.yaw_rate = None
         self._yaw_estimator = YawRate()
         self._last_position = self._last_attitude = 0
+        self._sample_id = 0
         self.observations = []
         self.forwarding = True
         self.battery = None
@@ -77,10 +78,11 @@ class Telemetry:
             if self.position_at <= self._last_position or self.attitude_at <= self._last_attitude:
                 return
             self._last_position, self._last_attitude = self.position_at, self.attitude_at
+            self._sample_id += 1
             self.peak_speed = max(self.peak_speed, abs(value[3]), abs(value[4]))
-            self.observations.append([now, value[3], value[4], self.yaw_rate])
+            self.observations.append([now, value[3], value[4], self.yaw_rate, self._sample_id])
             self.observations = self.observations[-200:]
-            self.controller.observe(value[3], value[4], self.yaw_rate)
+            self.controller.observe(value[3], value[4], self.yaw_rate, sample_id=self._sample_id)
 
     def battery_info(self, value):
         self.battery = value

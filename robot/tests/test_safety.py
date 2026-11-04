@@ -45,8 +45,9 @@ class SafetyTests(unittest.TestCase):
     def test_startup_is_latched_until_fresh_stationary_telemetry(self):
         c = SafetyController(lambda *v: None, clock=lambda: self.clock.now)
         self.assertEqual(c.status()["stage"], "UNKNOWN")
-        with self.assertRaisesRegex(SafetyError, "STOP_NOT_CONFIRMED"):
+        with self.assertRaisesRegex(SafetyError, "STOP_NOT_CONFIRMED") as ctx:
             c.rearm()
+        self.assertEqual(c.manual_http_error(ctx.exception), (409, "NOT_STOPPED"))
 
     def test_silence_cutoff_and_latched_recovery(self):
         self.drive()
@@ -57,10 +58,14 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(self.outputs[-1], (0, 0, 0))
         self.assertEqual(self.c.status()["reason"], "INPUT_SILENCE")
         self.assertEqual(self.c.status()["stage"], "UNKNOWN")
-        with self.assertRaisesRegex(SafetyError, "STOP_LOCKED"):
+        with self.assertRaisesRegex(SafetyError, "STOP_LOCKED") as ctx:
             self.drive(sequence=2)
+        self.assertEqual(self.c.manual_http_error(ctx.exception), (503, "TELEMETRY_STALE"))
         self.confirm()
         self.assertEqual(self.c.status()["stage"], "STOPPED")
+        with self.assertRaisesRegex(SafetyError, "STOP_LOCKED") as stopped_ctx:
+            self.drive(sequence=2)
+        self.assertEqual(self.c.manual_http_error(stopped_ctx.exception), (409, "STOP_LOCKED"))
 
     def test_deadline_can_stop_before_silence(self):
         self.drive(ttl=0.1)
@@ -101,8 +106,9 @@ class SafetyTests(unittest.TestCase):
         self.assertGreater(self.generation, old_generation)
         self.assertEqual(len(self.outputs), count)
         self.assertEqual(self.c.status()["stage"], "IDLE")
-        with self.assertRaisesRegex(SafetyError, "AUTHORITY_CONFLICT"):
+        with self.assertRaisesRegex(SafetyError, "AUTHORITY_CONFLICT") as ctx:
             self.drive(sequence=2)
+        self.assertEqual(self.c.manual_http_error(ctx.exception), (409, "LEASE_HELD"))
         self.assertEqual(self.outputs[-1], (0, 0, 0))
 
     def test_fresh_authority_after_rearm_can_move(self):
@@ -118,14 +124,44 @@ class SafetyTests(unittest.TestCase):
             with self.subTest(sequence=sequence):
                 self.setUp()
                 self.drive()
-                with self.assertRaisesRegex(SafetyError, "STALE_SEQUENCE"):
+                with self.assertRaisesRegex(SafetyError, "STALE_SEQUENCE") as ctx:
                     self.drive(sequence=sequence)
+                self.assertEqual(self.c.manual_http_error(ctx.exception), (409, "STALE_INTENT"))
                 self.assertEqual(self.outputs[-1], (0, 0, 0))
 
     def test_old_generation_cannot_move(self):
-        with self.assertRaisesRegex(SafetyError, "STALE_GENERATION"):
+        with self.assertRaisesRegex(SafetyError, "STALE_GENERATION") as ctx:
             self.drive(generation=self.generation - 1)
+        self.assertEqual(self.c.manual_http_error(ctx.exception), (409, "STALE_INTENT"))
         self.assertEqual(self.outputs[-1], (0, 0, 0))
+
+    def test_rejected_drive_during_active_session_trips_fail_closed(self):
+        cases = (
+            ("STALE_GENERATION", {"generation": self.generation - 1}, (409, "STALE_INTENT")),
+            ("STALE_BOOT", {"boot_id": "stale-boot"}, (409, "STALE_INTENT")),
+            ("AUTHORITY_CONFLICT", {"command": "competing-cmd"}, (409, "LEASE_HELD")),
+            ("STALE_SEQUENCE", {"sequence": 1}, (409, "STALE_INTENT")),
+            ("EXPIRED_OR_INVALID_DEADLINE", {"issued_at": 999.0, "expires_at": 999.2}, (409, "LEASE_EXPIRED")),
+            ("VELOCITY_LIMIT", {"x": 0.9}, (422, "VELOCITY_LIMIT")),
+        )
+        for expected_code, overrides, expected_http in cases:
+            with self.subTest(code=expected_code):
+                self.setUp()
+                status = self.drive(sequence=1, command="active-session")
+                self.assertEqual(status["stage"], "DRIVING")
+                self.assertTrue(status["armed"])
+                self.assertEqual(status["commandId"], "active-session")
+                call_args = {"sequence": 2, "command": "active-session"}
+                call_args.update(overrides)
+                with self.assertRaisesRegex(SafetyError, expected_code) as ctx:
+                    self.drive(**call_args)
+                self.assertEqual(self.c.manual_http_error(ctx.exception), expected_http)
+                after = self.c.status()
+                self.assertFalse(after["armed"])
+                self.assertIsNone(after["commandId"])
+                self.assertEqual(after["stage"], "UNKNOWN")
+                self.assertEqual(after["reason"], expected_code)
+                self.assertEqual(self.outputs[-1], (0.0, 0.0, 0.0))
 
     def test_expired_future_or_excessive_deadline_rejected(self):
         for issued, expiry in ((999, 999.5), (1001, 1001.2), (1000, 1001)):
@@ -179,6 +215,53 @@ class SafetyTests(unittest.TestCase):
         self.confirm()
         self.assertEqual(self.c.status()["stage"], "STOPPED")
 
+    def test_monotonic_sample_id_dedupes_replays_and_allows_distinct_samples(self):
+        self.drive()
+        self.c.stop()
+        self.clock.advance(0.05)
+        self.c.observe(0, 0, 0, sample_id=10)
+        # Replaying sample_id=10 or lower must not add stationary evidence even if clock advances.
+        for _ in range(5):
+            self.clock.advance(0.1)
+            self.c.observe(0, 0, 0, sample_id=10)
+            self.c.observe(0, 0, 0, sample_id=9)
+        self.assertEqual(self.c.status()["stage"], "UNKNOWN")
+        self.assertEqual(self.c.status()["stationarySamples"], 1)
+        # Distinct sample IDs spanning >= 200 ms confirm stop.
+        self.clock.advance(0.1)
+        self.c.observe(0, 0, 0, sample_id=11)
+        self.clock.advance(0.11)
+        self.c.observe(0, 0, 0, sample_id=12)
+        self.assertEqual(self.c.status()["stage"], "STOPPED")
+        self.assertEqual(self.c.status()["lastSampleId"], 12)
+
+    def test_voluntary_release_transitions_unknown_to_idle_only_after_confirmation(self):
+        self.drive()
+        old_gen = self.generation
+        rel = self.c.release("user_release")
+        self.assertEqual(rel["stage"], "UNKNOWN")
+        self.assertTrue(rel["releasePending"])
+        self.assertEqual(self.outputs[-1], (0.0, 0.0, 0.0))
+        with self.assertRaisesRegex(SafetyError, "STOP_NOT_CONFIRMED") as rearm_ctx:
+            self.c.rearm()
+        self.assertEqual(self.c.manual_http_error(rearm_ctx.exception), (409, "NOT_STOPPED"))
+        self.confirm()
+        after = self.c.status()
+        self.assertEqual(after["stage"], "IDLE")
+        self.assertTrue(after["armed"])
+        self.assertFalse(after["releasePending"])
+        self.assertGreater(after["generation"], old_gen)
+
+    def test_unconfirmed_voluntary_release_timeout_stays_unknown(self):
+        self.drive()
+        self.c.release("user_release")
+        self.clock.advance(1.6)
+        self.c.tick()
+        status = self.c.status()
+        self.assertEqual(status["stage"], "UNKNOWN")
+        self.assertTrue(status["stopUnconfirmed"])
+        self.assertFalse(status["stopConfirmed"])
+
     def test_yaw_motion_prevents_stop_confirmation(self):
         self.c.stop()
         for _ in range(5):
@@ -215,6 +298,100 @@ class SafetyTests(unittest.TestCase):
         self.clock.advance(2)
         self.c.tick()
         self.assertTrue(self.c.status()["stopUnconfirmed"])
+
+    def test_stalled_output_does_not_block_stop_tick_or_status_and_recovers_to_zero(self):
+        write_started = threading.Event()
+        unblock_write = threading.Event()
+        recorded = []
+
+        def stalled_write(*v):
+            recorded.append(v)
+            if any(v):
+                write_started.set()
+                unblock_write.wait(timeout=2.0)
+
+        self.c._write = stalled_write
+        drive_err = []
+        drive_thread = threading.Thread(
+            target=lambda: self._run_catching(lambda: self.drive(sequence=1), drive_err)
+        )
+        drive_thread.start()
+        self.assertTrue(write_started.wait(timeout=0.5))
+
+        t0 = time.monotonic()
+        status_during = self.c.status()
+        status_elapsed = time.monotonic() - t0
+        self.assertLess(status_elapsed, 0.05)
+        self.assertIsNotNone(status_during["bridgeBootId"])
+
+        t_stop = time.monotonic()
+        stopped_status = self.c.stop("OPERATOR_STOP")
+        stop_elapsed = time.monotonic() - t_stop
+        # Must stay well below the 400 ms probe / 250 ms silence gate.
+        self.assertLess(stop_elapsed, 0.15)
+        self.assertFalse(stopped_status["armed"])
+        self.assertEqual(stopped_status["stage"], "UNKNOWN")
+        self.assertTrue(stopped_status["writeStuck"])
+        self.assertEqual(stopped_status["transportError"], "WRITE_TIMEOUT")
+
+        drive_thread.join(timeout=0.5)
+        self.assertFalse(drive_thread.is_alive())
+        self.assertEqual(len(drive_err), 1)
+        self.assertEqual(drive_err[0].code, "TRANSPORT_ERROR")
+
+        # Subsequent tick() while write is still hung returns without blocking.
+        t_tick = time.monotonic()
+        self.c.tick()
+        self.assertLess(time.monotonic() - t_tick, 0.05)
+
+        # Once the stalled write unblocks, the pending zero is immediately written.
+        unblock_write.set()
+        deadline = time.monotonic() + 0.5
+        while time.monotonic() < deadline and self.c.status()["writeStuck"]:
+            time.sleep(0.01)
+        self.assertFalse(self.c.status()["writeStuck"])
+        self.assertEqual(recorded[-1], (0.0, 0.0, 0.0))
+
+    def test_lock_held_or_slow_drive_racing_tick_never_delays_watchdog_or_applies_stale_velocity(self):
+        in_write = threading.Event()
+        release_write = threading.Event()
+
+        def slow_write(*v):
+            self.outputs.append(v)
+            if any(v):
+                in_write.set()
+                release_write.wait(timeout=1.0)
+
+        self.c._write = slow_write
+        t = threading.Thread(target=lambda: self._run_catching(lambda: self.drive(sequence=1), []))
+        t.start()
+        self.assertTrue(in_write.wait(timeout=0.5))
+
+        # Advance past silence threshold while drive's write is still blocked.
+        self.clock.advance(0.301)
+        t0 = time.monotonic()
+        tick_status = self.c.tick()
+        self.assertLess(time.monotonic() - t0, 0.15)
+        self.assertFalse(tick_status["armed"])
+        self.assertEqual(tick_status["stage"], "UNKNOWN")
+
+        # Attempt a competing drive from the old generation while disarmed; must be rejected.
+        with self.assertRaisesRegex(SafetyError, "STOP_LOCKED"):
+            self.drive(sequence=2)
+
+        release_write.set()
+        t.join(timeout=0.5)
+        deadline = time.monotonic() + 0.5
+        while time.monotonic() < deadline and self.outputs[-1] != (0.0, 0.0, 0.0):
+            time.sleep(0.01)
+        self.assertEqual(self.outputs[-1], (0.0, 0.0, 0.0))
+        self.assertFalse(self.c.status()["armed"])
+
+    def _run_catching(self, fn, out):
+        try:
+            fn()
+        except SafetyError as exc:
+            out.append(exc)
 
     def test_bad_telemetry_stops(self):
         self.drive()
@@ -276,7 +453,14 @@ class SafetyTests(unittest.TestCase):
         self.assertFalse(self.c.status()["armed"])
 
     def test_limits_cannot_disable_watchdog_or_inflate_caps(self):
-        for kwargs in ({"silence_s": 1}, {"poll_s": 1}, {"max_x": 1}, {"heartbeat_s": float("nan")}):
+        for kwargs in (
+            {"silence_s": 1},
+            {"poll_s": 1},
+            {"write_timeout_s": 0.2},
+            {"stationary_span_s": 0.05},
+            {"max_x": 1},
+            {"heartbeat_s": float("nan")},
+        ):
             with self.assertRaises(ValueError):
                 Limits(**kwargs)
 
@@ -287,11 +471,81 @@ class SafetyTests(unittest.TestCase):
         watchdog = Watchdog(self.c)
         watchdog.start()
         try:
+            self.assertTrue(watchdog.alive)
+            self.assertTrue(watchdog.healthy)
             self.clock.advance(0.301)
             self.assertTrue(stopped.wait(0.3))
         finally:
             watchdog.close()
+        self.assertFalse(watchdog.alive)
         self.assertFalse(self.c.status()["armed"])
+
+    def test_watchdog_survives_tick_and_stop_exceptions_and_reports_health(self):
+        self.drive()
+        real_tick = self.c.tick
+        real_stop = self.c.stop
+        fail_Stop = {"boom": True}
+        caught = threading.Event()
+
+        def bad_tick():
+            if fail_Stop["boom"]:
+                raise RuntimeError("simulated tick failure")
+            return real_tick()
+
+        def bad_stop(reason="OPERATOR_STOP"):
+            if fail_Stop["boom"]:
+                caught.set()
+                raise RuntimeError("simulated stop failure")
+            return real_stop(reason)
+
+        self.c.tick = bad_tick
+        self.c.stop = bad_stop
+        watchdog = Watchdog(self.c)
+        watchdog.start()
+        try:
+            self.assertTrue(caught.wait(timeout=0.5))
+            # Thread must still be alive even after both tick() and stop() raised!
+            self.assertTrue(watchdog.alive)
+            self.assertFalse(watchdog.healthy)
+            self.assertIn("simulated stop failure", watchdog.last_error)
+            status = self.c.status()
+            self.assertFalse(status["armed"])
+            self.assertEqual(status["stage"], "UNKNOWN")
+            self.assertEqual(status["reason"], "WATCHDOG_EXCEPTION")
+            self.assertTrue(status["watchdogAlive"])
+            self.assertIsNotNone(status["watchdogError"])
+
+            # Restore tick/stop and verify watchdog recovers health on subsequent cycle.
+            fail_Stop["boom"] = False
+            deadline = time.monotonic() + 0.5
+            while time.monotonic() < deadline and not watchdog.healthy:
+                time.sleep(0.01)
+            self.assertTrue(watchdog.healthy)
+            self.assertIsNone(self.c.status()["watchdogError"])
+        finally:
+            fail_Stop["boom"] = False
+            watchdog.close()
+
+    def test_watchdog_close_sets_done_and_joins_even_when_stop_raises(self):
+        watchdog = Watchdog(self.c)
+        watchdog.start()
+        real_stop = self.c.stop
+
+        def failing_shutdown(reason="OPERATOR_STOP"):
+            if reason == "SHUTDOWN":
+                raise RuntimeError("shutdown write error")
+            return real_stop(reason)
+
+        self.c.stop = failing_shutdown
+        try:
+            with self.assertRaisesRegex(RuntimeError, "Watchdog shutdown stop failed"):
+                watchdog.close()
+            self.assertTrue(watchdog._done.is_set())
+            self.assertFalse(watchdog.alive)
+            self.assertFalse(self.c.status()["armed"])
+            self.assertEqual(self.c.status()["stage"], "UNKNOWN")
+        finally:
+            self.c.stop = real_stop
 
 
 if __name__ == "__main__":

@@ -4,6 +4,15 @@ from robot.telemetry import YawRate
 
 
 class YawRateTests(unittest.TestCase):
+    def test_returns_none_during_first_150ms_window(self):
+        estimator = YawRate()
+        for offset in (0.0, 0.02, 0.05, 0.10, 0.149):
+            with self.subTest(offset=offset):
+                self.assertIsNone(estimator.update(10.0 + offset, 45.0 + offset * 10))
+        rate = estimator.update(10.15, 46.5)
+        self.assertIsNotNone(rate)
+        self.assertAlmostEqual(rate, 10.0)
+
     def test_bursted_callbacks_do_not_amplify_tiny_angle_noise(self):
         estimator = YawRate()
         self.assertIsNone(estimator.update(10.0, 50))
