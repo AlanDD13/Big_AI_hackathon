@@ -1,0 +1,138 @@
+{
+  "schemaVersion": "manual.v1",
+  "status": "MANUAL_CHASSIS_SLICE_1",
+  "platform": "rmepcore",
+  "soleDjiOwner": "platonyesin-dev",
+  "singleActiveSdkHostOnLan": true,
+  "defaultBridgeUrl": "http://127.0.0.1:8004",
+  "sdkTimeoutIsHostTimer": true,
+  "fixtureClass": "LABELLED_CONTRACT_FIXTURE",
+  "hardwareValidated": false,
+  "implementRoutes": true,
+  "liveChassisDriving": true,
+  "overheadNavigationMode": "SIMULATED_ONLY",
+  "manipulationMode": "SIMULATED_ONLY",
+  "caps": {
+    "maxAbsXMps": 0.35,
+    "maxAbsYMps": 0.35,
+    "maxAbsZDegps": 45.0,
+    "watchdogTimeoutMs": 300,
+    "maxIntentTtlMs": 500,
+    "maxTelemetryAgeMs": 500,
+    "stationarySamplesRequired": 3,
+    "stationarySpanMs": 200
+  },
+  "hardwareStopStateMachine": {
+    "speedPacketAck": false,
+    "statusStages": [
+      "IDLE",
+      "MANUAL_IDLE",
+      "MANUAL_DRIVING",
+      "UNKNOWN",
+      "STOPPED"
+    ],
+    "zeroRequestInitialStage": "UNKNOWN",
+    "unknownStageLeaseDriveHttpStatus": 503,
+    "unknownStageLeaseDriveCode": "TELEMETRY_STALE",
+    "unknownStageRearmHttpStatus": 409,
+    "unknownStageRearmCode": "NOT_STOPPED",
+    "distinctFromAutonomousMissionUnknown": true,
+    "stationarySamplesRequired": 3,
+    "stationarySpanMs": 200,
+    "maxTelemetryAgeMs": 500,
+    "watchdogSilenceLatchesStopped": true,
+    "faultConfirmedStage": "STOPPED",
+    "stoppedStageLeaseDriveHttpStatus": 409,
+    "faultLatchedRejectionCode": "STOP_LOCKED",
+    "cleanReleaseConfirmedStage": "IDLE",
+    "cleanReleaseTimeoutStage": "UNKNOWN",
+    "rearmAllowedFrom": ["STOPPED"],
+    "rearmTargetStage": "IDLE",
+    "rearmRestoresAuthorityOrMotion": false
+  },
+  "routes": {
+    "browserToBackend": [
+      "POST /api/manual/lease",
+      "POST /api/manual/drive",
+      "POST /api/manual/release",
+      "POST /api/manual/stop",
+      "POST /api/manual/rearm",
+      "GET /api/manual/status"
+    ],
+    "backendToBridge": [
+      "POST /manual/lease",
+      "POST /manual/drive",
+      "POST /manual/release",
+      "POST /stop",
+      "POST /manual/rearm",
+      "GET /manual/status"
+    ]
+  },
+  "leaseRequest": {
+    "roverId": "rover-1",
+    "requestedTtlMs": 2000
+  },
+  "lease": {
+    "leaseId": "lease-1",
+    "roverId": "rover-1",
+    "generation": 1,
+    "leaseGeneration": 1,
+    "issuedAt": 1793797200.0,
+    "expiresAt": 1793797202.0,
+    "bridgeBootId": "cccccccccccccccccccccccccccccccc",
+    "mode": "MANUAL_CHASSIS_SLICE_1"
+  },
+  "velocityIntent": {
+    "roverId": "rover-1",
+    "leaseId": "lease-1",
+    "generation": 1,
+    "leaseGeneration": 1,
+    "sequence": 1,
+    "issuedAt": 1793797200.05,
+    "expiresAt": 1793797200.25,
+    "xMps": 0.2,
+    "yMps": 0.0,
+    "zDegps": 0.0,
+    "yawDegS": 0.0,
+    "frame": "BODY"
+  },
+  "driveResponse": {
+    "roverId": "rover-1",
+    "bridgeBootId": "cccccccccccccccccccccccccccccccc",
+    "stage": "MANUAL_DRIVING",
+    "leaseId": "lease-1",
+    "leaseGeneration": 1,
+    "lastSequence": 1,
+    "appliedVelocity": {
+      "xMps": 0.2,
+      "yMps": 0.0,
+      "zDegps": 0.0
+    },
+    "telemetryFresh": true,
+    "poseReceivedAt": 1793797200.04,
+    "watchdogTimeoutMs": 300
+  },
+  "releaseRequest": {
+    "roverId": "rover-1",
+    "leaseId": "lease-1",
+    "leaseGeneration": 1,
+    "reason": "user_release"
+  },
+  "releaseResponse": {
+    "roverId": "rover-1",
+    "released": true,
+    "stage": "UNKNOWN",
+    "zeroVelocityRequested": true,
+    "stationaryConfirmed": false,
+    "stationarySamples": 0,
+    "motion": false
+  },
+  "overheadRequest": {
+    "leaseId": "lease-1",
+    "cameraId": "overhead-1",
+    "sessionId": "session1",
+    "geometryVersion": "geometry1",
+    "frameId": 20,
+    "pixel": [320, 240]
+  }
+}

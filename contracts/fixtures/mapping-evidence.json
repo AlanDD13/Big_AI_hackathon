@@ -1,0 +1,20 @@
+{
+  "cameraId": "phone-1",
+  "sessionId": "session1",
+  "geometryVersion": "geometry1",
+  "frameId": 10,
+  "trackId": "example-track",
+  "capturedAt": 1793797200.5,
+  "mapId": "demo-floor",
+  "mapVersion": "1",
+  "calibrationId": "cal1",
+  "calibrationValid": true,
+  "floorPointM": [
+    0.2,
+    0.3
+  ],
+  "positionErrorM": 0.01,
+  "valid": true,
+  "receivedAt": 1793797200.5,
+  "invalidReason": null
+}

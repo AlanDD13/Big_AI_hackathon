@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "supabase-hackathon": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://mcp.supabase.com/mcp?project_ref=buojgmoumyzqxmerckjm&features=database,docs,debugging"
+      ]
+    }
+  }
+}

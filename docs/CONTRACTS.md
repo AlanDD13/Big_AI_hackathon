@@ -1,6 +1,49 @@
 # Shared contracts
 
 Owner: `AlanDD13`. Status: **draft for team agreement, not a frozen API**.
+Persistence decision: `zekihxh` owns a shared Supabase Postgres database,
+replacing the initial SQLite proposal. Backend owns schema/migrations and
+durable object/event/classification/alert/mission state. All five agents use
+documented APIs or individually authorized project access; secret/service-role
+keys remain backend-only. The human selected the existing **AlanDD13's Project**
+(`buojgmoumyzqxmerckjm`, `eu-west-1`) on 2026-11-04. Backend must inspect its
+existing schema and preserve unrelated data before adding hackathon tables.
+Project selection does not grant access. The existing `public` schema in
+`buojgmoumyzqxmerckjm` is actively used by `adaptive-python-mentor` (24 tables
+and 17 RPCs) and **must not** be used or modified by this project. All hackathon
+tables, views, sequences and routines must live in the dedicated Postgres schema
+**`rover_backend`** (`SUPABASE_DB_SCHEMA=rover_backend`). The schema bootstrap
+script is [`infrastructure/supabase-rover-backend-schema.sql`](../infrastructure/supabase-rover-backend-schema.sql)
+and shared environment variable names are in [`.env.example`](../.env.example).
+`rover_backend` revokes all privileges from `PUBLIC, anon, authenticated` and is
+not exposed via PostgREST; `backend/` connects directly over Postgres using the
+separate migration role (`BACKEND_MIGRATION_DATABASE_URL`, `rover_backend_migrator`),
+the narrower DML-only runtime role (`BACKEND_DATABASE_URL`, `rover_backend_runtime`),
+and `BACKEND_TEST_DATABASE_URL` for tests, all owned by `zekihxh`.
+`SUPABASE_SERVICE_ROLE_KEY` does not replace the narrower `BACKEND_DATABASE_URL`
+runtime login and never reaches browser or peer modules.
+Frontend, mapping, and robot use backend APIs and get no database role and no
+service key. Never put database credentials, service keys, model API keys, or private
+keys in Git, board comments, or frontend code. The vision `PEER_TOKEN` is the
+exception: post its new value on the board when it changes.
+The vision producer's versioned interface is specified in
+[`contracts/vision-v1.md`](../contracts/vision-v1.md). Stateless peer
+classification for mapping is in
+[`contracts/vision-peer-classification-v1.md`](../contracts/vision-peer-classification-v1.md).
+Backend durable
+snapshot/SSE/session rules are in
+[`contracts/backend-stream-v1.md`](../contracts/backend-stream-v1.md).
+Robot simulator slice 1 is in
+[`contracts/robot-simulator-v1.md`](../contracts/robot-simulator-v1.md).
+Temporary live manual chassis driving (`MANUAL_CHASSIS_SLICE_1`) is specified in
+[`contracts/manual-control-v1.md`](../contracts/manual-control-v1.md) (chassis-only
+precision driving with P4 as sole DJI `rmepcore` owner, `<= 300 ms` bridge
+watchdog, and overhead/manipulation kept `SIMULATED_ONLY`).
+The mission queue checkpoint is
+[`contracts/mission-queue-v1.md`](../contracts/mission-queue-v1.md). It stores
+`QUEUED` only and does not call the robot. The uncalibrated demo grid is
+[`contracts/demo-grid-v1.md`](../contracts/demo-grid-v1.md).
+These are canonical drafts on the vision branch, not merged APIs.
 This records the [FigJam proposal](https://www.figma.com/board/bmW81xDifPQz5Icv98D8Hd/Big-AI?node-id=25-1003).
 
 ## Demo and module boundaries
@@ -21,22 +64,37 @@ If pickup is unreliable, agree a labelled detect/locate/approach/notify demo.
 Vision owns the camera connection and serves matching frames to mapping;
 the modules must not compete for one USB camera. Mapping plans routes; robot
 follows them, converts map movement to robot commands and enforces local limits.
-Only `robot/` connects to the physical rover.
+Only `robot/` (`platonyesin-dev`) connects to the physical rover via the DJI SDK
+(`rmepcore`), and **only one machine on the LAN (STA) may open a DJI SDK session
+at a time**. Other machines on the same LAN (such as `frontend/` on Windows or
+`backend/`) talk to `robot/`'s HTTP bridge via `ROBOT_BRIDGE_URL`
+(`http://<p4-lan-ip>:8004` with server-side `PEER_TOKEN`), never by opening a
+second DJI SDK connection.
 
 ## Proposed wire surface
 
-- Vision to mapping: `POST /detections`; `GET /frames/{frameId}` on vision.
+- Vision to mapping: `POST /detections`; `GET /api/frames/{cameraId}/{sessionId}/{frameId}` on vision.
 - Mapping to backend: `POST /api/observations`, `POST /api/poses` on backend.
 - Backend to mapping: `GET /map`, `POST /plans` on mapping.
-- UI reads: `GET /api/map`, `/api/objects`, `/api/missions`, `/api/robots`,
-  `/api/events`. Writes: `POST /api/missions`, `/api/missions/{id}/cancel`,
-  `/api/robots/{id}/stop`.
-- Bridge: `POST /commands`, `/poses`, `/stop`, `/rearm`; `GET /commands/{id}`.
+- Dashboard (`frontend/` <-> `backend/`, per [`contracts/backend-stream-v1.md`](../contracts/backend-stream-v1.md)):
+  - Session & reads: `POST /api/session`, `DELETE /api/session`, `GET /api/snapshot`,
+    `GET /api/events?after=<cursor>`, `GET /api/evidence/{evidenceId}`, `GET /api/map`
+    (`GET /api/objects` is only `vision/`'s local non-durable diagnostic endpoint,
+    not the dashboard source; expired/missing session returns `401 Unauthorized`).
+  - Operator writes: `POST /api/missions`, `POST /api/missions/{id}/cancel`,
+    `POST /api/robots/{id}/stop`, and manual chassis slice routes
+    `POST /api/manual/lease`, `POST /api/manual/drive`, `POST /api/manual/release`,
+    `POST /api/manual/stop`, `POST /api/manual/rearm`, `GET /api/manual/status`.
+- Bridge: `POST /commands`, `/poses`, `/stop`, `/rearm`; `GET /commands/{id}`;
+  manual chassis mirror routes `POST /manual/lease`, `POST /manual/drive`,
+  `POST /manual/release`, `POST /manual/rearm`, `GET /manual/status`.
   Robot reports to backend `POST /api/robot-events`.
 
 Tracks carry camera/frame/track IDs, capture time, class, detector score, pixel
-bounding box and floor-contact pixel. Mapping adds map/calibration IDs, metric
-floor point and uncertainty; invalid position is null, never a fabricated origin.
+bounding box and floor-contact pixel. Wire `objectId` is always
+`cameraId:sessionId:trackId` (while internal Postgres primary keys in
+`rover_backend` remain UUIDs). Mapping adds map/calibration IDs, metric floor
+point and uncertainty; invalid position is null, never a fabricated origin.
 Rover pose uses metres and yaw radians in the same map frame. Fix origin, axes
 and timestamp format in schemas before integration.
 

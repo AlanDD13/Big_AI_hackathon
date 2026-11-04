@@ -1,0 +1,255 @@
+{
+  "$defs": {
+    "CameraKind": {
+      "enum": [
+        "FIXED",
+        "ROVER"
+      ],
+      "title": "CameraKind",
+      "type": "string"
+    },
+    "DetectionBatch": {
+      "additionalProperties": false,
+      "properties": {
+        "cameraId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Cameraid",
+          "type": "string"
+        },
+        "sessionId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Sessionid",
+          "type": "string"
+        },
+        "geometryVersion": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Geometryversion",
+          "type": "string"
+        },
+        "frameId": {
+          "minimum": 0,
+          "title": "Frameid",
+          "type": "integer"
+        },
+        "cameraKind": {
+          "$ref": "#/$defs/CameraKind"
+        },
+        "capturedAt": {
+          "minimum": 0,
+          "title": "Capturedat",
+          "type": "number"
+        },
+        "receivedAt": {
+          "minimum": 0,
+          "title": "Receivedat",
+          "type": "number"
+        },
+        "timestampBasis": {
+          "enum": [
+            "SOURCE",
+            "RECEIVE"
+          ],
+          "title": "Timestampbasis",
+          "type": "string"
+        },
+        "width": {
+          "exclusiveMinimum": 0,
+          "maximum": 8192,
+          "title": "Width",
+          "type": "integer"
+        },
+        "height": {
+          "exclusiveMinimum": 0,
+          "maximum": 8192,
+          "title": "Height",
+          "type": "integer"
+        },
+        "tracks": {
+          "items": {
+            "$ref": "#/$defs/PixelTrack"
+          },
+          "maxItems": 512,
+          "title": "Tracks",
+          "type": "array"
+        },
+        "frameRef": {
+          "title": "Frameref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "cameraId",
+        "sessionId",
+        "geometryVersion",
+        "frameId",
+        "cameraKind",
+        "capturedAt",
+        "receivedAt",
+        "timestampBasis",
+        "width",
+        "height",
+        "tracks",
+        "frameRef"
+      ],
+      "title": "DetectionBatch",
+      "type": "object"
+    },
+    "PixelTrack": {
+      "additionalProperties": false,
+      "properties": {
+        "trackId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "title": "Trackid",
+          "type": "string"
+        },
+        "objectId": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Objectid",
+          "type": "string"
+        },
+        "detectorLabel": {
+          "title": "Detectorlabel",
+          "type": "string"
+        },
+        "detectorScore": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Detectorscore",
+          "type": "number"
+        },
+        "bboxPx": {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Bboxpx",
+          "type": "array"
+        },
+        "contactPointPx": {
+          "anyOf": [
+            {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Contactpointpx"
+        },
+        "motionState": {
+          "enum": [
+            "OBSERVING",
+            "MOVING",
+            "STATIONARY",
+            "EXCLUDED",
+            "UNKNOWN"
+          ],
+          "title": "Motionstate",
+          "type": "string"
+        },
+        "pixelStationarySeconds": {
+          "minimum": 0,
+          "title": "Pixelstationaryseconds",
+          "type": "number"
+        },
+        "exclusionReason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Exclusionreason"
+        }
+      },
+      "required": [
+        "trackId",
+        "objectId",
+        "detectorLabel",
+        "detectorScore",
+        "bboxPx",
+        "contactPointPx",
+        "motionState",
+        "pixelStationarySeconds",
+        "exclusionReason"
+      ],
+      "title": "PixelTrack",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": "vision.v1",
+      "default": "vision.v1",
+      "title": "Schemaversion",
+      "type": "string"
+    },
+    "producerBootId": {
+      "pattern": "^[a-f0-9]{32}$",
+      "title": "Producerbootid",
+      "type": "string"
+    },
+    "eventId": {
+      "title": "Eventid",
+      "type": "string"
+    },
+    "sequence": {
+      "title": "Sequence",
+      "type": "integer"
+    },
+    "type": {
+      "const": "frame.detections",
+      "title": "Type",
+      "type": "string"
+    },
+    "timestamp": {
+      "title": "Timestamp",
+      "type": "number"
+    },
+    "payload": {
+      "$ref": "#/$defs/DetectionBatch"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "producerBootId",
+    "eventId",
+    "sequence",
+    "type",
+    "timestamp",
+    "payload"
+  ],
+  "title": "DetectionEvent",
+  "type": "object"
+}

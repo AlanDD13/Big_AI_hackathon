@@ -171,6 +171,13 @@ class BoardTests(unittest.TestCase):
         self.assertTrue((self.root / ".board" / "login").exists())
         self.assertFalse((nested / ".board").exists())
 
+    def test_crlf_board_conf_parses_cleanly(self):
+        self.config.write_bytes(b"# CRLF config\r\nBOARD_REPO=team/hack\r\nBOARD_ISSUE=7\r\n")
+        self.rows([(1, "bob", "crlf check")])
+        result = self.run_board("read")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("crlf check", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

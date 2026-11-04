@@ -1,0 +1,63 @@
+# =============================================================================
+# Big AI Hackathon — Unified Python Requirements (Cross-Platform: Mac/Win/Linux)
+# =============================================================================
+# Install with uv (recommended):
+#   uv venv .venv --python 3.12
+#   uv pip install -r requirements.txt
+# Or with standard pip:
+#   python -m venv .venv
+#   .venv/bin/pip install -r requirements.txt   # (Windows: .venv\Scripts\pip)
+#
+# Module breakdown & who uses what:
+# -----------------------------------------------------------------------------
+# 1. P2 Vision (AlanDD13 — vision/**) & P5 Mapping (Tezqx — mapping/**):
+#    - ultralytics, torch, opencv-python, pillow, numpy:
+#      Used by vision/perception (local YOLOE-26s object detection & tracking on
+#      CUDA / Apple MPS / CPU), vision/cctv_monitor.py (IP camera single-frame
+#      & 5-10 frame burst capture + local YOLOE detection consumed by mapping/),
+#      and mapping/ homography & floor coordinate transforms.
+#    - fastapi, uvicorn, pydantic, httpx:
+#      Used by vision/app.py & vision/service.py (REST/SSE/WebSocket camera
+#      ingest, Grok xAI vision classification API calls, and peer delivery).
+#
+# 2. P3 Backend & Grok (zekihxh — backend/**):
+#    - fastapi, uvicorn, httpx, psycopg[binary]:
+#      Used by backend/app.py (operator session cookie, /api/snapshot,
+#      /api/events SSE, /api/observations, /api/manual/*) and Postgres
+#      persistence in the isolated `rover_backend` schema on Supabase.
+#
+# 3. Shared Tests & Contract Validation (AlanDD13 + all modules — tests/**):
+#    - pytest, pytest-asyncio, jsonschema:
+#      Used by vision/tests/, backend/tests/, mapping/test_mapper.py, and root
+#      tests/ contract & board verification.
+#
+# 4. Separate Hardware / JS Environments (DO NOT mix into this Python env):
+#    - P4 Robot (platonyesin-dev — robot/**):
+#      Uses its own isolated Python 3.11 venv (`robot/.venv`) via
+#      `bash robot/setup_environment.sh` and `robot/requirements-macos.lock`
+#      because the official DJI RoboMaster SDK (`0.1.1.68`) requires Python 3.11
+#      (`audioop`) and custom PyAV H.264/Opus compatibility (`robot/compat/`).
+#    - P1 Frontend Dashboard (LcyShox — frontend/**):
+#      Uses Node.js / npm (`cd frontend && npm install`).
+# =============================================================================
+
+# --- Web API, SSE, and Async HTTP (Used by: vision, backend, mapping, robot bridge) ---
+fastapi>=0.115.0,<1.0.0
+uvicorn>=0.30.0,<1.0.0
+pydantic>=2.9.0,<3.0.0
+httpx>=0.27.0,<1.0.0
+
+# --- Computer Vision, Local YOLOE-26s Detector & Geometry (Used by: vision, mapping) ---
+ultralytics>=8.4.0,<9.0.0
+torch>=2.6.0,<3.0.0
+opencv-python>=4.10.0,<5.0.0
+pillow>=11.0.0,<13.0.0
+numpy>=1.26.0,<3.0.0
+
+# --- Supabase / Postgres `rover_backend` Persistence (Used by: backend) ---
+psycopg[binary]>=3.2.0,<4.0.0
+
+# --- Testing & Contract Schema Validation (Used by: all Python modules) ---
+pytest>=8.0.0,<10.0.0
+pytest-asyncio>=0.25.0,<2.0.0
+jsonschema>=4.23.0,<5.0.0

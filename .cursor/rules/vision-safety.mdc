@@ -1,0 +1,26 @@
+---
+description: Stationary-object evidence and conservative camera/Grok behavior
+globs: vision/**,contracts/vision-*.json,contracts/vision-v1.md
+alwaysApply: false
+---
+
+Read vision/AGENTS.md and contracts/vision-v1.md. Alan owns vision; mapping owns
+metric transforms, backend owns durable state/authorization, robot owns DJI.
+Never make stationary people or animals eligible. Living, carried and uncertain
+subjects stay excluded. Pixels alone never prove metric stationarity.
+
+Keep >=5 seconds AND >=10 metric observations, gap/age <=1 second, distance
+<=0.05 m from the FIRST episode anchor and uncertainty <=0.025 m per sample.
+Reset evidence on motion, staleness, identity/session/geometry/calibration changes.
+Recheck evidence after async results; late Grok must not restore old eligibility.
+An unprocessed newer frame prevents pickup eligibility. Potential targets are
+review proposals, never permission to drive or pick up.
+
+Keep detector numeric scores separate from qualitative Grok confidence.
+Fixture outputs are labelled; missing XAI_API_KEY means UNAVAILABLE.
+Only claim hardware/live API checks actually performed. Matching-frame lookup
+returns the exact image or 404. Keep camera queues and external calls bounded.
+
+Use vision/.venv/bin/python -m pytest -q vision/tests from the repo root.
+Read-only reviews and source-backed contract work can proceed while hardware
+or peer credentials are pending. Never weaken a gate to make the demo appear ready.

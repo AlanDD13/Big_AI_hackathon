@@ -1,0 +1,205 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "cameraId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "title": "Cameraid",
+      "type": "string"
+    },
+    "sessionId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "title": "Sessionid",
+      "type": "string"
+    },
+    "geometryVersion": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "title": "Geometryversion",
+      "type": "string"
+    },
+    "frameId": {
+      "minimum": 0,
+      "title": "Frameid",
+      "type": "integer"
+    },
+    "trackId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "title": "Trackid",
+      "type": "string"
+    },
+    "mapId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "title": "Mapid",
+      "type": "string"
+    },
+    "mapVersion": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "title": "Mapversion",
+      "type": "string"
+    },
+    "calibrationId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "title": "Calibrationid",
+      "type": "string"
+    },
+    "calibrationValid": {
+      "title": "Calibrationvalid",
+      "type": "boolean"
+    },
+    "capturedAt": {
+      "minimum": 0,
+      "title": "Capturedat",
+      "type": "number"
+    },
+    "receivedAt": {
+      "minimum": 0,
+      "title": "Receivedat",
+      "type": "number"
+    },
+    "floorPointM": {
+      "anyOf": [
+        {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Floorpointm"
+    },
+    "positionErrorM": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Positionerrorm"
+    },
+    "valid": {
+      "title": "Valid",
+      "type": "boolean"
+    },
+    "invalidReason": {
+      "anyOf": [
+        {
+          "enum": [
+            "uncalibrated",
+            "missing_contact",
+            "frame_unavailable",
+            "stale",
+            "out_of_area",
+            "rover_confirmation_only",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Invalidreason"
+    }
+  },
+  "required": [
+    "cameraId",
+    "sessionId",
+    "geometryVersion",
+    "frameId",
+    "trackId",
+    "mapId",
+    "mapVersion",
+    "calibrationId",
+    "calibrationValid",
+    "capturedAt",
+    "receivedAt",
+    "valid",
+    "invalidReason"
+  ],
+  "title": "MappingEvidence",
+  "type": "object",
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "valid": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "calibrationValid": {
+            "const": true
+          },
+          "floorPointM": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {
+              "type": "number"
+            }
+          },
+          "positionErrorM": {
+            "type": "number",
+            "minimum": 0
+          },
+          "invalidReason": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "floorPointM": {
+            "type": "null"
+          },
+          "positionErrorM": {
+            "type": "null"
+          },
+          "invalidReason": {
+            "type": "string",
+            "enum": [
+              "uncalibrated",
+              "missing_contact",
+              "frame_unavailable",
+              "stale",
+              "out_of_area",
+              "rover_confirmation_only",
+              "unknown"
+            ]
+          }
+        },
+        "required": ["invalidReason"]
+      }
+    }
+  ]
+}

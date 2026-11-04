@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "AsciiId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "BootId": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{32}$"
+    },
+    "Classification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "subject_kind", "carrying", "confidence", "description", "reason"],
+      "properties": {
+        "category": {"enum": ["TRASH", "POTENTIALLY_LOST_PROPERTY", "OTHER", "UNCERTAIN"]},
+        "subject_kind": {"enum": ["INANIMATE", "PERSON", "ANIMAL", "UNCERTAIN"]},
+        "carrying": {"enum": ["YES", "NO", "UNCERTAIN"]},
+        "confidence": {"enum": ["LOW", "MEDIUM", "HIGH"]},
+        "description": {"type": "string", "minLength": 1, "maxLength": 500},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 500}
+      }
+    },
+    "Mapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cameraId", "sessionId", "geometryVersion", "frameId", "trackId", "mapId",
+        "mapVersion", "calibrationId", "calibrationValid", "capturedAt", "receivedAt",
+        "valid", "invalidReason"
+      ],
+      "properties": {
+        "cameraId": {"$ref": "#/$defs/AsciiId"},
+        "sessionId": {"$ref": "#/$defs/AsciiId"},
+        "geometryVersion": {"$ref": "#/$defs/AsciiId"},
+        "frameId": {"type": "integer", "minimum": 0},
+        "trackId": {"$ref": "#/$defs/AsciiId"},
+        "mapId": {"$ref": "#/$defs/AsciiId"},
+        "mapVersion": {"$ref": "#/$defs/AsciiId"},
+        "calibrationId": {"$ref": "#/$defs/AsciiId"},
+        "calibrationValid": {"type": "boolean"},
+        "capturedAt": {"type": "number", "minimum": 0},
+        "receivedAt": {"type": "number", "minimum": 0},
+        "floorPointM": {
+          "anyOf": [
+            {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}},
+            {"type": "null"}
+          ]
+        },
+        "positionErrorM": {"anyOf": [{"type": "number", "minimum": 0}, {"type": "null"}]},
+        "valid": {"type": "boolean"},
+        "invalidReason": {
+          "anyOf": [
+            {"enum": ["uncalibrated", "missing_contact", "frame_unavailable", "stale", "out_of_area", "rover_confirmation_only", "unknown"]},
+            {"type": "null"}
+          ]
+        }
+      }
+    },
+    "ObjectCore": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "objectId", "cameraId", "sessionId", "geometryVersion", "trackId", "frameId",
+        "capturedAt", "lastSeenAt", "cameraKind", "bboxPx", "detectorLabel", "detectorScore",
+        "motionState", "pixelStationarySeconds", "metricStationarySeconds", "status",
+        "exclusionReason", "classificationStatus", "classification", "classificationProvider",
+        "mapping", "potentialTarget", "revision", "entityVersion", "producerBootId",
+        "eligibilityReason", "frameRef"
+      ],
+      "properties": {
+        "objectId": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 512,
+          "pattern": "^[A-Za-z0-9_-]+:[A-Za-z0-9_-]+:[A-Za-z0-9_-]+$",
+          "description": "cameraId:sessionId:trackId. The colons are separators, not a general ID exception."
+        },
+        "cameraId": {"$ref": "#/$defs/AsciiId"},
+        "sessionId": {"$ref": "#/$defs/AsciiId"},
+        "geometryVersion": {"$ref": "#/$defs/AsciiId"},
+        "trackId": {"$ref": "#/$defs/AsciiId"},
+        "frameId": {"type": "integer", "minimum": 0},
+        "capturedAt": {"type": "number", "minimum": 0},
+        "lastSeenAt": {"type": "number", "minimum": 0},
+        "cameraKind": {"enum": ["FIXED", "ROVER"]},
+        "bboxPx": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number"}},
+        "detectorLabel": {"type": "string", "minLength": 1, "maxLength": 128},
+        "detectorScore": {"type": "number", "minimum": 0, "maximum": 1},
+        "motionState": {"enum": ["OBSERVING", "MOVING", "STATIONARY", "EXCLUDED", "UNKNOWN"]},
+        "pixelStationarySeconds": {"type": "number", "minimum": 0},
+        "metricStationarySeconds": {"type": "number", "minimum": 0},
+        "status": {"enum": ["OBSERVING", "STATIC_PENDING_REVIEW", "POTENTIAL_TARGET", "EXCLUDED", "LOST"]},
+        "exclusionReason": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 64}, {"type": "null"}]},
+        "classificationStatus": {"enum": ["PENDING", "COMPLETED", "UNAVAILABLE"]},
+        "classification": {"anyOf": [{"$ref": "#/$defs/Classification"}, {"type": "null"}]},
+        "classificationProvider": {"anyOf": [{"enum": ["grok", "fixture"]}, {"type": "null"}]},
+        "visualPickupStatus": {"enum": ["PENDING", "COMPLETED", "UNAVAILABLE"]},
+        "visualPickupAdvisory": {
+          "anyOf": [{"type": "null"}, {
+            "type": "object", "additionalProperties": false,
+            "required": ["object_form", "visual_suitability", "reason", "advisory", "pickupVerified", "sourceFrameId"],
+            "properties": {
+              "object_form": {"enum": ["FLAT_SHEET", "CRUMPLED", "OTHER", "UNCERTAIN"]},
+              "visual_suitability": {"enum": ["POSSIBLE", "UNSUITABLE", "UNCERTAIN"]},
+              "robot_grasp_estimate": {"enum": ["LIKELY", "UNLIKELY", "UNKNOWN"]},
+              "estimate_confidence": {"enum": ["LOW", "MEDIUM", "HIGH"]},
+              "assumptions": {"type": "array", "maxItems": 5, "items": {"type": "string", "minLength": 1, "maxLength": 200}},
+              "required_checks": {"type": "array", "maxItems": 5, "items": {"type": "string", "minLength": 1, "maxLength": 200}},
+              "reason": {"type": "string", "minLength": 1, "maxLength": 500},
+              "advisory": {"const": true}, "pickupVerified": {"const": false},
+              "sourceFrameId": {"type": "integer", "minimum": 0}
+            }
+          }]
+        },
+        "mapping": {"anyOf": [{"$ref": "#/$defs/Mapping"}, {"type": "null"}]},
+        "potentialTarget": {"type": "boolean"},
+        "revision": {"type": "integer", "minimum": 0},
+        "entityVersion": {"type": "integer", "minimum": 1},
+        "producerBootId": {"$ref": "#/$defs/BootId"},
+        "eligibilityReason": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Z0-9_]+$"}, {"type": "null"}]},
+        "frameRef": {"type": "string", "minLength": 1, "maxLength": 512},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Z0-9_]+$"},
+        "action": {"const": "HOLD_BEFORE_PICKUP"}
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "producerBootId", "eventId", "sequence", "type", "timestamp", "payload"],
+  "properties": {
+    "schemaVersion": {"const": "vision.v1"},
+    "producerBootId": {"$ref": "#/$defs/BootId"},
+    "eventId": {"type": "string", "pattern": "^[a-f0-9]{32}:[1-9][0-9]*$"},
+    "sequence": {"type": "integer", "minimum": 1},
+    "type": {
+      "enum": [
+        "object.observed", "object.classified", "object.updated", "object.removed",
+        "alert.potential_target", "alert.target_revoked",
+        "camera.connected", "alert.detector_unavailable", "alert.camera_unavailable"
+      ]
+    },
+    "timestamp": {"type": "number", "minimum": 0},
+    "payload": {"type": "object"}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"type": {"enum": ["object.observed", "object.classified", "object.updated", "alert.potential_target"]}},
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "allOf": [{"$ref": "#/$defs/ObjectCore"}],
+            "not": {"anyOf": [{"required": ["reason"]}, {"required": ["action"]}]}
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "object.removed"}}, "required": ["type"]},
+      "then": {
+        "properties": {
+          "payload": {
+            "allOf": [{"$ref": "#/$defs/ObjectCore"}],
+            "required": ["reason"],
+            "not": {"required": ["action"]},
+            "properties": {
+              "reason": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Z0-9_]+$"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "alert.target_revoked"}}, "required": ["type"]},
+      "then": {
+        "properties": {
+          "payload": {
+            "allOf": [{"$ref": "#/$defs/ObjectCore"}],
+            "required": ["reason", "action"],
+            "properties": {
+              "reason": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Z0-9_]+$"},
+              "action": {"const": "HOLD_BEFORE_PICKUP"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "camera.connected"}}, "required": ["type"]},
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["cameraId"],
+            "properties": {"cameraId": {"$ref": "#/$defs/AsciiId"}}
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "alert.detector_unavailable"}}, "required": ["type"]},
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["cameraId", "reason"],
+            "properties": {
+              "cameraId": {"$ref": "#/$defs/AsciiId"},
+              "reason": {"type": "string", "minLength": 1, "maxLength": 300}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "alert.camera_unavailable"}}, "required": ["type"]},
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["reason"],
+            "properties": {
+              "cameraId": {"$ref": "#/$defs/AsciiId"},
+              "reason": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Z0-9_]+$"}
+            }
+          }
+        }
+      }
+    }
+  ]
+}

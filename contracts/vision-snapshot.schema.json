@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Vision diagnostic snapshot. Not the backend durable SSE snapshot and not pickup authorization.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "producerBootId", "bootId", "sequence", "scope", "complete", "objects"],
+  "properties": {
+    "schemaVersion": {"const": "vision.v1"},
+    "producerBootId": {"type": "string", "pattern": "^[a-f0-9]{32}$"},
+    "bootId": {"type": "string", "pattern": "^[a-f0-9]{32}$"},
+    "sequence": {"type": "integer", "minimum": 0},
+    "scope": {"const": "ACTIVE_OBJECTS"},
+    "complete": {"const": true},
+    "objects": {
+      "type": "array",
+      "items": {"$ref": "vision-event.schema.json#/$defs/ObjectCore"}
+    }
+  }
+}
