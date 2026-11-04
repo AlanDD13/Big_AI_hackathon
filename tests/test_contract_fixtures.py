@@ -36,6 +36,24 @@ class ContractFixtureTest(unittest.TestCase):
         self.assertEqual(fixture["overheadNavigationMode"], "SIMULATED_ONLY")
         self.assertEqual(fixture["manipulationMode"], "SIMULATED_ONLY")
         self.assertEqual(fixture["caps"]["watchdogTimeoutMs"], 300)
+        self.assertEqual(fixture["caps"]["maxIntentTtlMs"], 500)
+        self.assertEqual(fixture["caps"]["maxTelemetryAgeMs"], 500)
+        self.assertEqual(fixture["caps"]["stationarySamplesRequired"], 3)
+        self.assertEqual(
+            fixture["hardwareStopStateMachine"]["zeroRequestInitialStage"],
+            "UNKNOWN",
+        )
+        self.assertEqual(
+            fixture["hardwareStopStateMachine"]["faultConfirmedStage"],
+            "STOPPED",
+        )
+        self.assertEqual(
+            fixture["hardwareStopStateMachine"]["rearmTargetStage"],
+            "IDLE",
+        )
+        self.assertFalse(
+            fixture["hardwareStopStateMachine"]["rearmRestoresAuthorityOrMotion"]
+        )
         self.assertEqual(fixture["caps"]["maxAbsXMps"], 0.35)
         self.assertEqual(fixture["caps"]["maxAbsYMps"], 0.35)
         self.assertEqual(fixture["caps"]["maxAbsZDegps"], 45.0)

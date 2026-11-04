@@ -49,19 +49,25 @@ hardware validation before physical bench testing.
 - A manual lease is **mutually exclusive** with any autonomous mission/command
   in `NAVIGATING`, `ALIGNING`, `PICKING`, `HELD`, or `UNKNOWN` (and on P3
   `backend/`, any mission in `dispatching`, `running`, `holding`, or `unknown`),
-  and with `STOPPED` (while stop is latched) or stale/unknown rover telemetry:
+  and with `STOPPED` (while stop is latched) or `UNKNOWN` / stale rover telemetry:
   - Active autonomous mission/command (`dispatching` / `running` / `holding` /
     `unknown` on P3, or `NAVIGATING` / `ALIGNING` / `PICKING` / `HELD` /
     `UNKNOWN` on P4) -> `409 AUTONOMOUS_ACTIVE` when rejecting
     `POST /api/manual/lease` or `POST /api/manual/drive`
   - Lease already held by another generation/session -> `409 LEASE_HELD`
-  - Rover latched in `STOPPED` -> `409 STOP_LOCKED`
-  - Rover link/telemetry stale or unavailable -> `503 TELEMETRY_STALE`
+  - Rover latched in `STOPPED` (including after a fault or explicit stop) -> `409 STOP_LOCKED`
+  - Rover in `UNKNOWN` (zero velocity requested, awaiting 3 consecutive fresh
+    stationary telemetry observations, or unconfirmed stop) or telemetry older
+    than `0.5 s` -> `503 TELEMETRY_STALE` (no new lease or motion command may be
+    granted while `UNKNOWN`)
 - Autonomous pickup/navigation commands (`POST /commands/*`) are likewise
   rejected (`409 MANUAL_LEASE_ACTIVE`) while a manual lease is active.
-- `rearm` clears the `STOPPED` latch back to `IDLE` (`motion: false`) and **never**
-  resumes motion or restores a prior lease. A new `POST /api/manual/lease` is
-  required after `rearm`.
+- `rearm` (`POST /api/manual/rearm` / `POST /manual/rearm`) is legal **only**
+  after stationary telemetry has been confirmed (`stage: "STOPPED"`). While
+  `stage: "UNKNOWN"`, `rearm` is rejected (`409 NOT_STOPPED` / `503 TELEMETRY_STALE`).
+  When confirmed `STOPPED`, `rearm` transitions `STOPPED -> IDLE`
+  (`motion: false`, `rearmed: true`) without restoring any prior lease,
+  authority, or motion. A new `POST /api/manual/lease` is required after `rearm`.
 
 ## 2. Transport, Auth & Routes (`P1 -> P3 -> P4` and Bench Dev Proxy)
 
@@ -147,14 +153,21 @@ session returns `401 Unauthorized`.
      }
      ```
      (`reason` is `"user_release"`, `"blur"`, or `"tab_hidden"`.)
-   - Immediately commands `drive_speed(x=0.0, y=0.0, z=0.0, timeout=0.25)` on P4,
-     invalidates the lease, and returns `200 OK`:
+   - Immediately commands `drive_speed(x=0.0, y=0.0, z=0.0, timeout=0.25)` on P4
+     and invalidates the lease. Because real EP Core `ProtoChassisSpeedMode`
+     packets have no protocol ACK, P4 enters `UNKNOWN` when zero velocity is
+     requested until **3 consecutive fresh (`<= 0.5 s`) stationary telemetry
+     observations** confirm zero motion, then transitions to `IDLE` (normal
+     operator release) or latches `STOPPED` (if triggered by a fault). Returns
+     `200 OK`:
      ```json
      {
        "roverId": "rover-1",
        "released": true,
        "stage": "IDLE",
-       "zeroVelocityApplied": true
+       "zeroVelocityRequested": true,
+       "stationaryConfirmed": true,
+       "stationarySamples": 3
      }
      ```
 
@@ -167,8 +180,9 @@ session returns `401 Unauthorized`.
      }
      ```
    - Priority stop (`POST /stop` on P4): revokes any active manual lease or
-     autonomous command, commands zero velocity immediately, and latches the
-     rover in `STOPPED` (`200 OK`).
+     autonomous command and commands zero velocity immediately. On real hardware,
+     stage is `UNKNOWN` while awaiting 3 consecutive fresh stationary telemetry
+     samples and then latches in `STOPPED` (`200 OK`).
 
 5. **`POST /api/manual/rearm`**
    - Request:
@@ -177,15 +191,16 @@ session returns `401 Unauthorized`.
        "roverId": "rover-1"
      }
      ```
-   - Clears the `STOPPED` latch to `IDLE` (`motion: false`, `rearmed: true`)
-     without resuming motion or restoring any previous lease (`200 OK`, or
-     `409 NOT_STOPPED`).
+   - Legal only when confirmed `STOPPED` (rejected `409 NOT_STOPPED` while
+     `UNKNOWN` or before 3 stationary samples confirm zero motion). Clears the
+     `STOPPED` latch to `IDLE` (`motion: false`, `rearmed: true`) without
+     resuming motion or restoring any previous lease (`200 OK`).
 
 6. **`GET /api/manual/status?roverId=rover-1`**
    - Returns current `roverId`, `bridgeBootId`, `stage` (`IDLE`, `MANUAL_IDLE`,
-     `MANUAL_DRIVING`, `STOPPED`), active `leaseId`/`leaseGeneration` (or `null`),
-     `lastSequence`, `appliedVelocity`, `telemetryFresh`, `poseReceivedAt`, and
-     `caps`.
+     `MANUAL_DRIVING`, `UNKNOWN`, `STOPPED`), active `leaseId`/`leaseGeneration`
+     (or `null`), `lastSequence`, `appliedVelocity`, `telemetryFresh`,
+     `poseReceivedAt`, `stationaryConfirmed`, and `caps`.
 
 ### Backend -> Robot Bridge (`P3 -> P4`) & Local Bench Dev Proxy
 - Base URL: `ROBOT_BRIDGE_URL` / `ROVER_BRIDGE_URL` (default `http://127.0.0.1:8004`
@@ -222,15 +237,35 @@ session returns `401 Unauthorized`.
   - Duplicate or lower `sequence`, mismatched `leaseId`/`leaseGeneration`, or
     `expiresAt - issuedAt > 0.5 s` / clock past `expiresAt` is rejected with
     `409 STALE_INTENT` or `409 LEASE_EXPIRED` and causes zero motion.
-- **Independent bridge watchdog (`<= 300 ms`)**:
+- **Independent bridge watchdog (`<= 300 ms`), telemetry freshness (`<= 0.5 s`),
+  and truthful hardware stop/fault state machine (`#6636137847`)**:
   - The DJI SDK `timeout` parameter is only a host threading timer, not an
-    independent physical fail-stop.
-  - P4 (`robot/**`) must run an independent server-side asyncio/thread watchdog
-    with a `300 ms` silence cutoff: if no valid `POST /manual/drive` arrives
-    within `300 ms` while a lease is active (or when `expiresAt` passes), P4
-    immediately commands `drive_speed(0, 0, 0, timeout=0.25)`, expires the
-    lease, and transitions to `IDLE` even if the browser's `release` packet was
-    dropped.
+    independent physical fail-stop, and `ProtoChassisSpeedMode` is a PUSH
+    message with no protocol ACK.
+  - Telemetry age must be `<= 0.5 s` (`maxTelemetryAgeMs: 500`) to grant a lease
+    or accept a drive command.
+  - P4 (`robot/**`) runs an independent server-side watchdog with a `300 ms`
+    input silence cutoff (`watchdogTimeoutMs: 300`) and `<= 500 ms` intent TTL
+    (`maxIntentTtlMs: 500`).
+  - Whenever zero velocity is requested (on explicit `stop`, watchdog `300 ms`
+    silence timeout, intent expiry, stale telemetry `> 0.5 s`, or operator
+    `release`), P4 commands `drive_speed(0, 0, 0, timeout=0.25)`, revokes active
+    authority, and enters `stage: "UNKNOWN"` until **3 consecutive fresh
+    (`<= 0.5 s`) stationary telemetry observations** confirm the chassis has
+    physically stopped (`stationarySamplesRequired: 3`).
+  - **After any fault or explicit stop** (watchdog silence timeout, intent
+    expiry, stale telemetry, or `POST /stop`), once 3 consecutive fresh
+    stationary telemetry observations confirm zero motion, state latches in
+    `stage: "STOPPED"`. If stationary telemetry is not confirmed, state remains
+    `stage: "UNKNOWN"` and P3/P1 retain the rover slot and refuse new leases or
+    motion commands.
+  - **Explicit recovery (`rearm`)**: `POST /manual/rearm` is legal only when
+    confirmed `STOPPED` (rejected while `UNKNOWN`) and transitions
+    `STOPPED -> IDLE` without restoring any prior lease, authority, or motion.
+  - **Clean operator `release`** (`POST /manual/release` with no fault): after
+    3 consecutive fresh stationary observations confirm zero motion, state
+    transitions `UNKNOWN -> IDLE` (or latches `STOPPED` if stationary confirmation
+    fails or times out).
 
 ## 4. Overhead Click & Manipulation Stay Simulated in Slice 1
 

@@ -17,7 +17,20 @@
     "maxAbsYMps": 0.35,
     "maxAbsZDegps": 45.0,
     "watchdogTimeoutMs": 300,
-    "maxIntentTtlMs": 500
+    "maxIntentTtlMs": 500,
+    "maxTelemetryAgeMs": 500,
+    "stationarySamplesRequired": 3
+  },
+  "hardwareStopStateMachine": {
+    "speedPacketAck": false,
+    "zeroRequestInitialStage": "UNKNOWN",
+    "stationarySamplesRequired": 3,
+    "maxTelemetryAgeMs": 500,
+    "faultConfirmedStage": "STOPPED",
+    "cleanReleaseConfirmedStage": "IDLE",
+    "rearmAllowedFrom": ["STOPPED"],
+    "rearmTargetStage": "IDLE",
+    "rearmRestoresAuthorityOrMotion": false
   },
   "routes": {
     "browserToBackend": [

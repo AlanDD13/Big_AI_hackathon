@@ -84,6 +84,14 @@ Lost acknowledgements are resolved by `GET`. Until that GET shows `STOPPED` or
 `404 UNKNOWN_COMMAND`, the backend retains the slot and issues no new motion
 command for that rover.
 
+On real EP Core hardware (`#6636137847`), `ProtoChassisSpeedMode` has no
+protocol ACK: whenever zero velocity is requested (stop, watchdog silence,
+intent expiry, or telemetry fault), the bridge reports `UNKNOWN` until **3
+consecutive fresh (`<= 0.5 s`) stationary telemetry observations** confirm zero
+motion, and then latches `STOPPED`. Explicit `rearm` is legal only from
+confirmed `STOPPED` (rejected while `UNKNOWN`) and transitions `STOPPED -> IDLE`
+without restoring prior authority or motion.
+
 ## Deadlines
 
 These are simulator contract numbers, not measured rover limits.
