@@ -15,7 +15,7 @@ from typing import Mapping
 from uuid import uuid4
 
 from backend.evidence import EvidenceConflict, object_id_for, sample_for
-from backend.postgres_projection import ObservationSource
+from backend.postgres_projection import ObservationSource, StorageUnavailable
 from backend.stationarity import MetricSample, evaluate_stationarity
 from backend.vision_ingest import ParsedVisionEvent, VisionConflict
 
@@ -54,6 +54,7 @@ class BackendState:
         now: Callable[[], float] | None = None,
         token_factory: Callable[[], str] | None = None,
         observation_log: object | None = None,
+        vision_log: object | None = None,
     ) -> None:
         if boot_id is None:
             boot_id = secrets.token_hex(16)
@@ -82,6 +83,7 @@ class BackendState:
         self._potential: dict[str, bool] = {}
         self._revisions: dict[tuple[str, str], int] = {}
         self._observation_log = observation_log
+        self._vision_log = vision_log
         self._ingested: dict[str, tuple[str, str | None, int | None]] = {}
         self._current_vision_boot: str | None = None
         self._stale_vision_boots: set[str] = set()
@@ -242,7 +244,7 @@ class BackendState:
             self._append_unlocked("mission.updated", "mission", revision, None, body)
             return dict(body)
 
-    def ingest_vision(self, event: ParsedVisionEvent) -> VisionIngestResult:
+    def ingest_vision(self, event: ParsedVisionEvent, *, persist: bool = True) -> VisionIngestResult:
         """Project one vision event. Replays and stale boots do not publish again.
 
         potentialTarget is stored for the dashboard. dispatchEligible stays false,
@@ -256,7 +258,7 @@ class BackendState:
                 return VisionIngestResult(seen[1], seen[2], True, False)
 
             if event.producer_boot_id in self._stale_vision_boots:
-                self._ingested[event.event_id] = (event.canonical, event.object_id, None)
+                self._remember_vision(event, event.object_id, None, None, persist=persist)
                 return VisionIngestResult(event.object_id, None, False, True)
 
             if (
@@ -273,11 +275,11 @@ class BackendState:
                 self._gapped_vision_boots.add(event.producer_boot_id)
                 raise VisionConflict("Vision sequence gap was not applied")
             if last_sequence is not None and event.sequence <= last_sequence:
-                self._ingested[event.event_id] = (event.canonical, event.object_id, None)
+                self._remember_vision(event, event.object_id, None, None, persist=persist)
                 return VisionIngestResult(event.object_id, None, False, True)
 
             if event.projection is None:
-                return self._ingest_notice_unlocked(event)
+                return self._ingest_notice_unlocked(event, persist=persist)
 
             assert event.object_id is not None
             assert event.entity_version is not None
@@ -287,10 +289,11 @@ class BackendState:
                 self._vision_sequence[event.producer_boot_id] = event.sequence
                 current = self._objects.get(event.object_id)
                 revision = None if current is None else int(current["backendRevision"])
-                self._ingested[event.event_id] = (event.canonical, event.object_id, revision)
+                self._remember_vision(event, event.object_id, revision, current, persist=persist)
                 return VisionIngestResult(event.object_id, revision, False, True)
 
             body = self._vision_body_unlocked(event)
+            self._remember_vision(event, event.object_id, int(body["backendRevision"]), body, persist=persist)
             self._vision_sequence[event.producer_boot_id] = event.sequence
             self._vision_entity_version[version_key] = event.entity_version
             self._objects[event.object_id] = body
@@ -299,6 +302,24 @@ class BackendState:
             published = alert_revision if alert_revision is not None else int(body["backendRevision"])
             self._ingested[event.event_id] = (event.canonical, event.object_id, published)
             return VisionIngestResult(event.object_id, published, False, False)
+
+    def _remember_vision(
+        self,
+        event: ParsedVisionEvent,
+        object_id: str | None,
+        revision: int | None,
+        body: dict[str, object] | None,
+        *,
+        persist: bool,
+    ) -> None:
+        if persist and self._vision_log is not None:
+            try:
+                self._vision_log.save(event, body)
+            except ValueError as exc:
+                raise VisionConflict(str(exc)) from exc
+            except StorageUnavailable:
+                raise
+        self._ingested[event.event_id] = (event.canonical, object_id, revision)
 
     def _vision_body_unlocked(self, event: ParsedVisionEvent) -> dict[str, object]:
         assert event.projection is not None
@@ -340,7 +361,8 @@ class BackendState:
             event.event_id,
         )
 
-    def _ingest_notice_unlocked(self, event: ParsedVisionEvent) -> VisionIngestResult:
+    def _ingest_notice_unlocked(self, event: ParsedVisionEvent, *, persist: bool) -> VisionIngestResult:
+        self._remember_vision(event, None, None, None, persist=persist)
         self._vision_sequence[event.producer_boot_id] = event.sequence
         revision = None
         if event.alert_kind is not None:
@@ -353,7 +375,7 @@ class BackendState:
                 event.event_id,
                 event.camera_id,
             )
-        self._ingested[event.event_id] = (event.canonical, None, revision)
+            self._ingested[event.event_id] = (event.canonical, None, revision)
         return VisionIngestResult(None, revision, False, False)
 
     def _store_alert_unlocked(

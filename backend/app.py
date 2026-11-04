@@ -29,8 +29,9 @@ from backend.postgres_evidence import PostgresEvidenceStore
 from backend.postgres_projection import PostgresObservationLog, StorageUnavailable
 from backend.state import BackendState, StreamItem
 from backend.vision_ingest import (
-    CLASSIFICATIONS, DETECTIONS, VISION_EVENTS, InvalidVision, VisionConflict, parse_vision_event,
+    ACCEPTED, CLASSIFICATIONS, DETECTIONS, VISION_EVENTS, InvalidVision, VisionConflict, parse_vision_event,
 )
+from backend.vision_store import PostgresVisionLog
 
 
 def _match_secret(presented: str, expected: str) -> bool:
@@ -63,6 +64,7 @@ def create_app(
     idle_timeout: float | None = None,
     state: BackendState | None = None,
     observation_log: PostgresObservationLog | None = None,
+    vision_log: PostgresVisionLog | None = None,
     collection_store: CollectionStore | None = None,
     mapping_client: MappingClient | None = None,
 ) -> FastAPI:
@@ -72,7 +74,9 @@ def create_app(
     app.state.cookie_secure = cookie_secure
     app.state.idle_timeout = idle_timeout
     if state is None:
-        state = BackendState(boot_id=boot_id, now=now, observation_log=observation_log)
+        state = BackendState(
+            boot_id=boot_id, now=now, observation_log=observation_log, vision_log=vision_log,
+        )
         if observation_log is not None:
             for evidence_body, source in observation_log.load():
                 state.record_observation(evidence_body, persist=False, **source)
@@ -82,6 +86,9 @@ def create_app(
         if isinstance(collection_store, PostgresCollectionStore):
             for mission in collection_store.load_missions():
                 state.record_mission(**mission)
+        if vision_log is not None:
+            for canonical in vision_log.load():
+                state.ingest_vision(parse_vision_event(canonical, ACCEPTED), persist=False)
     app.state.backend = state
     collection_now = now if now is not None else time.time
     mapping = mapping_client if mapping_client is not None else UnavailableMapping()
@@ -290,6 +297,8 @@ def create_app(
             return _error(422, "VALIDATION_ERROR", str(exc))
         except VisionConflict as exc:
             return _error(409, "CONFLICT", str(exc))
+        except StorageUnavailable:
+            return _error(503, "STORAGE_UNAVAILABLE", "Observation storage is unavailable")
         return JSONResponse(
             {
                 "objectId": result.object_id,
@@ -324,6 +333,7 @@ def app_from_env() -> FastAPI:
     cookie_secure = os.environ.get("BACKEND_COOKIE_SECURE", "1") != "0"
     database_url = os.environ.get("BACKEND_DATABASE_URL", "")
     observation_log = None
+    vision_log = None
     collection_store = None
     mapping_client = (
         FixtureMapping(time.time) if os.environ.get("BACKEND_MISSION_FIXTURE_MAPPING") == "1" else None
@@ -338,6 +348,7 @@ def app_from_env() -> FastAPI:
             return psycopg.connect(database_url)
 
         observation_log = PostgresObservationLog(connect)
+        vision_log = PostgresVisionLog(connect)
         evidence_store = PostgresEvidenceStore(connect)
 
         def load_mission_evidence(connection, object_id):
@@ -349,6 +360,7 @@ def app_from_env() -> FastAPI:
         peer_token=peer_token,
         cookie_secure=cookie_secure,
         observation_log=observation_log,
+        vision_log=vision_log,
         collection_store=collection_store,
         mapping_client=mapping_client,
     )

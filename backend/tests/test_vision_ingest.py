@@ -441,3 +441,72 @@ class VisionIngestTests(unittest.TestCase):
         self.assertIsNone(observed["classification"])
         self.assertEqual(observed["detectorScore"], 0.87)
         self.assertEqual(self.snapshot()["missions"], [])
+
+
+class RecordingVisionLog:
+    def __init__(self, stored=()):
+        self.saved = []
+        self.stored = list(stored)
+
+    def save(self, event, body):
+        self.saved.append((event.event_id, None if body is None else body["cameraId"]))
+
+    def load(self):
+        return self.stored
+
+
+class VisionPersistenceTests(unittest.TestCase):
+    def test_new_detection_is_saved_once_and_reloads(self):
+        event = publication(
+            "object.observed",
+            1,
+            BOOT_A,
+            status="OBSERVING",
+            classification=None,
+            classificationStatus="PENDING",
+            classificationProvider=None,
+            mapping=None,
+            potentialTarget=False,
+            eligibilityReason="NOT_ELIGIBLE",
+            entityVersion=1,
+            revision=0,
+        )
+        log = RecordingVisionLog()
+        app = create_app(
+            operator_token=OPERATOR,
+            peer_token=PEER,
+            cookie_secure=False,
+            now=lambda: 1_100.0,
+            boot_id="dddddddddddddddddddddddddddddddd",
+            idle_timeout=0,
+            vision_log=log,
+        )
+        client = TestClient(app)
+        created = client.post(
+            "/api/detections",
+            json=event,
+            headers={"Authorization": f"Bearer {PEER}"},
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        replay = client.post(
+            "/api/detections",
+            json=event,
+            headers={"Authorization": f"Bearer {PEER}"},
+        )
+        self.assertTrue(replay.json()["replayed"])
+        self.assertEqual(log.saved, [(event["eventId"], event["payload"]["cameraId"])])
+
+        restored = create_app(
+            operator_token=OPERATOR,
+            peer_token=PEER,
+            cookie_secure=False,
+            now=lambda: 1_100.0,
+            boot_id="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            idle_timeout=0,
+            vision_log=RecordingVisionLog([event]),
+        )
+        restored_client = TestClient(restored)
+        self.assertEqual(restored_client.post("/api/session", json={"token": OPERATOR}).status_code, 204)
+        snapshot = restored_client.get("/api/snapshot").json()
+        self.assertEqual(snapshot["objects"][0]["cameraId"], event["payload"]["cameraId"])
+        self.assertFalse(snapshot["objects"][0]["dispatchEligible"])
