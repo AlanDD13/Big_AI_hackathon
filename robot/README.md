@@ -274,3 +274,51 @@ Local reservations survive process restarts; command IDs are written UNKNOWN
 before any possible output. No ID is resent, even after a previous successful
 ACK. An ambiguous drive outcome remains uncertain even if a later stop confirms.
 There is intentionally no automatic journal reset/release or replay operation.
+
+### Live Grok local hardware diagnostic
+
+`live_grok.py` uses the actual rover camera and telemetry, OpenRouter
+`x-ai/grok-4.7` with low reasoning, and one strictly validated `recovery_action`
+proposal. A key is read from `OPENROUTER_API_KEY` or a non-echoed prompt and is
+never saved. TLS verification and redirect rejection remain enabled. There is
+no provider retry or model fallback. Explanatory prose is ignored; only a single
+validated tool with the bound target ID is considered.
+
+This is currently an approach diagnostic, **not a completed five-phase loop**.
+No backend mission/dispatch, arm, gripper, transport or place is connected to
+this entry point. Its reports explicitly retain the missing grasp-pose gate.
+
+For a supervised local approach, supply a real reference image and the selected
+can's pixel rectangle using `--reference PATH --reference-box X Y W H
+--allow-motion`. The operator clears the flat floor and remains at the power
+switch. `can_tracker.py` independently rejects weak/ambiguous template matches,
+changed geometry and disappearance. This is local appearance association, not
+backend object identity or independent grasp evidence.
+
+`--move-seconds 0.8` produces roughly 5cm at .05m/s, with short expiring intents
+and continuous camera/TOF/association checks. After the final intent there are
+350ms without requests and the watchdog's zero dispatch is measured against
+the 300ms limit. Stop requires fresh stationary samples. Heading feedback uses
+a .3-degree deadband, <=3deg/s correction and a 5-degree abort gate; this added
+feedback has offline tests but no physical acceptance yet.
+
+The position subscription offsets the origin, not the axes. Reports therefore
+include both odometry XY displacement and its projection onto initial body
+heading; nonzero odometry Y alone does not establish a strafe. Logged velocity
+and yaw are needed to assess the actual trajectory.
+
+`range_estimation.py` can estimate camera optical depth from known forward
+odometry and independent image scale change, without assuming a can size.
+It rejects weak features, small baseline/parallax, rotation and high fit error.
+The engineering uncertainty includes baseline/scale systematics; it is not a
+validated sensor confidence interval or a gripper distance. Camera/gripper
+extrinsics and near-field pickup calibration are still required. The single TOF
+beam alone cannot establish that its return came from the tracked can.
+
+Real test evidence is local under `robot/.local/live-grok/`: reports, JPEGs,
+per-intent image snapshots, telemetry and exact output timestamps. The accepted
+short Grok approach measured a .2711s silence cutoff. The longer approach
+measured .2642s with odometry delta [.06174,-.01215]m and yaw change -1.33deg;
+projected at its initial -9.72deg heading, that is .0629m forward and -.00155m
+lateral. These are actual physical runs, not simulator fixtures. Neither
+established a completed pickup, transport or placement.

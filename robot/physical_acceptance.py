@@ -88,6 +88,10 @@ def run(serial, motion=False):
                         raise RuntimeError("Stationary confirmation lost during camera observation")
                     time.sleep(0.02)
                 report["cameraStationaryObservationS"] = 2
+                # A redundant stop while already latched STOPPED legitimately
+                # preserves confirmation. Rearm without driving first so this
+                # is a NEW stop requiring fresh post-stop observations.
+                require_response(bridge.manual_rearm(), 200)
                 ctrl.stop("EARLY_REARM_CHECK")
                 if ctrl.status()["stage"] != "UNKNOWN":
                     raise RuntimeError("Stop was confirmed without fresh post-stop samples")
