@@ -1,4 +1,4 @@
-# Backend handoff for Codex
+# Backend handoff for Grok and Codex
 
 Read this, then `backend/NEXT.md`, before editing. Work in this git checkout:
 
@@ -25,7 +25,7 @@ Fetch `origin/main` before branching. This note was written from `origin/main` a
 - PR #14, commit `5e587c8`, merge `1dbc592`: vision ingest.
 - PR #16, commit `4b86b16`, merge `79cdcad`: vision rows in `rover_backend`.
 
-The last recorded backend suite at `4b86b16` was 39 passed and 15 skipped. LcyShox later reported the database tests passing on the merged head, including a restart that kept the mapping object, queued mission, and vision object while the operator cookie died and `backendBootId` changed. Re-run the suite before changing code. Postgres tests skip unless `BACKEND_TEST_DATABASE_URL` points at a disposable database. Do not point tests at the shared Supabase URL.
+Verified the merged backend at `7fb18c6` on disposable PostgreSQL 18. All 54 Python tests and four SQL smoke tests passed, with Python database tests using the scoped runtime role. Re-run the suite before changing code. Postgres tests skip unless `BACKEND_TEST_DATABASE_URL` points at a disposable database. Keep the shared Supabase URL out of tests.
 
 ## What the API does now
 
@@ -52,6 +52,10 @@ Wire object id is `cameraId:sessionId:trackId`. Postgres primary keys stay UUID.
 Supabase project `buojgmoumyzqxmerckjm` (`eu-west-1`). Schema `rover_backend` already exists. Migrations `001` through `007` are applied. Grants are only for `rover_backend_runtime`: `USAGE` on the schema, `SELECT`/`INSERT`/`UPDATE`/`DELETE` on tables, and `EXECUTE` on functions. `public` was not changed. Do not re-apply the migrations. Do not grant `anon` or `authenticated`. Do not expose `rover_backend` through PostgREST. The frontend gets no database role. Credentials stay in gitignored `backend/.env` and off the board.
 
 ## Hold
+
+Mapping requested a display-only floor-grid link in [board comment 6643764758](https://github.com/AlanDD13/Big_AI_hackathon/issues/1#issuecomment-6643764758). P3 [asked Alan and Mapping for a typed Vision field and fixture](https://github.com/AlanDD13/Big_AI_hackathon/issues/1#issuecomment-6643882318) keyed to the exact camera, session, geometry, frame, track and evidence revision, with the grid convention, `mapId: demo-grid` and `calibrated: false`. Alan owns the overlay in `vision/**`. Wait for his contract before adding a public backend field.
+
+Two code-review findings need regression coverage. A failed Vision write can advance the in-memory boot or sequence before durability. On a track shared by Vision and Mapping, Vision persistence can overwrite a backend-owned pickup profile and save classification data in a shape the mission evidence reader does not consume. Preserve the existing dispatch gates when fixing either issue.
 
 Do not add `/api/manual/*`, pickup, recovery, or any other robot route. Do not call `http://192.168.5.194:8004` or `https://192.168.5.192:8443`. Do not open an SDK session. Do not wire the LangGraph physical adapter. Draft `contracts/recovery-tools-v1.md` on PR #19 at `5730da7` is a simulator interface, not an agreed physical API. A snapshot is data, not mission authority. The fixture `max_duration_ms` of 300 is not an arm-macro limit. Do not extend a drive lease to cover a gripper move. Pickup and place stay rejected until a separate bounded macro and status contract exists.
 
