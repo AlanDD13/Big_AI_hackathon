@@ -74,18 +74,77 @@ def get_default_detector(
     return _DETECTOR_CACHE[key]
 
 
+def detect_frame_remote(
+    jpeg_bytes: bytes,
+    remote_url: str,
+    token: str,
+    timeout: float = 10.0,
+) -> list[Detection]:
+    """Send a JPEG frame to Alan's Mac vision server (/api/detect-frame) for MPS GPU YOLOE inference."""
+    if not jpeg_bytes:
+        raise ValueError("Cannot send empty JPEG bytes for remote detection")
+    if not remote_url or not remote_url.strip():
+        raise ValueError("remote_url is required for remote detection")
+    if not token or len(token.strip()) < 16:
+        raise ValueError("Valid VISION_TOKEN or PEER_TOKEN (>=16 chars) is required for remote detection")
+    import httpx
+    endpoint = f"{remote_url.rstrip('/')}/api/detect-frame"
+    response = httpx.post(
+        endpoint,
+        content=jpeg_bytes,
+        headers={
+            "Authorization": f"Bearer {token.strip()}",
+            "Content-Type": "image/jpeg",
+        },
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    raw_items = payload.get("detections") if isinstance(payload, dict) else None
+    if not isinstance(raw_items, list):
+        raise ValueError("Remote detection response missing 'detections' list")
+    results: list[Detection] = []
+    for item in raw_items:
+        norm = _normalize_detection(item)
+        if _living(norm["detectorLabel"]):
+            continue
+        bbox = tuple(norm["bboxPx"]) if norm["bboxPx"] is not None else (0.0, 0.0, 0.0, 0.0)
+        contact = tuple(norm["contactPointPx"]) if norm["contactPointPx"] is not None else None
+        results.append(
+            Detection(
+                norm["detectorLabel"],
+                norm["detectorScore"],
+                bbox,
+                contact,
+            )
+        )
+    return results
+
+
 def detect_frame_objects(
     frame: Any,
     detector: YoloDetector | None = None,
+    remote_url: str | None = None,
+    token: str | None = None,
 ) -> list[Detection]:
-    """Run the local YOLOE detector on an OpenCV BGR frame and exclude living subjects."""
+    """Run YOLOE detection on an OpenCV BGR frame (offloads to VISION_REMOTE_URL if set, else local)."""
     if not _is_valid_frame(frame):
         raise ValueError("Cannot run object detection on an empty or None frame")
     ok, buf = cv2.imencode(".jpg", frame)
     if not ok or buf is None or getattr(buf, "size", 0) == 0:
         raise ValueError("Failed to encode frame as JPEG for YOLO detection")
+    jpeg_bytes = buf.tobytes()
+    target_remote = (remote_url if remote_url is not None else os.getenv("VISION_REMOTE_URL", "")).strip()
+    if detector is None and target_remote:
+        auth_token = (
+            token
+            or os.getenv("VISION_TOKEN")
+            or os.getenv("PEER_TOKEN")
+            or ""
+        )
+        return detect_frame_remote(jpeg_bytes, remote_url=target_remote, token=auth_token)
     active_detector = detector or get_default_detector()
-    detections = active_detector.detect(buf.tobytes())
+    detections = active_detector.detect(jpeg_bytes)
     return [d for d in detections if not _living(d.label)]
 
 

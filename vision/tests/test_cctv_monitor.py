@@ -312,3 +312,55 @@ def test_resolve_device_falls_back_cleanly_on_non_mac(monkeypatch):
     assert resolve_device("auto") == "cpu"
     assert resolve_device("cpu") == "cpu"
 
+
+def test_remote_detect_frame_endpoint_and_cctv_monitor_remote_offload(monkeypatch):
+    from fastapi.testclient import TestClient
+    from vision.app import create_app
+    from vision.settings import Settings
+
+    class _FakeServerDetector:
+        def detect(self, jpeg_bytes: bytes):
+            assert jpeg_bytes.startswith(b"\xff\xd8")
+            return [
+                Detection("person", 0.98, (1.0, 2.0, 30.0, 60.0), (15.5, 60.0)),
+                Detection("bottle", 0.91, (12.0, 15.0, 42.0, 75.0), (27.0, 75.0)),
+            ]
+
+    settings = Settings(token="v" * 24, peer_token="p" * 24)
+    app = create_app(settings=settings, detector=_FakeServerDetector(), run_workers=False)
+    client = TestClient(app)
+
+    frame = _sample_frame((30, 90, 200))
+    ok, buf = cctv_monitor.cv2.imencode(".jpg", frame)
+    assert ok
+
+    # Direct HTTP POST /api/detect-frame accepts PEER_TOKEN or VISION_TOKEN and filters living subjects
+    resp = client.post(
+        "/api/detect-frame",
+        content=buf.tobytes(),
+        headers={"Authorization": f"Bearer {'p' * 24}", "Content-Type": "image/jpeg"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["detections"]) == 1
+    assert body["detections"][0]["detectorLabel"] == "bottle"
+    assert body["detections"][0]["contactPointPx"] == [27.0, 75.0]
+
+    # cctv_monitor.detect_frame_objects automatically offloads when VISION_REMOTE_URL is set
+    import httpx
+    monkeypatch.setenv("VISION_REMOTE_URL", "http://192.168.5.192:8002")
+    monkeypatch.setenv("PEER_TOKEN", "p" * 24)
+    monkeypatch.setattr(
+        httpx,
+        "post",
+        lambda url, content, headers, timeout: client.post(
+            "/api/detect-frame", content=content, headers=headers
+        ),
+    )
+    remote_dets = cctv_monitor.detect_frame_objects(frame)
+    assert len(remote_dets) == 1
+    assert remote_dets[0].label == "bottle"
+    assert remote_dets[0].score == pytest.approx(0.91)
+    assert remote_dets[0].contact_point == (27.0, 75.0)
+
+

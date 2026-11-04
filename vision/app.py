@@ -11,6 +11,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
 from vision.models import MappingEvidence, TargetRequest
+from vision.perception import _living
 from vision.publisher import Publisher
 from vision.service import VisionService
 from vision.settings import Settings
@@ -236,6 +237,59 @@ def create_app(settings=None, detector=None, classifier=None, run_workers=True):
             raise HTTPException(409, "Current target or rover evidence unavailable") from None
         except RuntimeError:
             raise HTTPException(429, "Confirmation capacity reached") from None
+
+    detect_lock = asyncio.Lock()
+
+    @app.post("/api/detect-frame")
+    async def detect_frame(request: Request, authorization: str | None = Header(default=None)):
+        supplied = authorization.removeprefix("Bearer ") if authorization and authorization.startswith("Bearer ") else ""
+        allowed = [t for t in (settings.token, settings.peer_token) if t]
+        if not supplied or not any(secrets.compare_digest(supplied, token) for token in allowed):
+            raise HTTPException(401, "Valid bearer token required")
+        content_type = request.headers.get("content-type", "").split(";")[0].strip().lower()
+        if content_type not in {"image/jpeg", "application/json"}:
+            raise HTTPException(415, "Use raw image/jpeg or application/json with imageBase64")
+        if detect_lock.locked():
+            raise HTTPException(503, "Detection capacity reached")
+        async with detect_lock:
+            raw = bytearray()
+            try:
+                async with asyncio.timeout(5):
+                    async for chunk in request.stream():
+                        if len(raw) + len(chunk) > 4 * 1024 * 1024:
+                            raise HTTPException(413, "Request body exceeds 4 MiB")
+                        raw.extend(chunk)
+            except TimeoutError:
+                raise HTTPException(408, "Request body timeout") from None
+            if content_type == "application/json":
+                import base64
+                try:
+                    payload = json.loads(bytes(raw))
+                    b64 = payload.get("imageBase64") if isinstance(payload, dict) else None
+                    if not isinstance(b64, str) or not b64.strip():
+                        raise ValueError("Missing imageBase64")
+                    jpeg_bytes = base64.b64decode(b64.encode("ascii"), validate=True)
+                except Exception:
+                    raise HTTPException(422, "Invalid imageBase64 JSON payload") from None
+            else:
+                jpeg_bytes = bytes(raw)
+            if not jpeg_bytes:
+                raise HTTPException(422, "Empty JPEG payload")
+            try:
+                detections = await asyncio.to_thread(service.detector.detect, jpeg_bytes)
+            except Exception:
+                raise HTTPException(422, "Unable to decode or run detection on image") from None
+            filtered = [
+                {
+                    "detectorLabel": d.label,
+                    "detectorScore": float(d.score),
+                    "bboxPx": [float(v) for v in d.bbox],
+                    "contactPointPx": [float(v) for v in d.contact_point] if d.contact_point is not None else None,
+                }
+                for d in detections
+                if not _living(d.label) and (d.contact_point is None or tuple(d.contact_point) != (0.0, 0.0))
+            ]
+            return {"detections": filtered}
 
     @app.get("/api/events", dependencies=[Depends(authorize)])
     async def events(request: Request):
