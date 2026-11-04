@@ -17,6 +17,7 @@ from uuid import uuid4
 from backend.evidence import EvidenceConflict, object_id_for, sample_for
 from backend.postgres_projection import ObservationSource
 from backend.stationarity import MetricSample, evaluate_stationarity
+from backend.vision_ingest import ParsedVisionEvent, VisionConflict
 
 
 CURSOR_TTL_SECONDS = 15 * 60
@@ -28,6 +29,14 @@ class RecordResult:
     object_id: str
     backend_revision: int
     replayed: bool
+
+
+@dataclass(frozen=True)
+class VisionIngestResult:
+    object_id: str | None
+    backend_revision: int | None
+    replayed: bool
+    discarded: bool
 
 
 @dataclass(frozen=True)
@@ -73,6 +82,13 @@ class BackendState:
         self._potential: dict[str, bool] = {}
         self._revisions: dict[tuple[str, str], int] = {}
         self._observation_log = observation_log
+        self._ingested: dict[str, tuple[str, str | None, int | None]] = {}
+        self._current_vision_boot: str | None = None
+        self._stale_vision_boots: set[str] = set()
+        self._vision_sequence: dict[str, int] = {}
+        self._gapped_vision_boots: set[str] = set()
+        self._vision_entity_version: dict[tuple[str, str], int] = {}
+        self._vision_alerts: set[tuple[str, int, str]] = set()
 
     def open_session(self) -> str:
         session_id = self._token()
@@ -225,6 +241,156 @@ class BackendState:
                 self._mission_status_revisions[mission_id] = status_revision
             self._append_unlocked("mission.updated", "mission", revision, None, body)
             return dict(body)
+
+    def ingest_vision(self, event: ParsedVisionEvent) -> VisionIngestResult:
+        """Project one vision event. Replays and stale boots do not publish again.
+
+        potentialTarget is stored for the dashboard. dispatchEligible stays false,
+        and this path does not open a mission.
+        """
+        with self._lock:
+            seen = self._ingested.get(event.event_id)
+            if seen is not None:
+                if seen[0] != event.canonical:
+                    raise VisionConflict("Vision event ID was reused with a different body")
+                return VisionIngestResult(seen[1], seen[2], True, False)
+
+            if event.producer_boot_id in self._stale_vision_boots:
+                self._ingested[event.event_id] = (event.canonical, event.object_id, None)
+                return VisionIngestResult(event.object_id, None, False, True)
+
+            if (
+                self._current_vision_boot is not None
+                and event.producer_boot_id != self._current_vision_boot
+            ):
+                self._stale_vision_boots.add(self._current_vision_boot)
+            self._current_vision_boot = event.producer_boot_id
+
+            if event.producer_boot_id in self._gapped_vision_boots:
+                raise VisionConflict("Vision sequence gap was not applied")
+            last_sequence = self._vision_sequence.get(event.producer_boot_id)
+            if last_sequence is not None and event.sequence > last_sequence + 1:
+                self._gapped_vision_boots.add(event.producer_boot_id)
+                raise VisionConflict("Vision sequence gap was not applied")
+            if last_sequence is not None and event.sequence <= last_sequence:
+                self._ingested[event.event_id] = (event.canonical, event.object_id, None)
+                return VisionIngestResult(event.object_id, None, False, True)
+
+            if event.projection is None:
+                return self._ingest_notice_unlocked(event)
+
+            assert event.object_id is not None
+            assert event.entity_version is not None
+            version_key = (event.object_id, event.producer_boot_id)
+            last_version = self._vision_entity_version.get(version_key)
+            if last_version is not None and event.entity_version <= last_version:
+                self._vision_sequence[event.producer_boot_id] = event.sequence
+                current = self._objects.get(event.object_id)
+                revision = None if current is None else int(current["backendRevision"])
+                self._ingested[event.event_id] = (event.canonical, event.object_id, revision)
+                return VisionIngestResult(event.object_id, revision, False, True)
+
+            body = self._vision_body_unlocked(event)
+            self._vision_sequence[event.producer_boot_id] = event.sequence
+            self._vision_entity_version[version_key] = event.entity_version
+            self._objects[event.object_id] = body
+            self._append_unlocked("object.updated", "object", int(body["backendRevision"]), event.event_id, body)
+            alert_revision = self._vision_alert_unlocked(event, body)
+            published = alert_revision if alert_revision is not None else int(body["backendRevision"])
+            self._ingested[event.event_id] = (event.canonical, event.object_id, published)
+            return VisionIngestResult(event.object_id, published, False, False)
+
+    def _vision_body_unlocked(self, event: ParsedVisionEvent) -> dict[str, object]:
+        assert event.projection is not None
+        assert event.object_id is not None
+        previous = self._objects.get(event.object_id)
+        body = dict(event.projection)
+        if not body.pop("_visualStatusPresent") and previous is not None:
+            body["visualPickupStatus"] = previous.get("visualPickupStatus")
+        if not body.pop("_visualAdvisoryPresent") and previous is not None:
+            body["visualPickupAdvisory"] = previous.get("visualPickupAdvisory")
+        body.pop("_visualStatusPresent", None)
+        body.pop("_visualAdvisoryPresent", None)
+        revision = self._next_revision_unlocked("object", event.object_id)
+        body["backendBootId"] = self.boot_id
+        body["backendRevision"] = revision
+        body["dispatchEligible"] = False
+        advisory = body.get("visualPickupAdvisory")
+        if isinstance(advisory, dict):
+            advisory["pickupVerified"] = False
+            advisory["advisory"] = True
+        return body
+
+    def _vision_alert_unlocked(self, event: ParsedVisionEvent, body: dict[str, object]) -> int | None:
+        if event.alert_kind not in {"potential_target", "target_revoked"}:
+            return None
+        assert event.object_id is not None
+        assert event.revision is not None
+        key = (event.object_id, event.revision, event.alert_kind)
+        if key in self._vision_alerts:
+            return None
+        self._vision_alerts.add(key)
+        action = "HOLD_BEFORE_PICKUP" if event.alert_kind == "target_revoked" else None
+        return self._store_alert_unlocked(
+            event.alert_kind,
+            event.object_id,
+            None if event.alert_kind == "potential_target" else event.alert_reason,
+            action,
+            body,
+            event.event_id,
+        )
+
+    def _ingest_notice_unlocked(self, event: ParsedVisionEvent) -> VisionIngestResult:
+        self._vision_sequence[event.producer_boot_id] = event.sequence
+        revision = None
+        if event.alert_kind is not None:
+            revision = self._store_alert_unlocked(
+                event.alert_kind,
+                None,
+                event.alert_reason,
+                None,
+                None,
+                event.event_id,
+                event.camera_id,
+            )
+        self._ingested[event.event_id] = (event.canonical, None, revision)
+        return VisionIngestResult(None, revision, False, False)
+
+    def _store_alert_unlocked(
+        self,
+        kind: str,
+        object_id: str | None,
+        reason: str | None,
+        action: str | None,
+        object_body: dict[str, object] | None,
+        vision_event_id: str,
+        camera_id: str | None = None,
+    ) -> int:
+        alert_id = str(uuid4())
+        revision = self._next_revision_unlocked("alert", alert_id)
+        source = object_body or {}
+        alert = {
+            "alertId": alert_id,
+            "type": f"alert.{kind}",
+            "kind": kind,
+            "eventId": vision_event_id,
+            "visionEventId": vision_event_id,
+            "objectId": object_id,
+            "cameraId": camera_id if camera_id is not None else source.get("cameraId"),
+            "backendBootId": self.boot_id,
+            "backendRevision": revision,
+            "producerBootId": source.get("producerBootId"),
+            "entityVersion": source.get("entityVersion"),
+            "revision": source.get("revision"),
+            "reason": reason,
+            "action": action,
+            "acknowledged": False,
+            "createdAt": self._now(),
+            "object": None if object_body is None else dict(object_body),
+        }
+        self._alerts[alert_id] = alert
+        self._append_unlocked(f"alert.{kind}", "alert", revision, vision_event_id, alert)
+        return revision
 
     def snapshot(self, session_id: str) -> dict[str, object]:
         with self._lock:

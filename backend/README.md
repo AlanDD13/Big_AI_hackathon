@@ -41,6 +41,19 @@ and a planner. For disposable local testing, set
 classification and approved pickup profile. The fixture produces a queue
 row only. Event cursors retain the existing session and boot scope.
 
+Vision ingest uses the same `Authorization: Bearer $PEER_TOKEN` check.
+`POST /api/detections` accepts `object.observed` and shows the object
+immediately. Until classification is completed, that status is `OBSERVING`
+unless the object is `EXCLUDED` or `LOST`. `POST /api/classifications`
+accepts `object.classified` and stores category, description, confidence
+(`LOW`, `MEDIUM`, or `HIGH`), and `classificationProvider` (`fixture` or
+`grok`) separately from `detectorScore`. `POST /api/vision-events` accepts
+`object.updated` and `alert.*`. Event ids are deduplicated, so a replay does
+not append another SSE event. A missing `visualPickupAdvisory` is no
+assessment and is never graspable. When an advisory is present,
+`pickupVerified` stays false. `dispatchEligible` stays false even if
+`potentialTarget` is true. These routes do not open a mission or call the robot.
+
 ## Test
 
 ```powershell
