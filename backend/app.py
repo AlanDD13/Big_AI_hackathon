@@ -16,6 +16,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from backend.evidence import EvidenceConflict, InvalidEvidence, parse_evidence
+from backend.postgres_projection import PostgresObservationLog, StorageUnavailable
 from backend.state import BackendState, StreamItem
 
 
@@ -47,13 +48,19 @@ def create_app(
     boot_id: str | None = None,
     idle_timeout: float | None = None,
     state: BackendState | None = None,
+    observation_log: PostgresObservationLog | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Rover backend", version="0.1.0")
     app.state.operator_token = operator_token
     app.state.peer_token = peer_token
     app.state.cookie_secure = cookie_secure
     app.state.idle_timeout = idle_timeout
-    app.state.backend = state or BackendState(boot_id=boot_id, now=now)
+    if state is None:
+        state = BackendState(boot_id=boot_id, now=now, observation_log=observation_log)
+        if observation_log is not None:
+            for evidence_body, event_id in observation_log.load():
+                state.record_observation(evidence_body, vision_event_id=event_id, persist=False)
+    app.state.backend = state
 
     def cookie_session(request: Request) -> str | None:
         session_id = request.cookies.get("session")
@@ -162,6 +169,8 @@ def create_app(
             return _error(422, "INVALID_EVIDENCE", str(exc))
         except EvidenceConflict as exc:
             return _error(409, "CONFLICT", str(exc))
+        except StorageUnavailable:
+            return _error(503, "STORAGE_UNAVAILABLE", "Observation storage is unavailable")
         except ValueError as exc:
             return _error(422, "INVALID_HEADER", str(exc))
         return JSONResponse(
@@ -195,10 +204,23 @@ def app_from_env() -> FastAPI:
     operator_token = os.environ.get("OPERATOR_TOKEN", "")
     peer_token = os.environ.get("PEER_TOKEN", "")
     cookie_secure = os.environ.get("BACKEND_COOKIE_SECURE", "1") != "0"
+    database_url = os.environ.get("BACKEND_DATABASE_URL", "")
+    observation_log = None
+    if database_url:
+        if "sslmode=" not in database_url:
+            database_url += ("&" if "?" in database_url else "?") + "sslmode=require"
+
+        def connect():
+            import psycopg
+
+            return psycopg.connect(database_url)
+
+        observation_log = PostgresObservationLog(connect)
     return create_app(
         operator_token=operator_token,
         peer_token=peer_token,
         cookie_secure=cookie_secure,
+        observation_log=observation_log,
     )
 
 
