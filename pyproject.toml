@@ -1,0 +1,56 @@
+[project]
+name = "big-ai-hackathon-workspace"
+version = "0.1.0"
+description = "Unified Python dependencies for the rover object recovery system (vision, mapping, backend, and shared contract tests)"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  # Shared web / HTTP stack (vision, backend, mapping, robot HTTP bridge)
+  "fastapi>=0.115.0,<1.0.0",
+  "uvicorn>=0.30.0,<1.0.0",
+  "pydantic>=2.9.0,<3.0.0",
+  "httpx>=0.27.0,<1.0.0",
+]
+
+[project.optional-dependencies]
+# P2 Vision (AlanDD13) & P5 Mapping (Tezqx) — local YOLOE-26s + OpenCV camera/homography
+vision = [
+  "ultralytics>=8.4.0,<9.0.0",
+  "torch>=2.6.0,<3.0.0",
+  "opencv-python>=4.10.0,<5.0.0",
+  "pillow>=11.0.0,<13.0.0",
+  "numpy>=1.26.0,<3.0.0",
+]
+mapping = [
+  "ultralytics>=8.4.0,<9.0.0",
+  "torch>=2.6.0,<3.0.0",
+  "opencv-python>=4.10.0,<5.0.0",
+  "pillow>=11.0.0,<13.0.0",
+  "numpy>=1.26.0,<3.0.0",
+]
+# P3 Backend (zekihxh) — Supabase Postgres (`rover_backend` schema)
+backend = [
+  "psycopg[binary]>=3.2.0,<4.0.0",
+]
+# Shared test & contract verification
+test = [
+  "pytest>=8.0.0,<10.0.0",
+  "pytest-asyncio>=0.25.0,<2.0.0",
+  "jsonschema>=4.23.0,<5.0.0",
+]
+all = [
+  "ultralytics>=8.4.0,<9.0.0",
+  "torch>=2.6.0,<3.0.0",
+  "opencv-python>=4.10.0,<5.0.0",
+  "pillow>=11.0.0,<13.0.0",
+  "numpy>=1.26.0,<3.0.0",
+  "psycopg[binary]>=3.2.0,<4.0.0",
+  "pytest>=8.0.0,<10.0.0",
+  "pytest-asyncio>=0.25.0,<2.0.0",
+  "jsonschema>=4.23.0,<5.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["vision/tests", "tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

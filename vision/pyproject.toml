@@ -2,7 +2,7 @@
 name = "big-ai-vision"
 version = "0.1.0"
 description = "Camera perception and stationary-object evidence for the rover demo"
-requires-python = ">=3.12,<3.14"
+requires-python = ">=3.11,<3.14"
 dependencies = [
   "fastapi>=0.115,<1",
   "pydantic>=2.9,<3",

@@ -1,0 +1,18 @@
+# P2 Vision (`vision/**` — AlanDD13) & P5 Mapping (`mapping/**` — Tezqx)
+# Cross-platform requirements (macOS MPS, Windows/Linux CUDA, or CPU fallback).
+# Install with uv:
+#   uv sync --extra ml --extra test
+# Or with pip:
+#   pip install -r vision/requirements.txt
+
+fastapi>=0.115.0,<1.0.0
+uvicorn>=0.30.0,<1.0.0
+pydantic>=2.9.0,<3.0.0
+httpx>=0.27.0,<1.0.0
+pillow>=11.0.0,<13.0.0
+ultralytics>=8.4.0,<9.0.0
+torch>=2.6.0,<3.0.0
+opencv-python>=4.10.0,<5.0.0
+numpy>=1.26.0,<3.0.0
+pytest>=8.0.0,<10.0.0
+pytest-asyncio>=0.25.0,<2.0.0
