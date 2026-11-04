@@ -19,11 +19,18 @@ Peer URLs and PEER_TOKEN are operator configuration, never request-supplied URLs
 Phone camera pages use HTTPS on port 8443; local-only development can use HTTP
 on 127.0.0.1. Phone capture cannot use LAN plain HTTP. Phones need not share an
 Apple account. Each phone must keep the page open and camera stationary.
-`vision/cctv_monitor.py` is not part of this contract. A one-shot OpenCV
-capture that returns base64 and writes a debug JPEG does not create a session,
-geometry version, or frame id, and mapping must not open that camera. The
-supported fixed-camera paths remain the phone page and an operator-configured
-`LocalCapture` device index or video file.
+`vision/cctv_monitor.py` is included on `task/AlanDD13/vision-pipeline` as an
+explicit standalone OpenCV IP-camera capture/debug helper
+(`http://192.168.5.146:8081/video`), not a `vision-v1` stream producer. It
+supports both single-frame capture (`get_latest_frame`, `encode_frame_to_base64`)
+and 5–10 frame / 2-second burst capture (`get_frame_burst`,
+`select_highest_confidence_frame`, `build_burst_payload`) that fails closed on
+empty bursts, confidence ties, unknown sectors, or `(0, 0)` fallback
+coordinates. Neither one-shot nor burst `cctv_monitor.py` capture mints a
+`vision-v1` `sessionId`, `geometryVersion`, or `frameId` or bypasses the
+5-second / 10-sample calibrated metric gate, and `mapping/` must not open that
+camera stream directly. The supported `vision-v1` fixed-camera producers remain
+the phone page and an operator-configured `LocalCapture` source.
 
 ## Frames, clocks and identity
 
