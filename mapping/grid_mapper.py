@@ -20,6 +20,8 @@ from __future__ import annotations
 CELL_METRES = 0.5
 GRID_COLUMNS = 4
 GRID_ROWS = 4
+# Row A is the top strip of the image and row D is the bottom strip.
+GRID_CONVENTION = "ROW_A_TOP"
 
 
 def _canonical(sector_name: str) -> str:

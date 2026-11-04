@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 
 from grid_mapper import (
+    GRID_CONVENTION,
     get_consensus_sector,
     pixel_to_sector,
     sector_to_coordinates,
@@ -57,6 +58,11 @@ class CoordinateTests(unittest.TestCase):
 
 
 class PixelSectorTests(unittest.TestCase):
+    def test_row_a_is_the_top_strip(self) -> None:
+        self.assertEqual(GRID_CONVENTION, "ROW_A_TOP")
+        self.assertEqual(pixel_to_sector(855, 10, 1920, 1080), "A2")
+        self.assertEqual(pixel_to_sector(855, 1070, 1920, 1080), "D2")
+
     def test_paper_centre_on_the_phone_frame_is_b2(self) -> None:
         self.assertEqual(pixel_to_sector(855, 423, 1920, 1080), "B2")
         self.assertEqual(sector_to_coordinates("B2"), (-0.25, 1.25))
