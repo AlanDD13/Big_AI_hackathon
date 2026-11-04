@@ -15,7 +15,7 @@ import time
 
 from check_connection import rover_session
 from safety import Limits, SafetyController, SafetyError, Watchdog
-from telemetry import YawRate
+from telemetry import PositionRate, YawRate
 
 
 class DJIOutput:
@@ -27,10 +27,16 @@ class DJIOutput:
         if abs(x) > self.max_speed or abs(y) > self.max_speed or yaw != 0:
             raise ValueError("Bench only permits bounded translation, no rotation")
         sent_at = time.monotonic()
-        # Deliberately longer than the 300 ms watchdog for this acceptance
-        # test, so the short watchdog stop is not merely the SDK timer firing.
-        # Still only a HOST timer; it cannot protect a crashed Mac.
-        self.rover.chassis.drive_speed(x=x, y=y, z=yaw, timeout=1.0)
+        if any((x, y, yaw)):
+            # Deliberately longer than the 300 ms watchdog for this acceptance
+            # test, so the short watchdog stop is not merely the SDK timer firing.
+            # Still only a HOST timer; it cannot protect a crashed Mac.
+            self.rover.chassis.drive_speed(x=x, y=y, z=yaw, timeout=1.0)
+        else:
+            auto_timer = getattr(self.rover.chassis, "_auto_timer", None)
+            if auto_timer is not None and auto_timer.is_alive():
+                auto_timer.cancel()
+            self.rover.chassis.drive_speed(x=0.0, y=0.0, z=0.0)
         self.events.append({"at": sent_at, "velocity": [x, y, yaw],
                             "write_duration_s": time.monotonic() - sent_at})
 
@@ -42,11 +48,18 @@ class Telemetry:
         self.rover, self.controller = rover, controller
         self._lock = threading.RLock()
         self.position_at = self.attitude_at = None
+        self.position_xyz = None
+        self.attitude_ypr = None
         self.yaw = self.yaw_rate = None
+        self.position_rate = None
+        self.esc_speed = None
+        self.chassis_status = None
         self._yaw_estimator = YawRate()
+        self._pos_estimator = PositionRate()
         self._last_position = self._last_attitude = 0
         self._sample_id = 0
         self.observations = []
+        self.diagnostics = []
         self.forwarding = True
         self.battery = None
         self.peak_speed = 0.0
@@ -54,8 +67,11 @@ class Telemetry:
 
     def position(self, value):
         with self._lock:
+            now = time.monotonic()
             if all(math.isfinite(v) for v in value):
-                self.position_at = time.monotonic()
+                self.position_xyz = list(value[:3])
+                self.position_rate = self._pos_estimator.update(now, value[0], value[1])
+                self.position_at = now
 
     def attitude(self, value):
         with self._lock:
@@ -63,8 +79,19 @@ class Telemetry:
             if not all(math.isfinite(v) for v in value):
                 self.yaw_rate = None
                 return
+            self.attitude_ypr = list(value[:3])
             self.yaw_rate = self._yaw_estimator.update(now, value[0])
             self.yaw, self.attitude_at = value[0], now
+
+    def esc(self, value):
+        with self._lock:
+            if value and len(value) >= 1:
+                self.esc_speed = list(value[0])
+
+    def status_info(self, value):
+        with self._lock:
+            if value is not None:
+                self.chassis_status = list(value)
 
     def velocity(self, value):
         with self._lock:
@@ -82,26 +109,52 @@ class Telemetry:
             self.peak_speed = max(self.peak_speed, abs(value[3]), abs(value[4]))
             self.observations.append([now, value[3], value[4], self.yaw_rate, self._sample_id])
             self.observations = self.observations[-200:]
+            self.diagnostics.append({
+                "at": now,
+                "sample_id": self._sample_id,
+                "velocity_6": list(value[:6]),
+                "position_xyz": self.position_xyz,
+                "position_rate_xy": list(self.position_rate) if self.position_rate else None,
+                "attitude_ypr": self.attitude_ypr,
+                "yaw_rate": self.yaw_rate,
+                "esc_speed_rpm": self.esc_speed,
+                "chassis_status": self.chassis_status,
+            })
+            self.diagnostics = self.diagnostics[-200:]
             self.controller.observe(value[3], value[4], self.yaw_rate, sample_id=self._sample_id)
 
     def battery_info(self, value):
         self.battery = value
 
     def start(self):
-        subscriptions = [
+        required = [
             (self.rover.chassis.sub_position, self.position, self.rover.chassis.unsub_position),
             (self.rover.chassis.sub_attitude, self.attitude, self.rover.chassis.unsub_attitude),
             (self.rover.chassis.sub_velocity, self.velocity, self.rover.chassis.unsub_velocity),
             (self.rover.battery.sub_battery_info, self.battery_info, self.rover.battery.unsub_battery_info),
         ]
-        for subscribe, callback, unsubscribe in subscriptions:
+        for subscribe, callback, unsubscribe in required:
             if not subscribe(freq=10, callback=callback):
                 raise RuntimeError("Required telemetry subscription rejected")
             self._cleanup.append(unsubscribe)
+        optional = [
+            (getattr(self.rover.chassis, "sub_esc", None), self.esc, getattr(self.rover.chassis, "unsub_esc", None)),
+            (getattr(self.rover.chassis, "sub_status", None), self.status_info, getattr(self.rover.chassis, "unsub_status", None)),
+        ]
+        for subscribe, callback, unsubscribe in optional:
+            if subscribe and unsubscribe:
+                try:
+                    if subscribe(freq=10, callback=callback):
+                        self._cleanup.append(unsubscribe)
+                except Exception:
+                    pass
 
     def close(self):
         for unsubscribe in reversed(self._cleanup):
-            unsubscribe()
+            try:
+                unsubscribe()
+            except Exception:
+                pass
 
 
 def wait_for(controller, predicate, timeout=3, heartbeat=True):
@@ -233,10 +286,11 @@ def run(serial, scenario, motion):
                 telemetry.close()
                 report["outputs"] = output.events
                 report["observations"] = telemetry.observations
+                report["diagnostics"] = telemetry.diagnostics
                 report["max_measured_speed_mps"] = telemetry.peak_speed
                 filename = f"{scenario}-{'motion' if motion else 'stationary'}.json"
                 (output_dir / filename).write_text(json.dumps(report, indent=2))
-    print(json.dumps({k: v for k, v in report.items() if k not in ("outputs", "observations")}, indent=2), flush=True)
+    print(json.dumps({k: v for k, v in report.items() if k not in ("outputs", "observations", "diagnostics")}, indent=2), flush=True)
     return 0 if report["result"] == "PASS" else 1
 
 

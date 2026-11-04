@@ -93,55 +93,67 @@ carry the exact HTTP status and wire error code mapping aligned with
 `watchdog_bench.py` uses the real pinned SDK and the confirmed-serial session
 helper. A forwarded observation requires new position, attitude and velocity
 data and increments a monotonic `sample_id`. Body velocity comes from SDK
-telemetry, not the requested command. Angular velocity is derived from yaw over
-a 150–350 ms receipt-time window; near-simultaneous callbacks cannot amplify
-tiny angle noise into huge rates, and `YawRate.update()` returns `None` during
-the initial `<150 ms` window. This is local chassis feedback, not calibrated P5
-map localization. A future navigation controller must also validate the actual
-map/versioned P5 pose.
+telemetry, not the requested command. Angular velocity (`YawRate`) and planar
+position rate (`PositionRate`) are derived over a 150–350 ms receipt-time window;
+near-simultaneous callbacks cannot amplify tiny angle noise into huge rates, and
+both estimators return `None` during the initial `<150 ms` window. `watchdog_bench.py`
+also records multi-sensor diagnostics (`sub_velocity` 6-tuple, `sub_position` +
+`PositionRate`, `sub_esc` 4-wheel RPMs, and `sub_status` `static_flag`).
+This is local chassis feedback, not calibrated P5 map localization. A future
+navigation controller must also validate the actual map/versioned P5 pose.
 
-For bench acceptance only, the SDK host timer is set to 1.0 s, longer than the
-watchdog threshold, to distinguish a watchdog-requested zero from timer expiry.
-Both execute on the same Mac. Neither guarantees anything after host death,
-process termination, a blocked transport or network loss. The output wrapper
-cannot derive transport success from the SDK's misleading False/no-ACK return;
-only fresh motion observations can establish the later confirmation.
+For bench acceptance only, non-zero drive writes set the SDK host timer to 1.0 s
+(longer than the 300 ms watchdog threshold) to distinguish a watchdog-requested
+zero from SDK timer expiry, while zero-velocity stop writes cancel any pending
+`_auto_timer` and call `drive_speed(0.0, 0.0, 0.0)` directly without re-arming
+redundant 1.0 s timers on every 100 ms stop retry. Both execute on the same Mac.
+Neither guarantees anything after host death, process termination, a blocked
+transport or network loss. The output wrapper cannot derive transport success
+from the SDK's misleading False/no-ACK return; only fresh motion observations
+can establish the later confirmation.
 
 ## Verification on 2026-11-04
 
-- 43 deterministic offline tests pass: expiry, input/heartbeat/telemetry loss,
+- **44 deterministic offline tests pass**: expiry, input/heartbeat/telemetry loss,
   stale authority and boot, active-session rejection across all admission faults,
   replay/order, monotonic `sample_id` deduplication, voluntary `release()`
   lifecycle and timeout, `contracts/manual-control-v1.md` HTTP error mapping,
   stalled-write non-blocking `stop()`/`tick()`/`status()` and recovery to zero,
   slow drive racing `tick()`, watchdog survival across `tick()` and `stop()`
   exceptions, `Watchdog.close()` failure resilience, clock changes, and
-  telemetry first-150 ms window / burst / wrap / gap handling. Recording test
-  outputs never create a simulated SDK or claim hardware evidence.
-- All six real-SDK **zero-velocity** scenarios pass: silence, short deadline,
-  withheld telemetry forwarding, withheld heartbeat, operator stop and replayed
-  sequence. Each ends confirmed STOPPED and verifies rearm without motion.
-- Final moving silence check: zero requested at 0.267 s after command start;
-  stop confirmed at 0.772 s; maximum reported body speed 0.08 m/s for a requested
-  0.05 m/s. Rearm did not issue movement. Earlier ~0.305 s timing was accepted
-  by the human; the final 250 ms guard adds scheduling headroom. Desktop timing
-  is measured, not a hard realtime guarantee or a stopping-distance bound.
-- **Moving explicit-stop acceptance is incomplete.** The zero request and
-  repeated zero writes occurred, but body-velocity feedback stayed around
-  -0.04 to -0.07 m/s and the controller correctly stayed UNKNOWN and refused
-  rearm. The human confirmed the rover was stationary on the floor. Subsequent
-  zero-only diagnostics showed stable position, low wheel readings and near-zero
-  body velocity. The source of the disagreement is unresolved. Do not widen
-  confirmation thresholds or advertise live-control readiness from this test.
-- An earlier moving silence test also stayed UNKNOWN; burst-safe yaw estimation
-  and later successful checks are recorded, but that does not prove every
-  disagreement was caused by yaw jitter. Original failure reports are preserved.
+  telemetry first-150 ms window / burst / wrap / gap / `PositionRate` handling.
+  Recording test outputs never create a simulated SDK or claim hardware evidence.
+- **All six real-SDK zero-velocity scenarios pass**: `silence`, `deadline`,
+  `telemetry`, `heartbeat`, `operator-stop` (confirmed `STOPPED` at `0.544 s`,
+  zero write at `0.153 s`), and `stale-intent`. Each ends confirmed `STOPPED`
+  and verifies `rearm()` without motion.
+- **Moving silence check (`--scenario silence --allow-motion`, `PASS`)**:
+  fault detected at `0.274 s` and zero write at `0.274 s` (`<= 0.300 s` target
+  met); stop confirmed at `0.832 s` (4 stationary samples spanning `>= 0.2 s`);
+  peak measured speed `0.09 m/s` (`esc_speed_rpm` up to `18 RPM`, `position_xyz`
+  `+24.1 mm`) for a requested `0.05 m/s`; `rearm()` advanced to generation `2`
+  with zero movement. (Earlier `0.267 s` / `0.772 s` run also passed.)
+- **Moving explicit-stop check (`--scenario operator-stop --allow-motion`, `PASS`)**:
+  after updating `DJIOutput` so zero-velocity stop writes cancel `_auto_timer`
+  and invoke `drive_speed(0.0, 0.0, 0.0)` without re-arming the 1.0 s SDK host
+  timer every 100 ms (and keeping the exact `0.025 m/s` and `3 deg/s` stationary
+  thresholds unchanged), `operator-stop --allow-motion` passed cleanly:
+  - Fault detected at `0.156 s`, zero write at `0.156 s`, peak speed `0.03 m/s`
+    (`position_xyz` `+4.08 mm`, `static_flag` `1 -> 0`).
+  - Confirmed `STOPPED` at `0.678 s` (`stationarySamples: 3` spanning `>= 0.2 s`,
+    `velocity_6` settled to `[-0.01, 0.0, 0, -0.01, 0.0, 0]`, `esc_speed_rpm`
+    within `[-3, 3] RPM`).
+  - `rearm()` advanced to generation `2` with no restored motion, followed by
+    clean `BENCH_COMPLETE` stop confirmation.
+  - Historical note: an earlier moving `operator-stop` run (before cancelling
+    `_auto_timer` on zero writes) saw `vbx` stay around `-0.04` to `-0.07 m/s`
+    and rightly stayed `UNKNOWN` and refused `rearm()`. Original failure traces
+    remain preserved under `robot/.local/watchdog/`.
 - No Wi-Fi interruption, controller kill/crash, physical emergency-stop
   validation, load/stress acceptance or calibrated stopping-distance test ran.
 
 All sessions were closed. Raw reports, bounded telemetry traces and SDK logs
-are ignored under robot/.local/watchdog/. Hardware stop feedback and supervised
-host/network-failure behavior remain required before claiming full acceptance.
+are ignored under `robot/.local/watchdog/`.
 
 ## Commands
 
@@ -158,7 +170,6 @@ robot/.venv/bin/python robot/watchdog_bench.py --sn YOUR_ROBOT_SERIAL --scenario
 robot/.venv/bin/python robot/watchdog_bench.py --sn YOUR_ROBOT_SERIAL --scenario operator-stop --allow-motion
 ```
 
-Do not repeat physical tests while stop confirmation is unresolved without an
-operator verifying the rover is stationary and the workspace is clear. A bench
-worker timeout terminates a host process; its message deliberately reports
-physical stop as unconfirmed. It is not a safe substitute for a hardware stop.
+A bench worker timeout terminates a host process; its message deliberately
+reports physical stop as unconfirmed. It is not a safe substitute for a
+hardware stop.

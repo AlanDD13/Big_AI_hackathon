@@ -1,6 +1,6 @@
 import unittest
 
-from robot.telemetry import YawRate
+from robot.telemetry import PositionRate, YawRate
 
 
 class YawRateTests(unittest.TestCase):
@@ -43,6 +43,18 @@ class YawRateTests(unittest.TestCase):
         estimator.update(10, 0)
         estimator.update(10.2, 0)
         self.assertIsNone(estimator.update(10.2, 0))
+
+
+class PositionRateTests(unittest.TestCase):
+    def test_position_rate_window_and_invalid_reset(self):
+        estimator = PositionRate()
+        self.assertIsNone(estimator.update(10.0, 1.0, 2.0))
+        self.assertIsNone(estimator.update(10.1, 1.005, 2.0))
+        vx, vy = estimator.update(10.2, 1.01, 2.0)
+        self.assertAlmostEqual(vx, 0.05)
+        self.assertAlmostEqual(vy, 0.0)
+        self.assertIsNone(estimator.update(10.25, float("nan"), 2.0))
+        self.assertIsNone(estimator.update(10.3, 1.01, 2.0))
 
 
 if __name__ == "__main__":

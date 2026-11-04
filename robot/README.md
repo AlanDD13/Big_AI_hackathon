@@ -104,7 +104,7 @@ gripper results, reproduction commands, SDK quirks and remaining limitations.
 ## Watchdog and recovery (step 5)
 
 See [WATCHDOG.md](WATCHDOG.md) for the internal safety core, offline tests,
-real-SDK bench results and remaining physical stop-confirmation issue.
+and real-SDK stationary and moving bench results.
 The implementation requests zero independently of input delivery, keeps an
 unconfirmed stop UNKNOWN, latches confirmed faults, and requires explicit
 rearm plus new authority before movement. No HTTP/live-control service exists.
