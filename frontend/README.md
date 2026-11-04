@@ -16,9 +16,11 @@ The current local draft and its commands are documented below.
 This is an explicitly requested, frontend-only exploration on
 `task/LcyShox/dashboard-prototype`. The data in
 `src/domain.ts` is a local view model, not a proposed or frozen wire schema.
-Nothing connects to a backend, camera, Grok, mapping service or physical rover.
-No shared files are changed. This branch is a UI prototype for review; it does
-not implement the live manual-control slice or backend integration.
+Demo mode uses local fixtures. Connected mode reads the backend snapshot and
+SSE stream for objects and alerts, with a read-only object inspector. It does
+not connect to a camera, Grok, mapping service or physical rover directly.
+Live manual control remains unimplemented. No operator sign-in screen is added.
+See [BACKEND_INTEGRATION.md](BACKEND_INTEGRATION.md) for local connection setup.
 
 Requires Node.js 24+ and npm. From `frontend/`:
 

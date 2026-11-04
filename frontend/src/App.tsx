@@ -6,6 +6,7 @@ import type { Mission, TaskKind } from './domain';
 import WarehouseMap from './WarehouseMap';
 import CameraWidget from './CameraWidget';
 import ManualControl from './ManualControl';
+import BackendDashboard from './BackendDashboard';
 
 type View = 'Overview' | 'Manual' | 'Missions' | 'Fleet' | 'Activity';
 type Log = { id: number; text: string; time: string; tone: 'normal' | 'error' };
@@ -20,6 +21,7 @@ const taskOptions: { kind: TaskKind; icon: LucideIcon; description: string }[] =
 
 export default function App() {
   const [view,setView] = useState<View>('Manual');
+  const [backendMode,setBackendMode] = useState(false);
   const [sim,setSim] = useState(initialState);
   const [manualLease,setManualLease] = useState(false);
   const [manualReset,setManualReset] = useState(0);
@@ -93,15 +95,16 @@ export default function App() {
       <a className="brand" href="#" onClick={e=>{e.preventDefault();setView('Overview')}} aria-label="ROVR home"><div className="brand-mark"><Command size={22}/></div><span>rovr<span className="brand-dot">.</span></span></a>
       <div className="workspace"><div className="workspace-icon"><Box size={19}/></div><div><strong>Recovery workspace</strong><small>Warehouse operations</small></div><ChevronDown size={14}/></div>
       <div className="nav-label">WORKSPACE</div>
-      <nav aria-label="Main navigation">{navItems.map(({label,icon:Icon})=><button key={label} aria-label={label} aria-current={view===label ? 'page' : undefined} className={`nav-item ${view===label?'active':''}`} onClick={()=>setView(label)}><Icon size={18}/><span>{label}</span>{label==='Missions'&&<span className="nav-count">{sim.missions.filter(isActive).length}</span>}</button>)}</nav>
+      <nav aria-label="Main navigation">{backendMode ? <button className="nav-item active" aria-current="page" aria-label="Objects & alerts"><Box size={18}/><span>Objects & alerts</span></button> : navItems.map(({label,icon:Icon})=><button key={label} aria-label={label} aria-current={view===label ? 'page' : undefined} className={`nav-item ${view===label?'active':''}`} onClick={()=>setView(label)}><Icon size={18}/><span>{label}</span>{label==='Missions'&&<span className="nav-count">{sim.missions.filter(isActive).length}</span>}</button>)}</nav>
       <div className="sidebar-bottom">
-        <button className="nav-item" onClick={()=>setSettings(true)}><Settings2 size={17}/>Simulation settings</button><button className="nav-item" onClick={()=>setHelp(true)}><CircleHelp size={17}/>Quick guide<ArrowRight size={15}/></button>
-        <div className="profile"><div className="avatar">LS</div><div><strong>LcyShox</strong><small>Dashboard operator</small></div><span className="profile-status"/></div>
+        {!backendMode&&<><button className="nav-item" onClick={()=>setSettings(true)}><Settings2 size={17}/>Simulation settings</button><button className="nav-item" onClick={()=>setHelp(true)}><CircleHelp size={17}/>Quick guide<ArrowRight size={15}/></button></>}
+        <div className="profile"><div className="avatar">LS</div><div><strong>Operator workspace</strong><small>Local session</small></div><span className="profile-status"/></div>
       </div>
     </aside>
-    <div className={`main-shell ${view==='Manual'?'manual-page':''}`}>
-      <header className="topbar"><div className="breadcrumb">Workspace <span>/</span> <strong>{view}</strong></div></header>
+    <div className={`main-shell ${!backendMode&&view==='Manual'?'manual-page':''}`}>
+      <header className="topbar"><div className="breadcrumb">Workspace <span>/</span> <strong>{backendMode?'Objects & alerts':view}</strong></div><div className="mode-switch" aria-label="Data source"><button aria-pressed={!backendMode} onClick={()=>setBackendMode(false)}>Demo</button><button aria-pressed={backendMode} onClick={()=>{setRunning(false);setManualLease(false);setComposer(false);setSettings(false);setHelp(false);setBackendMode(true)}}>Connected</button></div></header>
       <main>
+        {backendMode ? <BackendDashboard/> : <>
         <div className="page-heading"><div><div className="eyebrow">MISSION CONTROL / WAREHOUSE 01</div><h1>{view==='Manual'?'Manual control':view==='Overview'?'Warehouse overview':view==='Missions'?'Mission workspace':view==='Fleet'?'Fleet':'Operations activity'}</h1><p>{view==='Manual'?'First-person precision or an overhead perspective. One control workspace.':view==='Overview'?'A clear view of your floor, your rover, and the next move.':view==='Missions'?'Track recovery requests from queue to confirmed completion.':view==='Fleet'?'One simulated rover today. Room for a connected fleet tomorrow.':'Status changes and operator actions from this local session.'}</p></div>{view!=='Manual'&&<button className="button primary" onClick={openTask}><Plus size={17}/>New task</button>}</div>
         <div className="simulation-strip"><span><FlaskConical size={14}/><strong>Simulation</strong><span>No hardware connected.</span></span></div>
         {error&&<div className="error-banner" role="alert"><ShieldAlert size={18}/><span>{error}</span><button className="icon-button" aria-label="Dismiss error" onClick={()=>setError('')}><X size={16}/></button></div>}
@@ -127,8 +130,9 @@ export default function App() {
 
         <ManualControl key={manualReset} active={view==='Manual'} online={sim.online} stopped={sim.stopped} autonomous={Boolean(active)} suspended={composer||settings||help} onLeaseChange={setManualLease} onStop={stopRover} onRearm={()=>attempt(()=>{if(!sim.online)throw new Error('Cannot re-arm while offline.');setSim({...sim,stopped:false});addLog('Explicitly re-armed. Manual control remains released.');})} onLog={addLog}/>
         <footer className="page-footer"><span><span className={`status-dot ${!sim.online?'amber':''}`}/>{sim.online?'Mock backend connected':'Mock backend offline'}</span><span>ROVR / OPERATIONS CONSOLE <span className="version">v0.1 draft</span></span></footer>
+        </>}
       </main>
-      {view!=='Manual'&&<div className="control-bar"><div className="control-rover"><div className="control-bot"><Bot size={20}/></div><div><strong>Rover 01<span className={`badge ${sim.stopped?'red':'neutral'}`}>{sim.stopped?'Stopped':active?stageLabel(active.stage):'Idle'}</span></strong><small>{sim.stopped?'Explicit re-arm required':!sim.online?'Connection lost · simulation paused':'Local simulator · 86% battery'}</small></div></div><div className="control-actions"><button className="button secondary" disabled={!active||sim.stopped||!sim.online} onClick={()=>setRunning(!running)}>{running?<Pause size={15}/>:<Play size={15}/>}<span>{running?'Pause':'Run simulation'}</span></button><button className="button secondary step-button" disabled={!active||sim.stopped||!sim.online||running} onClick={()=>setSim(tick(sim))}>Next stage<ArrowRight size={14}/></button>{sim.stopped?<button className="button secondary" onClick={()=>attempt(()=>{if(!sim.online)throw new Error('Cannot re-arm while the mock backend is offline.');setSim({...sim,stopped:false});addLog('Rover explicitly re-armed. Stopped missions stay stopped.');})}><RotateCcw size={15}/>Re-arm</button>:null}<button className="button danger" onClick={stopRover}><Square size={14} fill="currentColor"/>Stop rover</button></div></div>}
+      {!backendMode&&view!=='Manual'&&<div className="control-bar"><div className="control-rover"><div className="control-bot"><Bot size={20}/></div><div><strong>Rover 01<span className={`badge ${sim.stopped?'red':'neutral'}`}>{sim.stopped?'Stopped':active?stageLabel(active.stage):'Idle'}</span></strong><small>{sim.stopped?'Explicit re-arm required':!sim.online?'Connection lost · simulation paused':'Local simulator · 86% battery'}</small></div></div><div className="control-actions"><button className="button secondary" disabled={!active||sim.stopped||!sim.online} onClick={()=>setRunning(!running)}>{running?<Pause size={15}/>:<Play size={15}/>}<span>{running?'Pause':'Run simulation'}</span></button><button className="button secondary step-button" disabled={!active||sim.stopped||!sim.online||running} onClick={()=>setSim(tick(sim))}>Next stage<ArrowRight size={14}/></button>{sim.stopped?<button className="button secondary" onClick={()=>attempt(()=>{if(!sim.online)throw new Error('Cannot re-arm while the mock backend is offline.');setSim({...sim,stopped:false});addLog('Rover explicitly re-armed. Stopped missions stay stopped.');})}><RotateCcw size={15}/>Re-arm</button>:null}<button className="button danger" onClick={stopRover}><Square size={14} fill="currentColor"/>Stop rover</button></div></div>}
     </div>
 
     {composer&&<div className="modal-backdrop" onClick={()=>setComposer(false)}><section className="modal task-modal" role="dialog" aria-modal="true" aria-labelledby="task-title" onClick={e=>e.stopPropagation()}><div className="modal-heading"><div><div className="eyebrow">SIMULATED OPERATIONS</div><h2 id="task-title">What’s the next task?</h2></div><button className="icon-button" aria-label="Close task composer" onClick={()=>setComposer(false)} autoFocus><X size={20}/></button></div><p className="modal-intro">Create a recovery mission, or explore what comes next.</p><div className="task-options">{taskOptions.map(({kind:k,icon:Icon,description})=><button key={k} className={`task-option ${kind===k?'chosen':''}`} onClick={()=>{setKind(k);setError('')}}><Icon size={20}/><strong>{k}{k!=='Recovery'&&<small>Planned</small>}</strong><span>{description}</span></button>)}</div>
