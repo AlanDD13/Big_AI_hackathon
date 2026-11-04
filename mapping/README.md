@@ -11,4 +11,11 @@ against measured points; stale/out-of-area/unknown positions fail explicitly;
 all output uses the agreed map frame and version.
 
 Read `AGENTS.md`, `docs/ONBOARDING.md` and `docs/CONTRACTS.md` before starting.
-Add actual install/run/test commands here when implementing the first slice.
+
+The measured-floor projection is not implemented. `grid_mapper.py` only turns an
+explicit burst of sector labels into a demo cell centre, and it marks that point
+uncalibrated. Camera pixels are not metres. From this directory:
+
+```
+python -m unittest test_mapper.py
+```

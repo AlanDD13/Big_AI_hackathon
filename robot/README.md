@@ -61,11 +61,42 @@ dimensions; checks JPEG round trip and real Opus decoding. Its generated media
 is only a codec test, not rover evidence or a simulated robot. It does not create
 a `Robot`, connect, subscribe to telemetry, or issue actuator commands.
 
-## Next: connection-only check (step 3, not implemented)
+## Connection-only check (step 3)
 
 Choose AP/direct or STA/shared-network mode, confirm robot/network details,
 initialize the SDK, query versions and telemetry, and close cleanly. Repeat
 connection/shutdown before any movement. Verify actual camera frames and sensor
 responses separately; import success proves no hardware capability.
-No command server, live connection script, motor control, manipulation or shared
-API integration is included in this environment task.
+Run from repository root, using the serial physically confirmed on the label/app:
+
+```bash
+robot/.venv/bin/python robot/check_connection.py --sn YOUR_ROBOT_SERIAL --repeat 2
+```
+
+This script is STA/shared-router only. It passively matches the serial before
+negotiating an explicit UDP route, refuses the SDK's default-client fallback,
+initializes the SDK, verifies the returned serial, queries firmware and closes.
+It issues no chassis, arm or gripper movement commands, camera stream or sensor
+subscriptions. SDK initialization does change SDK/control/subscription modes;
+close the phone app and other controllers before using it. Each cycle has a
+35-second worker-process bound. A timeout terminates that process and reports
+cleanup as unconfirmed; it is not proof of a physical stop. Add `--verbose`
+only when SDK protocol logs are needed. No automatic actuator recovery exists.
+
+On macOS, allow Local Network access for the app hosting the terminal (Codex /
+ChatGPT here). Broadcast discovery worked before that permission was allowed,
+but unicast handshake and ping failed with OS error 65, No route to host.
+After the human enabled permission, two real STA/UDP cycles succeeded on
+2026-11-04: device serial matched, firmware was `01.01.1150`, both SDK close
+calls returned, and both worker processes exited successfully. No movement
+commands were sent. IP addresses are discovered afresh, not hardcoded.
+
+Camera, infrared distance sensor, arm/gripper responses, movement and watchdog
+behavior still require separate checks. No command server or shared API
+integration is included in this task.
+
+## Hardware functionality checks
+
+See [HARDWARE_CHECKS.md](HARDWARE_CHECKS.md) for real camera/sensor/chassis/arm/
+gripper results, reproduction commands, SDK quirks and remaining limitations.
+`check_hardware.py` is a staged bench diagnostic, not a live control bridge.

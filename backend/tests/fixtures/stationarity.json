@@ -1,0 +1,194 @@
+{
+  "description": "Local metric stationarity acceptance vectors. Time fields are seconds relative to a common test epoch. Eligibility here describes floor stationarity alone.",
+  "instructions": "Expand offsets in order using defaults, case sampleDefaults, and then zero-based overrides. Set each receivedAt from its offset and derive capturedAt from receivedAt plus captureClockOffsetSeconds. If append exists, add that sample with the same defaults. Evaluate after all samples have been processed. Test each case in a new episode.",
+  "defaults": {
+    "offsets": [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5],
+    "sample": {
+      "cameraId": "fixed-1",
+      "cameraKind": "FIXED",
+      "sessionId": "session-1",
+      "geometryVersion": "geometry-1",
+      "trackId": "track-1",
+      "mapId": "map-1",
+      "mapVersion": "map-version-1",
+      "calibrationId": "calibration-1",
+      "calibrationValid": true,
+      "pointM": [0, 0],
+      "positionValid": true,
+      "positionErrorM": 0.025,
+      "captureClockOffsetSeconds": 0
+    }
+  },
+  "cases": [
+    {
+      "name": "eleven_samples_at_two_hz_qualify",
+      "evaluatedAt": 5,
+      "eligible": true
+    },
+    {
+      "name": "ten_samples_span_five_seconds",
+      "offsets": [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 5],
+      "evaluatedAt": 5,
+      "eligible": true
+    },
+    {
+      "name": "ten_samples_at_two_hz_span_only_four_and_a_half_seconds",
+      "offsets": [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5],
+      "evaluatedAt": 4.5,
+      "eligible": false
+    },
+    {
+      "name": "nine_samples_span_five_seconds",
+      "offsets": [0, 0.625, 1.25, 1.875, 2.5, 3.125, 3.75, 4.375, 5],
+      "evaluatedAt": 5,
+      "eligible": false
+    },
+    {
+      "name": "inclusive_maximum_age_gap_radius_and_uncertainty",
+      "offsets": [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 5],
+      "evaluatedAt": 6,
+      "overrides": [
+        {
+          "index": 8,
+          "pointM": [-0.05, 0]
+        },
+        {
+          "index": 9,
+          "pointM": [0.05, 0]
+        }
+      ],
+      "eligible": true
+    },
+    {
+      "name": "newest_sample_is_stale",
+      "evaluatedAt": 6.001,
+      "eligible": false
+    },
+    {
+      "name": "gap_above_one_second_resets_the_episode",
+      "offsets": [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 5.001],
+      "evaluatedAt": 5.001,
+      "eligible": false
+    },
+    {
+      "name": "point_outside_anchor_radius_resets_eligibility",
+      "evaluatedAt": 5.5,
+      "append": {
+        "receivedAt": 5.5,
+        "pointM": [0.0501, 0]
+      },
+      "eligible": false
+    },
+    {
+      "name": "uncertainty_above_limit_resets_eligibility",
+      "evaluatedAt": 5.5,
+      "append": {
+        "receivedAt": 5.5,
+        "positionErrorM": 0.0251
+      },
+      "eligible": false
+    },
+    {
+      "name": "unknown_position_revokes_eligibility",
+      "evaluatedAt": 5.5,
+      "append": {
+        "receivedAt": 5.5,
+        "pointM": null,
+        "positionValid": false
+      },
+      "eligible": false
+    },
+    {
+      "name": "invalid_calibration_revokes_eligibility",
+      "evaluatedAt": 5.5,
+      "append": {
+        "receivedAt": 5.5,
+        "calibrationValid": false
+      },
+      "eligible": false
+    },
+    {
+      "name": "out_of_area_sample_revokes_eligibility",
+      "evaluatedAt": 5.5,
+      "append": {
+        "receivedAt": 5.5,
+        "positionValid": false
+      },
+      "eligible": false
+    },
+    {
+      "name": "change_sessionId_starts_new_episode",
+      "evaluatedAt": 5.5,
+      "append": {
+        "receivedAt": 5.5,
+        "sessionId": "changed"
+      },
+      "eligible": false
+    },
+    {
+      "name": "change_geometryVersion_starts_new_episode",
+      "evaluatedAt": 5.5,
+      "append": {
+        "receivedAt": 5.5,
+        "geometryVersion": "changed"
+      },
+      "eligible": false
+    },
+    {
+      "name": "change_mapId_starts_new_episode",
+      "evaluatedAt": 5.5,
+      "append": {
+        "receivedAt": 5.5,
+        "mapId": "changed"
+      },
+      "eligible": false
+    },
+    {
+      "name": "change_mapVersion_starts_new_episode",
+      "evaluatedAt": 5.5,
+      "append": {
+        "receivedAt": 5.5,
+        "mapVersion": "changed"
+      },
+      "eligible": false
+    },
+    {
+      "name": "change_calibrationId_starts_new_episode",
+      "evaluatedAt": 5.5,
+      "append": {
+        "receivedAt": 5.5,
+        "calibrationId": "changed"
+      },
+      "eligible": false
+    },
+    {
+      "name": "rover_samples_cannot_establish_floor_stationarity",
+      "sampleDefaults": {
+        "cameraKind": "ROVER"
+      },
+      "evaluatedAt": 5,
+      "eligible": false
+    },
+    {
+      "name": "capture_clock_skew_does_not_age_the_episode",
+      "sampleDefaults": {
+        "captureClockOffsetSeconds": -60
+      },
+      "evaluatedAt": 5,
+      "eligible": true
+    },
+    {
+      "name": "new_episode_can_qualify_after_invalidation",
+      "offsets": [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10, 10.5, 11],
+      "overrides": [
+        {
+          "index": 11,
+          "positionValid": false,
+          "pointM": null
+        }
+      ],
+      "evaluatedAt": 11,
+      "eligible": true
+    }
+  ]
+}
