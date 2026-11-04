@@ -100,7 +100,7 @@ export function connectBackend(publish: (state: Connection) => void, supplied?: 
       emit({ store, updatedAt: Date.now(), message: 'Opening event stream…' });
       source = deps.stream(`/api/events?after=${encodeURIComponent(store.cursor)}`);
       source.onopen = () => { if (current()) { retries = 0; emit({ status: 'connected', message: 'Backend connected · read-only' }); } };
-      for (const name of ['object.updated', 'alert.potential_target', 'alert.target_revoked']) source.addEventListener(name, ((event: MessageEvent<string>) => {
+      for (const name of ['object.observed', 'object.classified', 'object.updated', 'alert.potential_target', 'alert.target_revoked']) source.addEventListener(name, ((event: MessageEvent<string>) => {
         if (!current() || !state.store) return;
         try { emit({ store: applyEvent(state.store, JSON.parse(event.data)), updatedAt: Date.now() }); }
         catch { void load(); }

@@ -41,7 +41,7 @@ The adapter reads `GET /api/snapshot` before opening native EventSource at
 `alert.potential_target`, `alert.target_revoked` and `snapshot_required`.
 It replaces complete entity bodies, ignores stale revisions within a boot,
 deduplicates alerts, and refetches on a boot change, replay gap or malformed event.
-On transport loss it closes the old stream and refetches with backoff (1–15 s),
+On transport loss it closes the old stream and refetches with backoff (1â€“15 s),
 retaining the previous data with a stale warning. A 60-second snapshot refresh
 also rechecks idle sessions. Requests time out after 10 seconds. Rejected session
 setup stops automatic retries and offers manual retry after configuration.
@@ -51,13 +51,14 @@ when the Connected view is closed. They are not backend acknowledgements.
 Evidence URLs must be same-origin `/api/evidence/<id>`; a missing/expired image
 gets an unavailable placeholder. The UI never fetches camera/vision URLs.
 
-Implemented against `backend/app.py` and `backend/state.py` on main `b15053c`
+Implemented against `backend/app.py` and `backend/state.py` on main `94cb8bc`
 (PR #11 persistence and nested mapping included), with compatibility for the
 earlier flat object shape.
 It also accepts the nested mapping/classification shape from the lead's draft
-`contracts/backend-stream-v1.md` on `task/AlanDD13/vision-pipeline`; richer classification/evidence fields are optional. Main currently reports
-classification as PENDING and provides no exact evidence URL. Database persistence
-requires the backend owner�s BACKEND_DATABASE_URL configuration.
+`contracts/backend-stream-v1.md` on `task/AlanDD13/vision-pipeline`; richer classification/evidence fields are optional. Live vision ingest is still pending. Main may project trusted classification
+after queue admission; objects awaiting classification remain PENDING, and no
+exact evidence URL is supplied. Database persistence
+requires the backend owner’s BACKEND_DATABASE_URL configuration.
 
 Validation: `npm.cmd test`, `npm.cmd run build`, and browser QA against an
 isolated real FastAPI app with generated credentials and test-only observations.

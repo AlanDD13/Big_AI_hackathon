@@ -83,6 +83,16 @@ test('missing session uses local setup once; denial stops retries and never open
   assert.equal(h.pending.length, 0);
   h.client.close();
 });
+test('backend observed/classified events replace the same row without waiting for classification', async () => {
+  const h = harness([response()]);
+  await flush();
+  h.streams[0].send('object.observed', event({ ...object, backendRevision: 4, classificationStatus: 'PENDING' } as typeof object));
+  assert.equal(h.states.at(-1)?.store?.objects[0].classificationStatus, 'PENDING');
+  h.streams[0].send('object.classified', event({ ...object, backendRevision: 5, classificationStatus: 'COMPLETED', classification: { category: 'TRASH', confidence: 'HIGH' } } as typeof object));
+  assert.equal(h.states.at(-1)?.store?.objects.length, 1);
+  assert.equal(h.states.at(-1)?.store?.objects[0].classificationStatus, 'COMPLETED');
+  h.client.close();
+});
 test('session refresh retrieves new snapshot; connection failure retains stale data and schedules reconnect', async () => {
   const h = harness([new Response(null, { status: 401 }), new Response(null, { status: 204 }), response()]);
   await flush();

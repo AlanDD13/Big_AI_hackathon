@@ -26,6 +26,10 @@ Connected → Fleet adds browser-local EP Core serial-based setup profiles. See
 and the pending robot bridge API integration. Saving a setup never connects or
 moves a robot.
 
+Connected → Objects & alerts → Review vision fixtures previews observations,
+classification and visual pickup advice. It is explicitly labelled test data;
+see [VISION_REVIEW.md](VISION_REVIEW.md).
+
 Requires Node.js 24+ and npm. From `frontend/`:
 
 ```bash

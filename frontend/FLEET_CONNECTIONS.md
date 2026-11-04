@@ -53,8 +53,10 @@ arm/gripper, control owner and stop confirmation remain unknown. Connect,
 take/release control, stop and re-arm are disabled; this feature makes no robot
 writes or SDK calls. The main camera widget stays empty.
 
-The bridge/API integration and the physical stop-confirmation blocker must be
-resolved by backend/robot owners before those actions can be enabled. In
+The robot owner later reported passing the physical stop-confirmation bench,
+and watchdog PR #10 merged on main at 94cb8bc. That merge supplies bench tooling,
+not a live HTTP bridge. Backend/robot owners must publish the bridge/API and
+identity/status contract before those actions can be enabled. In
 particular, SDK speed writes are not a stop acknowledgement; no status is
 fabricated from a click or elapsed time. The existing joystick/overhead widgets
 remain isolated in Demo mode.
