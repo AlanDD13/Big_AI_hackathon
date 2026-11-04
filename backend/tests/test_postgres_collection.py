@@ -1,6 +1,8 @@
 import os
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from threading import Barrier
 from uuid import uuid4
 
 from backend.collection import (
@@ -79,11 +81,11 @@ class PostgresCollectionTests(unittest.TestCase):
             "test-profile",
         )
 
-    def admit(self, request=None):
+    def admit(self, request=None, *, key="fixture-intent"):
         return admit_collection(
             request or self.request,
             scope=self.request_scope,
-            key="fixture-intent",
+            key=key,
             store=self.store,
             mapping=self.mapping,
             now=self.now,
@@ -152,6 +154,26 @@ class PostgresCollectionTests(unittest.TestCase):
         self.assertEqual(self.admit(request), Admission("object_not_found"))
         self.assertEqual(self.mapping.calls, 0)
         self.assertEqual(self.missions(), [])
+
+    def test_two_requests_for_same_dashboard_object_reserve_once(self):
+        request = replace(
+            self.request, object_id=f"test-camera:test-session:{self.object_id}"
+        )
+        planned = Barrier(2, timeout=5)
+        self.mapping.before_return = planned.wait
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            first = workers.submit(self.admit, request, key="first-intent")
+            second = workers.submit(self.admit, request, key="second-intent")
+            results = [first.result(timeout=10), second.result(timeout=10)]
+
+        self.assertCountEqual(
+            [result.outcome for result in results], ["created", "object_reserved"]
+        )
+        stored = self.missions()
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0][1], "queued")
+        self.assertIsNone(stored[0][3])
 
     def test_revision_change_during_mapping_prevents_reservation(self):
         def advance_object_revision():
