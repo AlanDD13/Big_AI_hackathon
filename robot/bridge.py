@@ -816,10 +816,10 @@ class PhysicalChassisAdapter:
 class PhysicalBridgeRuntime:
     """One passed-in SDK session; telemetry and watchdog have explicit ownership."""
 
-    def __init__(self, rover, frame_buffer=None, *, rover_id="rover-1"):
+    def __init__(self, rover, frame_buffer=None, *, rover_id="rover-1", output=None):
         from watchdog_bench import Telemetry
 
-        self.output = PhysicalChassisAdapter(rover)
+        self.output = output if output is not None else PhysicalChassisAdapter(rover)
         self.controller = SafetyController(self.output, limits=self.output.limits)
         self.bridge = RobotBridge(self.controller, frame_buffer, rover_id=rover_id, physical=True)
         controller, bridge = self.controller, self.bridge

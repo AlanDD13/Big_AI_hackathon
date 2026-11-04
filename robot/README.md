@@ -197,3 +197,38 @@ PR #17 review fixes were verified offline with SDK-shaped recording fixtures
 and loopback HTTP tests. No physical bridge startup or movement is claimed by
 those checks. Updating these files does not replace a running camera-only server;
 stop the sole existing SDK owner before any separately authorized physical launch.
+
+### Supervised acceptance harness
+
+`physical_acceptance.py` uses one SDK session and opens no HTTP listener. Stop
+the existing camera/bridge owner first; a listener on local port 8004 blocks
+launch. This is a useful guard, not proof that no other machine owns the SDK.
+Keep an operator at the physical power switch throughout. Unexpected motion
+means power off, regardless of what the report says.
+
+Start with the disarmed, zero-only camera and telemetry observation:
+
+```bash
+robot/.venv/bin/python robot/physical_acceptance.py --sn 3JKCK7W0030DJS
+```
+
+The operator must type `ALLOW ZERO ONLY`. It sends startup/shutdown zero
+commands, observes camera and telemetry for two seconds, checks UNKNOWN and
+early rearm rejection, then confirms shutdown before disconnecting. SDK
+initialization changes SDK/mode state; this is not a passive network probe.
+Telemetry thresholds cannot exclude very slow drift; watch the actual rover.
+
+Only after investigating unexpected movement and agreeing a supervised test
+window, the separate `--allow-motion` option requires `ALLOW FORWARD TEST`.
+It sends one 0.05 m/s forward intent through the bridge, makes no requests for
+350 ms, verifies a zero dispatch within 300 ms, waits for stationary telemetry,
+and checks that explicit rearm does not issue another movement. No sideways,
+reverse, rotation, arm, gripper, transport, or policy execution is included.
+
+Reports are saved under ignored `robot/.local/acceptance/` with unique names.
+`PASS` refers only to the report's named scope. Dispatch timing is not physical
+stop latency; physical outcome requires operator/video confirmation. Remaining
+physical gates are listed in the report, including release/pickup arbitration.
+Existing offline tests cover that arbitration but do not establish live acceptance.
+No full physical recovery-loop completion is claimed. SDK calls can block;
+the operator must not rely on host cleanup as the emergency stop.
