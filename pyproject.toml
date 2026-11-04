@@ -51,6 +51,8 @@ all = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["vision/tests", "backend/tests", "tests"]
+addopts = "--import-mode=importlib"
+testpaths = ["vision/tests", "backend/tests", "mapping/test_mapper.py", "tests"]
+pythonpath = [".", "vision", "backend", "mapping"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
