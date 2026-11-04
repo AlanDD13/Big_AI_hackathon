@@ -23,7 +23,9 @@ and `BACKEND_TEST_DATABASE_URL` for tests, all owned by `zekihxh`.
 `SUPABASE_SERVICE_ROLE_KEY` does not replace the narrower `BACKEND_DATABASE_URL`
 runtime login and never reaches browser or peer modules.
 Frontend, mapping, and robot use backend APIs and get no database role and no
-service key. Never put credentials in Git, board comments, or frontend code.
+service key. Never put database credentials, service keys, model API keys, or private
+keys in Git, board comments, or frontend code. The vision `PEER_TOKEN` is the
+exception: post its new value on the board when it changes.
 The vision producer's versioned interface is specified in
 [`contracts/vision-v1.md`](../contracts/vision-v1.md). Stateless peer
 classification for mapping is in

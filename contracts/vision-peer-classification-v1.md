@@ -4,9 +4,10 @@ Owner: AlanDD13. Producer: vision/**. Consumer: Tezqx (mapping), optional backen
 Endpoint is stateless image analysis; it does not bypass tracking or authorize pickup.
 
 Alan's current camera test base is **https://192.168.5.192:8443**, not port 8002.
-`GET /health` is public. Other routes require bearer auth. Use PEER_TOKEN via
-the agreed private channel (Signal); never post it or the OpenRouter key on the
-board. Pin the public dev certificate at infrastructure/certs/vision-dev.crt
+`GET /health` is public. Other routes require bearer auth. The current
+`PEER_TOKEN` is posted on the board when it changes, so mapping is not blocked
+on a private handoff. Do not post OpenRouter, xAI, database, service-role, or
+private-key material on the board. Pin the public dev certificate at infrastructure/certs/vision-dev.crt
 through VISION_CA_CERT. That file is the public certificate only. It expires
 2026-11-07 16:47:08 GMT and names IP 192.168.5.192. The private key is not in
 git. Do not copy lan.key or disable verification.
@@ -79,7 +80,7 @@ from vision.cctv_monitor import detect_frame_objects, classify_object_remote
 
 # Environment on Tezqx's machine:
 # VISION_REMOTE_URL=https://192.168.5.192:8443
-# PEER_TOKEN=<current shared value received through Signal>
+# PEER_TOKEN=<current value posted on the board when it changes>
 # VISION_CA_CERT=infrastructure/certs/vision-dev.crt
 result = classify_object_remote(object_crop_bgr, context=original_frame_bgr)
 classification = result["classification"]["result"]
