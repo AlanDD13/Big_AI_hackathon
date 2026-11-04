@@ -34,6 +34,10 @@ Temporary live manual chassis driving (`MANUAL_CHASSIS_SLICE_1`) is specified in
 [`contracts/manual-control-v1.md`](../contracts/manual-control-v1.md) (chassis-only
 precision driving with P4 as sole DJI `rmepcore` owner, `<= 300 ms` bridge
 watchdog, and overhead/manipulation kept `SIMULATED_ONLY`).
+The mission queue checkpoint is
+[`contracts/mission-queue-v1.md`](../contracts/mission-queue-v1.md). It stores
+`QUEUED` only and does not call the robot. The uncalibrated demo grid is
+[`contracts/demo-grid-v1.md`](../contracts/demo-grid-v1.md).
 These are canonical drafts on the vision branch, not merged APIs.
 This records the [FigJam proposal](https://www.figma.com/board/bmW81xDifPQz5Icv98D8Hd/Big-AI?node-id=25-1003).
 

@@ -11,6 +11,14 @@ def load(name):
     return json.loads((ROOT / name).read_text())
 
 
+def demo_sector(x, y, width, height):
+    if not (0 <= x < width and 0 <= y < height):
+        return None
+    column = min(4, int(x / width * 4) + 1)
+    row_from_top = min(4, int(y / height * 4) + 1)
+    return "ABCD"[4 - row_from_top] + str(column)
+
+
 class ContractFixtureTest(unittest.TestCase):
     def test_robot_cases_cover_the_requested_races(self):
         fixture = load("fixtures/robot-simulator.json")
@@ -124,8 +132,33 @@ class ContractFixtureTest(unittest.TestCase):
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:10",
         )
 
+    def test_mission_queue_replay_is_current_state_without_a_robot_call(self):
+        fixture = load("fixtures/mission-queue.json")
+        self.assertFalse(fixture["robotCalled"])
+        self.assertFalse(fixture["dispatchEligible"])
+        self.assertEqual(fixture["created"]["http"], 202)
+        self.assertEqual(fixture["created"]["mission"]["state"], "QUEUED")
+        self.assertEqual(fixture["replay"]["http"], 200)
+        self.assertTrue(fixture["replay"]["sameMissionId"])
+        self.assertFalse(fixture["replay"]["secondSseEvent"])
+        codes = {item["id"]: (item["http"], item["code"]) for item in fixture["errors"]}
+        self.assertEqual(codes["missing_object"], (404, "OBJECT_NOT_FOUND"))
+        self.assertEqual(codes["idempotency_conflict"], (409, "IDEMPOTENCY_CONFLICT"))
+        self.assertEqual(codes["expired_session"], (401, "UNAUTHORIZED"))
+        text = (ROOT / "mission-queue-v1.md").read_text()
+        self.assertIn("does not call the robot", text)
+
+    def test_demo_grid_matches_the_half_metre_example(self):
+        self.assertEqual(demo_sector(855, 423, 1920, 1080), "C2")
+        self.assertEqual(demo_sector(0, 1079, 1920, 1080), "A1")
+        self.assertEqual(demo_sector(1919, 0, 1920, 1080), "D4")
+        self.assertIsNone(demo_sector(1920, 423, 1920, 1080))
+        text = (ROOT / "demo-grid-v1.md").read_text()
+        self.assertIn("calibrated` is false", text)
+        self.assertIn("POST /api/observations", text)
+
     def test_documents_exist(self):
-        for name in ("vision-v1.md", "backend-stream-v1.md", "robot-simulator-v1.md", "manual-control-v1.md"):
+        for name in ("vision-v1.md", "backend-stream-v1.md", "robot-simulator-v1.md", "manual-control-v1.md", "mission-queue-v1.md", "demo-grid-v1.md"):
             self.assertGreater(len((ROOT / name).read_text()), 400)
 
 

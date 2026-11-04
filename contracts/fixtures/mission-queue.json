@@ -1,0 +1,43 @@
+{
+  "schemaVersion": "mission.queue.v1",
+  "fixtureClass": "LABELLED_CONTRACT_FIXTURE",
+  "robotCalled": false,
+  "dispatchEligible": false,
+  "request": {
+    "objectId": "phone-1:session1:track1",
+    "destinationZoneId": "zone-1",
+    "source": "manual",
+    "idempotencyKey": "intent-key-1"
+  },
+  "created": {
+    "http": 202,
+    "mission": {
+      "missionId": "mission-1",
+      "state": "QUEUED",
+      "objectId": "phone-1:session1:track1",
+      "destinationZoneId": "zone-1",
+      "source": "manual",
+      "backendBootId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "backendRevision": 1
+    },
+    "sse": "mission.updated"
+  },
+  "replay": {
+    "http": 200,
+    "sameMissionId": true,
+    "secondSseEvent": false
+  },
+  "errors": [
+    {"id": "idempotency_conflict", "http": 409, "code": "IDEMPOTENCY_CONFLICT"},
+    {"id": "missing_object", "http": 404, "code": "OBJECT_NOT_FOUND"},
+    {"id": "stationarity", "http": 409, "code": "STATIONARITY_REQUIRED"},
+    {"id": "classification_missing", "http": 409, "code": "CLASSIFICATION_REQUIRED"},
+    {"id": "classification_excluded", "http": 409, "code": "CLASSIFICATION_EXCLUDED"},
+    {"id": "pickup_profile", "http": 409, "code": "PICKUP_PROFILE_REQUIRED"},
+    {"id": "evidence_changed", "http": 409, "code": "EVIDENCE_CHANGED"},
+    {"id": "route_unavailable", "http": 409, "code": "ROUTE_UNAVAILABLE"},
+    {"id": "mapping_unavailable", "http": 503, "code": "MAPPING_UNAVAILABLE"},
+    {"id": "expired_session", "http": 401, "code": "UNAUTHORIZED"},
+    {"id": "bad_body", "http": 422, "code": "VALIDATION_ERROR"}
+  ]
+}
