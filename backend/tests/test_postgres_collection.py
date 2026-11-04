@@ -117,7 +117,7 @@ class PostgresCollectionTests(unittest.TestCase):
         evidence_reads_before_replay = list(self.evidence_reads)
 
         self.clock = 30.0
-        self.assertEqual(self.admit(), Admission("replayed", first.mission_id, "queued"))
+        self.assertEqual(self.admit(), Admission("replayed", first.mission_id, "queued", 0))
         conflicting = replace(self.request, destination_zone_id="other-zone")
         self.assertEqual(self.admit(conflicting), Admission("key_conflict"))
         self.assertEqual(self.mapping.calls, 1)
@@ -146,7 +146,7 @@ class PostgresCollectionTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(stored_object_id, self.object_id)
         self.assertEqual(stored_request_object_id, wire_id)
-        self.assertEqual(self.admit(wire_request), Admission("replayed", first.mission_id, "cancelled"))
+        self.assertEqual(self.admit(wire_request), Admission("replayed", first.mission_id, "cancelled", 1))
         self.assertEqual(self.mapping.calls, 1)
 
     def test_unknown_dashboard_object_never_reaches_planner(self):

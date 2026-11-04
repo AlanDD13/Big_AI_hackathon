@@ -34,19 +34,38 @@ class PostgresCollectionStore:
         connection: Connection, scope: str, key: str, request: CollectionRequest
     ) -> Admission | None:
         row = connection.execute(
-            """SELECT id, state, request_data = %s::jsonb
+            """SELECT id, state, request_data = %s::jsonb, status_revision
                FROM rover_backend.missions
                WHERE request_scope = %s AND idempotency_key = %s""",
             (json.dumps(asdict(request)), scope, key),
         ).fetchone()
         if row is None:
             return None
-        mission_id, state, matches = row
-        return Admission("replayed", str(mission_id), state) if matches else Admission("key_conflict")
+        mission_id, state, matches, status_revision = row
+        return Admission("replayed", str(mission_id), state, status_revision) if matches else Admission("key_conflict")
 
     def replay(self, scope: str, key: str, request: CollectionRequest) -> Admission | None:
         with self._connect() as connection:
             return self._replay(connection, scope, key, request)
+
+    def load_missions(self) -> list[dict[str, object]]:
+        """Read persisted admissions for the new boot's snapshot projection."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT id, request_data, state, status_revision FROM rover_backend.missions
+                   ORDER BY created_at, id"""
+            ).fetchall()
+        return [
+            {
+                "mission_id": str(mission_id),
+                "object_id": request["object_id"],
+                "destination_zone_id": request["destination_zone_id"],
+                "source": request["source"],
+                "state": state.upper(),
+                "status_revision": status_revision,
+            }
+            for mission_id, request, state, status_revision in rows
+        ]
 
     @staticmethod
     def _resolve_object_id(connection: Connection, object_id: str, *, lock: bool = False) -> str | None:
@@ -123,4 +142,10 @@ class PostgresCollectionStore:
                         mission_id,
                     ),
                 )
-            return Admission(outcome, str(mission_id) if mission_id is not None else None, mission_state)
+            status_revision = None
+            if mission_id is not None:
+                status_revision = connection.execute(
+                    "SELECT status_revision FROM rover_backend.missions WHERE id = %s",
+                    (mission_id,),
+                ).fetchone()[0]
+            return Admission(outcome, str(mission_id) if mission_id is not None else None, mission_state, status_revision)

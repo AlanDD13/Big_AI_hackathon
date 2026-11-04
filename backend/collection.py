@@ -36,6 +36,7 @@ class Admission:
     outcome: str
     mission_id: str | None = None
     mission_state: str | None = None
+    status_revision: int | None = None
 
 
 class CollectionStore(Protocol):
