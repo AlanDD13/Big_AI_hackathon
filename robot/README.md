@@ -94,3 +94,9 @@ commands were sent. IP addresses are discovered afresh, not hardcoded.
 Camera, infrared distance sensor, arm/gripper responses, movement and watchdog
 behavior still require separate checks. No command server or shared API
 integration is included in this task.
+
+## Hardware functionality checks
+
+See [HARDWARE_CHECKS.md](HARDWARE_CHECKS.md) for real camera/sensor/chassis/arm/
+gripper results, reproduction commands, SDK quirks and remaining limitations.
+`check_hardware.py` is a staged bench diagnostic, not a live control bridge.
