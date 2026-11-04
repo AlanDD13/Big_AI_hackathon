@@ -33,6 +33,8 @@ BEGIN
 END
 $$;
 
+GRANT rover_backend_migrator, rover_backend_runtime TO postgres;
+
 REVOKE ALL ON SCHEMA public FROM rover_backend_migrator, rover_backend_runtime;
 
 GRANT USAGE, CREATE ON SCHEMA rover_backend TO rover_backend_migrator;

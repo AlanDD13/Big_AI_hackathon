@@ -27,7 +27,9 @@ Known work before dispatch-ready review:
   `frameId`, `MappingEvidence` continues to require valid calibrated
   observations or an explicit `invalidReason` (never `(0, 0)`), and `mapping/`
   still does not open camera streams directly.
-- Typed object, alert, snapshot, and recovery fixtures are on this branch.
+- Typed object, alert, snapshot, recovery, backend stream, and manual chassis
+  slice 1 (`MANUAL_CHASSIS_SLICE_1` in `contracts/manual-control-v1.md` and
+  `contracts/fixtures/manual-control.json`) fixtures are on this branch.
   Same-revision frame-pending suppression no longer emits a second target alert.
   A real loss during that suppression still revokes.
 - Mapping evidence now rejects a missing invalid reason and IDs outside the

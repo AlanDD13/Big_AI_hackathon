@@ -30,9 +30,11 @@ snapshot/SSE/session rules are in
 [`contracts/backend-stream-v1.md`](../contracts/backend-stream-v1.md).
 Robot simulator slice 1 is in
 [`contracts/robot-simulator-v1.md`](../contracts/robot-simulator-v1.md).
-Manual control is future work in
-[`contracts/manual-control-v1.md`](../contracts/manual-control-v1.md) and is
-not slice 1. These are canonical drafts on the vision branch, not merged APIs.
+Temporary live manual chassis driving (`MANUAL_CHASSIS_SLICE_1`) is specified in
+[`contracts/manual-control-v1.md`](../contracts/manual-control-v1.md) (chassis-only
+precision driving with P4 as sole DJI `rmepcore` owner, `<= 300 ms` bridge
+watchdog, and overhead/manipulation kept `SIMULATED_ONLY`).
+These are canonical drafts on the vision branch, not merged APIs.
 This records the [FigJam proposal](https://www.figma.com/board/bmW81xDifPQz5Icv98D8Hd/Big-AI?node-id=25-1003).
 
 ## Demo and module boundaries
@@ -53,7 +55,12 @@ If pickup is unreliable, agree a labelled detect/locate/approach/notify demo.
 Vision owns the camera connection and serves matching frames to mapping;
 the modules must not compete for one USB camera. Mapping plans routes; robot
 follows them, converts map movement to robot commands and enforces local limits.
-Only `robot/` connects to the physical rover.
+Only `robot/` (`platonyesin-dev`) connects to the physical rover via the DJI SDK
+(`rmepcore`), and **only one machine on the LAN (STA) may open a DJI SDK session
+at a time**. Other machines on the same LAN (such as `frontend/` on Windows or
+`backend/`) talk to `robot/`'s HTTP bridge via `ROBOT_BRIDGE_URL`
+(`http://<p4-lan-ip>:8004` with server-side `PEER_TOKEN`), never by opening a
+second DJI SDK connection.
 
 ## Proposed wire surface
 
@@ -66,8 +73,12 @@ Only `robot/` connects to the physical rover.
     (`GET /api/objects` is only `vision/`'s local non-durable diagnostic endpoint,
     not the dashboard source; expired/missing session returns `401 Unauthorized`).
   - Operator writes: `POST /api/missions`, `POST /api/missions/{id}/cancel`,
-    `POST /api/robots/{id}/stop`.
-- Bridge: `POST /commands`, `/poses`, `/stop`, `/rearm`; `GET /commands/{id}`.
+    `POST /api/robots/{id}/stop`, and manual chassis slice routes
+    `POST /api/manual/lease`, `POST /api/manual/drive`, `POST /api/manual/release`,
+    `POST /api/manual/stop`, `POST /api/manual/rearm`, `GET /api/manual/status`.
+- Bridge: `POST /commands`, `/poses`, `/stop`, `/rearm`; `GET /commands/{id}`;
+  manual chassis mirror routes `POST /manual/lease`, `POST /manual/drive`,
+  `POST /manual/release`, `POST /manual/rearm`, `GET /manual/status`.
   Robot reports to backend `POST /api/robot-events`.
 
 Tracks carry camera/frame/track IDs, capture time, class, detector score, pixel

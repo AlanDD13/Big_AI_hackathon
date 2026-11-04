@@ -27,10 +27,20 @@ class ContractFixtureTest(unittest.TestCase):
 
     def test_manual_control_is_not_slice_one(self):
         fixture = load("fixtures/manual-control.json")
-        self.assertEqual(fixture["status"], "FUTURE_NOT_SLICE_1")
+        self.assertEqual(fixture["status"], "MANUAL_CHASSIS_SLICE_1")
         self.assertEqual(fixture["platform"], "rmepcore")
+        self.assertEqual(fixture["soleDjiOwner"], "platonyesin-dev")
         self.assertTrue(fixture["sdkTimeoutIsHostTimer"])
-        self.assertFalse(fixture["implementRoutes"])
+        self.assertTrue(fixture["implementRoutes"])
+        self.assertTrue(fixture["liveChassisDriving"])
+        self.assertEqual(fixture["overheadNavigationMode"], "SIMULATED_ONLY")
+        self.assertEqual(fixture["manipulationMode"], "SIMULATED_ONLY")
+        self.assertEqual(fixture["caps"]["watchdogTimeoutMs"], 300)
+        self.assertEqual(fixture["caps"]["maxAbsXMps"], 0.35)
+        self.assertEqual(fixture["caps"]["maxAbsYMps"], 0.35)
+        self.assertEqual(fixture["caps"]["maxAbsZDegps"], 45.0)
+        self.assertIn("POST /api/manual/lease", fixture["routes"]["browserToBackend"])
+        self.assertIn("POST /manual/drive", fixture["routes"]["backendToBridge"])
         self.assertIn("pixel", fixture["overheadRequest"])
         self.assertNotIn("xMps", fixture["overheadRequest"])
 
