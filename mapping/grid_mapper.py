@@ -1,20 +1,25 @@
-"""Turn a burst of sector labels into one rover waypoint.
+"""Turn a camera point or a burst of sector labels into one demo waypoint.
 
-Sector names are a row letter plus a column number, such as ``B2`` or ``A-1``.
-Each cell is 1 metre square. The returned point is the cell centre in metres
-from the map origin: column 1 is x = 0.5, row A is y = 0.5.
+Sector names are a row letter plus a column number, such as ``C2`` or ``A-1``.
+The demo room is four columns by four rows of 0.5 metre cells, 2.0 m by 2.0 m.
+Column 1 is the left side of the camera frame. Row A is the bottom row, because
+map +y points up, so the top row is D. The returned point is the cell centre:
+A1 is (0.25, 0.25) and C2 is (0.75, 1.25).
 
-These metres are a local demo grid. Replace them when the measured floor map
-is agreed. An unknown sector or a burst with no strict majority fails instead
-of inventing a point.
+``pixel_to_sector`` only splits the frame into those equal cells. It does not
+measure the floor. These metres stay a local demo grid until a measured map is
+agreed. An unknown sector, a point outside the frame, or a burst with no
+strict majority fails instead of inventing a point.
 
-A camera burst is accepted only as already-labelled sector names. Contact
-pixels are not floor metres, and this result is not calibrated MappingEvidence.
+A camera burst is accepted only as already-labelled sector names. This result
+is not calibrated MappingEvidence.
 """
 
 from __future__ import annotations
 
-CELL_METRES = 1.0
+CELL_METRES = 0.5
+GRID_COLUMNS = 4
+GRID_ROWS = 4
 
 
 def _canonical(sector_name: str) -> str:
@@ -124,11 +129,53 @@ def waypoint_from_burst(payload: dict) -> dict[str, object]:
 
 
 def sector_to_coordinates(sector_name: str) -> tuple[float, float]:
-    """Return the sector centre as ``(x, y)`` metres."""
+    """Return the 0.5 m sector centre as ``(x, y)`` metres.
+
+    The centre is half a cell in from the sector's lower-left corner. A sector
+    outside the 4 by 4 demo room fails instead of returning a point past the room.
+    """
     canonical = _canonical(sector_name)
-    column = int(canonical[1:]) - 1
+    column = int(canonical[1:])
     row = ord(canonical[0]) - ord("A")
-    if row < 0:
-        raise ValueError(f"unrecognised sector: {sector_name!r}")
-    centre = 0.5 * CELL_METRES
-    return (column * CELL_METRES + centre, row * CELL_METRES + centre)
+    if row < 0 or row >= GRID_ROWS or column > GRID_COLUMNS:
+        raise ValueError(f"sector outside the demo room: {canonical}")
+    centre = CELL_METRES / 2
+    point = ((column - 1) * CELL_METRES + centre, row * CELL_METRES + centre)
+    if point == (0.0, 0.0):
+        raise ValueError("refusing (0, 0) waypoint")
+    return point
+
+
+def pixel_to_sector(cx: float, cy: float, img_width: int, img_height: int) -> str:
+    """Return the 0.5 m demo sector that contains a pixel point.
+
+    The frame is split into ``GRID_COLUMNS`` equal vertical strips and
+    ``GRID_ROWS`` equal horizontal strips. Left is column 1. Image y grows
+    downward, so the top strip is the highest row letter. A point outside the
+    frame fails. The label is an uncalibrated demo sector, not a floor measurement.
+    """
+    if isinstance(cx, bool) or not isinstance(cx, (int, float)):
+        raise ValueError("cx must be a number")
+    if isinstance(cy, bool) or not isinstance(cy, (int, float)):
+        raise ValueError("cy must be a number")
+    if type(img_width) is not int or img_width < 1:
+        raise ValueError("img_width must be a positive integer")
+    if type(img_height) is not int or img_height < 1:
+        raise ValueError("img_height must be a positive integer")
+    if cx < 0 or cy < 0 or cx > img_width or cy > img_height:
+        raise ValueError("pixel is outside the frame")
+
+    column = _image_band(float(cx), img_width, GRID_COLUMNS) + 1
+    row_from_top = _image_band(float(cy), img_height, GRID_ROWS)
+    row = GRID_ROWS - 1 - row_from_top
+    return f"{chr(ord('A') + row)}{column}"
+
+
+def _image_band(position: float, size: int, count: int) -> int:
+    """Return the 0-based strip index, keeping the far edge inside the last strip."""
+    if position == size:
+        return count - 1
+    index = int(position * count / size)
+    if index < 0 or index >= count:
+        raise ValueError("pixel is outside the frame")
+    return index
