@@ -7,6 +7,7 @@ import socket
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 
 
 def find_rover(serial, timeout=8):
@@ -29,7 +30,8 @@ def find_rover(serial, timeout=8):
     raise RuntimeError("Confirmed serial not discovered; check STA mode, LAN access and macOS Local Network permission")
 
 
-def connect_once(serial, verbose=False):
+@contextmanager
+def rover_session(serial, verbose=False):
     from robomaster import client, config, conn, logger, protocol, robot
 
     logger.setLevel(logging.DEBUG if verbose else logging.WARNING)
@@ -60,12 +62,18 @@ def connect_once(serial, verbose=False):
                   "firmware": firmware, "connection": "sta/udp",
                   "actuator_commands": "NONE",
                   "camera_and_sensor_checks": "NOT ATTEMPTED"}
+        yield rover, result
     finally:
         try:
             if rover is not None:
                 rover.close()
         finally:
             negotiation.close()
+
+
+def connect_once(serial, verbose=False):
+    with rover_session(serial, verbose) as (_, result):
+        pass
     result["sdk_close"] = "RETURNED"
     print(json.dumps(result, indent=2), flush=True)
 
