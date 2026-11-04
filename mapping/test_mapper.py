@@ -63,7 +63,7 @@ class PixelSectorTests(unittest.TestCase):
 
     def test_frame_corners_use_the_outer_cells(self) -> None:
         self.assertEqual(pixel_to_sector(0, 0, 1920, 1080), "D1")
-        self.assertEqual(pixel_to_sector(1920, 1080, 1920, 1080), "A4")
+        self.assertEqual(pixel_to_sector(1919, 1079, 1920, 1080), "A4")
         self.assertNotEqual(sector_to_coordinates("D1"), (0.0, 0.0))
 
     def test_cell_boundaries_belong_to_the_next_cell(self) -> None:
@@ -75,6 +75,8 @@ class PixelSectorTests(unittest.TestCase):
             pixel_to_sector(-1, 423, 1920, 1080)
         with self.assertRaises(ValueError):
             pixel_to_sector(855, 1081, 1920, 1080)
+        with self.assertRaises(ValueError):
+            pixel_to_sector(1920, 1080, 1920, 1080)
 
 
 def _detection(frame_index: int, sector: str | None, contact: list[float] | None = None) -> dict:

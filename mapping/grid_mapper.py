@@ -162,7 +162,7 @@ def pixel_to_sector(cx: float, cy: float, img_width: int, img_height: int) -> st
         raise ValueError("img_width must be a positive integer")
     if type(img_height) is not int or img_height < 1:
         raise ValueError("img_height must be a positive integer")
-    if cx < 0 or cy < 0 or cx > img_width or cy > img_height:
+    if cx < 0 or cy < 0 or cx >= img_width or cy >= img_height:
         raise ValueError("pixel is outside the frame")
 
     column = _image_band(float(cx), img_width, GRID_COLUMNS) + 1
@@ -172,9 +172,9 @@ def pixel_to_sector(cx: float, cy: float, img_width: int, img_height: int) -> st
 
 
 def _image_band(position: float, size: int, count: int) -> int:
-    """Return the 0-based strip index, keeping the far edge inside the last strip."""
-    if position == size:
-        return count - 1
+    """Return the 0-based strip index. The far edge is outside the frame."""
+    if position < 0 or position >= size:
+        raise ValueError("pixel is outside the frame")
     index = int(position * count / size)
     if index < 0 or index >= count:
         raise ValueError("pixel is outside the frame")
