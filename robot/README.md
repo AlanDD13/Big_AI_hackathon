@@ -232,3 +232,45 @@ physical gates are listed in the report, including release/pickup arbitration.
 Existing offline tests cover that arbitration but do not establish live acceptance.
 No full physical recovery-loop completion is claimed. SDK calls can block;
 the operator must not rely on host cleanup as the emergency stop.
+
+### Physical recovery adapter proposal
+
+`recovery_adapter.PhysicalRecoveryAdapter` is explicitly `mode="physical"`.
+It accepts an existing `PhysicalBridgeRuntime`; it never opens another SDK
+session, exposes a new HTTP route, or implicitly rearms. The current shared
+LangGraph rejects this mode: the integration owner must explicitly wire and
+review physical support, rather than relabelling this adapter as a simulator.
+
+Constructor dependencies are mandatory:
+
+- `authority.reserve(mission_id)` must durably reserve through P3; only literal
+  `True` grants authority. `authority.allows(command)` checks current dispatch
+  authorization. No permissive authority stub is supplied.
+- `observations(binding)` must return actual trusted perception/sensor evidence
+  for the mission or command binding: matching object/revision, camera/session,
+  increasing frame, identity evidence and capture/telemetry ages <=500 ms.
+  It must also provide command-bound pickup/place evidence before those future
+  capabilities can be integrated. Camera images or TOF alone do not establish
+  object identity, a safe route, or successful grasp.
+- `planner(command, observation)` returns a calibrated `ChassisPlan` tied to
+  that exact command/object/revision and refreshed frame/identity evidence.
+  Grok is not permitted to supply velocities or pretend a demo grid is calibrated.
+- `journal_path` is a private persistent local SQLite file, for example under
+  `robot/.local/recovery/`. It supplements P3 authority; it is not backend storage.
+
+Currently only bounded `approach` and `align` are implemented, through shared
+manual lease arbitration. Test caps are stricter than the bridge: 0.05 m/s per
+axis, 5 degrees/s, <=150 ms per segment. The controller receives an expiring
+intent; an independent watchdog remains active. Clean release must be confirmed
+by fresh telemetry before ACKNOWLEDGED is returned. Receipt ACK is not evidence
+that the target was reached. Perception must independently establish that.
+
+Pickup, transport and place are rejected without output. Agreed physical arm
+macro durations, verified object profiles, held-object/destination evidence and
+shared graph wiring are still required for a full five-phase test. No executable
+entry point or default fixture can turn this proposal into an autonomous run.
+
+Local reservations survive process restarts; command IDs are written UNKNOWN
+before any possible output. No ID is resent, even after a previous successful
+ACK. An ambiguous drive outcome remains uncertain even if a later stop confirms.
+There is intentionally no automatic journal reset/release or replay operation.
