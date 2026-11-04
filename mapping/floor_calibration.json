@@ -1,0 +1,44 @@
+{
+  "source": "C:\\Users\\Amirkhan\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\ucheba\\Big_AI_hackathon\\mapping\\new_photo.jpg",
+  "imageWidth": 1920,
+  "imageHeight": 1080,
+  "FLOOR_POLYGON_PX": [
+    [
+      5.24,
+      10.47
+    ],
+    [
+      12.22,
+      1068.22
+    ],
+    [
+      1879.85,
+      1075.2
+    ],
+    [
+      1630.25,
+      857.02
+    ],
+    [
+      1515.05,
+      603.93
+    ],
+    [
+      1892.07,
+      464.29
+    ],
+    [
+      1885.09,
+      19.2
+    ],
+    [
+      5.24,
+      10.47
+    ]
+  ],
+  "pointCount": 8,
+  "cellMetres": 0.5,
+  "rows": "A top to D bottom",
+  "columns": "1 left to 4 right",
+  "calibrated": false
+}
