@@ -228,7 +228,8 @@ class VisionService:
                            "bboxPx": list(state.box), "contactPointPx": update.detection.contact_point,
                            "motionState": state.motion_state, "pixelStationarySeconds": state.pixel_static_s,
                            "exclusionReason": state.excluded_reason})
-            if (state.kind == "FIXED" and state.motion_state == "STATIONARY" and
+            if (self.settings.automatic_classification and
+                    state.kind == "FIXED" and state.motion_state == "STATIONARY" and
                     not state.excluded_reason and state.classification_attempt != state.revision and
                     len(self.classification_tasks) < self.settings.max_pending_classifications):
                 state.classification_attempt = state.revision

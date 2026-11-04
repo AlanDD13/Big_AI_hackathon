@@ -35,6 +35,15 @@ The first inference may download weights; warm up before measuring performance.
 Grok uses XAI_API_KEY and optional GROK_VISION_MODEL (default grok-4.7). Without
 an xAI or OpenRouter API key classification is UNAVAILABLE, never simulated as a live result.
 
+For identification testing, set `VISION_AUTOMATIC_CLASSIFICATION=false` before
+starting the server. Frames and local detection/tracking continue, but stationary
+objects trigger no automatic Grok calls or pickup assessments. Use an explicit
+`POST /api/classify-object` with `includePickup:false` for one identification call
+per requested test; do not poll or automatically retry this billed endpoint.
+`GET /health` reports `automaticClassificationEnabled` and the pending automatic
+task count. The default remains `true` for the normal pipeline. This flag does
+not disable explicit peer classification/confirmation requests.
+
 The /camera page is an operational camera-source page, not the main dashboard.
 For independent phones, use LAN HTTPS with --cert and --key; plain LAN HTTP is
 rejected by the CLI. Configure camera IDs with VISION_CAMERAS, for example

@@ -125,6 +125,8 @@ def create_app(settings=None, detector=None, classifier=None, run_workers=True):
                 "detectorProfile": getattr(service.detector, "profile", "default"),
                 "detectorModel": getattr(service.detector, "model_name", None),
                 "liveClassificationConfigured": bool(getattr(service.classifier, "_key", None)),
+                "automaticClassificationEnabled": settings.automatic_classification,
+                "pendingAutomaticClassifications": len(service.classification_tasks),
                 "delivery": {"delivered": publisher.delivered, "failed": publisher.failed,
                              "queued": publisher.queue.qsize(), "lastError": publisher.last_error}}
 
