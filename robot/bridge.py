@@ -27,7 +27,7 @@ from typing import Callable
 from urllib.parse import parse_qs, urlsplit
 
 from camera import RoverFrameBuffer, verify_bearer_header
-from safety import Limits, SafetyController, SafetyError
+from safety import Limits, SafetyController, SafetyError, Watchdog
 
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 OBJECT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}:[A-Za-z0-9_-]{1,64}:[A-Za-z0-9_-]{1,64}$")
@@ -61,6 +61,7 @@ class CommandRecord:
     stopped: bool = False
     rearmed: bool = False
     binding: dict[str, object] | None = None
+    stop_pending: bool = False
 
     def snapshot(self, boot_id: str, *, acted: bool | None = None, motion: bool = False) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -105,6 +106,7 @@ class RobotBridge:
         wall_clock: Callable[[], float] = time.time,
         monotonic_clock: Callable[[], float] = time.monotonic,
         allow_implicit_commands: bool = True,
+        physical: bool = False,
     ) -> None:
         self.controller = controller
         self.frame_buffer = frame_buffer or RoverFrameBuffer(
@@ -116,12 +118,35 @@ class RobotBridge:
         self._wall_clock = wall_clock
         self._monotonic_clock = monotonic_clock
         self.allow_implicit_commands = allow_implicit_commands
+        self.physical = physical
+        self._manual_interlock = False
+        self._watchdog: Watchdog | None = None
         self._lock = threading.Lock()
         self._commands: dict[str, CommandRecord] = {}
         self._retired_command_ids: set[str] = set()
         self._lease: ManualLease | None = None
         self._lease_counter = 0
         self._last_pose_received_at: float | None = None
+
+    def start(self) -> None:
+        if self._watchdog is None:
+            self._watchdog = Watchdog(self.controller)
+            self._watchdog.start()
+        elif not self._watchdog.alive:
+            raise RuntimeError("Bridge watchdog exited; explicit recovery required")
+
+    def close(self) -> None:
+        if self._watchdog is not None:
+            watchdog, self._watchdog = self._watchdog, None
+            watchdog.close()
+        else:
+            self.controller.stop("SHUTDOWN")
+
+    def _sync_stop_unlocked(self, rec: CommandRecord) -> None:
+        if rec.stop_pending and self.controller.tick().get("stopConfirmed"):
+            rec.stage = "STOPPED"
+            rec.stop_pending = False
+            rec.status_revision += 1
 
     @property
     def boot_id(self) -> str:
@@ -171,7 +196,7 @@ class RobotBridge:
 
     def _has_active_autonomous_command_unlocked(self) -> bool:
         for rec in self._commands.values():
-            if rec.stage in ("NAVIGATING", "ALIGNING", "PICKING", "HELD"):
+            if rec.stage in ("NAVIGATING", "ALIGNING", "PICKING", "HELD", "UNKNOWN"):
                 return True
         return False
 
@@ -230,6 +255,7 @@ class RobotBridge:
                     "UNKNOWN_COMMAND",
                     f"Command {command_id!r} is unknown on bridgeBootId {self.boot_id}",
                 )
+            self._sync_stop_unlocked(rec)
             return 200, rec.snapshot(self.boot_id)
 
     def pickup(
@@ -282,6 +308,15 @@ class RobotBridge:
                     "MANUAL_LEASE_ACTIVE",
                     "Cannot authorize autonomous pickup while a manual lease is active",
                 )
+
+            ctrl_status = self.controller.tick() if (self.physical or self._manual_interlock) else self.controller.status()
+            if (self.physical or self._manual_interlock) and (
+                ctrl_status.get("stage") != "IDLE" or ctrl_status.get("releasePending")
+                or not ctrl_status.get("telemetryFresh") or not ctrl_status.get("heartbeatFresh")
+            ):
+                if ctrl_status.get("stage") == "STOPPED":
+                    return self._error_response(409, "STOP_LOCKED", "Confirmed stop requires explicit rearm")
+                return self._error_response(503, "TELEMETRY_STALE", "Manual/hardware stop is unconfirmed or authority is not idle")
 
             rec = self._get_or_init_command_unlocked(command_id, mission_id, object_id)
             if rec is None:
@@ -401,7 +436,7 @@ class RobotBridge:
         if not _valid_id(command_id) or body_cid != command_id or not _valid_id(mission_id):
             return self._error_response(422, "VALIDATION_ERROR", "stop requires valid commandId and missionId")
 
-        self.controller.stop(reason)
+        ctrl_status = self.controller.stop(reason)
 
         with self._lock:
             self._lease = None
@@ -412,9 +447,11 @@ class RobotBridge:
                     "UNKNOWN_COMMAND",
                     f"Command {command_id!r} is unknown after bridge restart",
                 )
-            if rec.stage != "STOPPED" or not rec.stopped or rec.rearmed:
-                rec.stage = "STOPPED"
+            stage = "UNKNOWN" if self.physical and not ctrl_status.get("stopConfirmed") else "STOPPED"
+            if rec.stage != stage or not rec.stopped or rec.rearmed:
+                rec.stage = stage
                 rec.stopped = True
+                rec.stop_pending = stage == "UNKNOWN"
                 rec.rearmed = False
                 rec.status_revision += 1
             return 200, rec.snapshot(self.boot_id, motion=False)
@@ -436,6 +473,7 @@ class RobotBridge:
                     "UNKNOWN_COMMAND",
                     f"Command {command_id!r} is unknown",
                 )
+            self._sync_stop_unlocked(rec)
             if rec.stage != "STOPPED" or not rec.stopped:
                 return self._error_response(
                     409,
@@ -444,11 +482,15 @@ class RobotBridge:
                     rec.snapshot(self.boot_id, motion=False),
                 )
             ctrl_status = self.controller.status()
+            if self.physical and not rec.rearmed and not ctrl_status.get("stopConfirmed"):
+                return self._error_response(409, "NOT_STOPPED", "Physical stop is not confirmed", rec.snapshot(self.boot_id))
+            if rec.rearmed:
+                return 200, rec.snapshot(self.boot_id, motion=False)
             if ctrl_status.get("stage") == "STOPPED":
                 try:
                     self.controller.rearm()
-                except SafetyError:
-                    pass
+                except SafetyError as exc:
+                    return self._error_response(409, "NOT_STOPPED", f"Safety core rejected rearm: {exc.code}", rec.snapshot(self.boot_id))
             if not rec.rearmed:
                 rec.rearmed = True
                 rec.status_revision += 1
@@ -463,9 +505,11 @@ class RobotBridge:
             self._lease = None
             stopped_ids = []
             for rec in self._commands.values():
-                if rec.stage != "STOPPED" or not rec.stopped or rec.rearmed:
-                    rec.stage = "STOPPED"
+                stage = "UNKNOWN" if self.physical and not ctrl_state.get("stopConfirmed") else "STOPPED"
+                if rec.stage != stage or not rec.stopped or rec.rearmed:
+                    rec.stage = stage
                     rec.stopped = True
+                    rec.stop_pending = stage == "UNKNOWN"
                     rec.rearmed = False
                     rec.status_revision += 1
                 stopped_ids.append(rec.command_id)
@@ -561,6 +605,7 @@ class RobotBridge:
                 ttl_s=ttl_s,
             )
             self._lease = lease
+            self._manual_interlock = True
             return 200, {
                 "leaseId": lease.lease_id,
                 "roverId": lease.rover_id,
@@ -678,8 +723,13 @@ class RobotBridge:
         if reason not in ("user_release", "blur", "tab_hidden"):
             reason = "user_release"
         with self._lock:
-            self._lease = None
-        self.controller.release(reason=reason)
+            self._manual_interlock = True
+            # Publish the core's pending stop before freeing the lease. Pickup
+            # uses this same lock and cannot slip into an idle-looking gap.
+            try:
+                self.controller.release(reason=reason)
+            finally:
+                self._lease = None
         return 200, {
             "roverId": self.rover_id,
             "released": True,
@@ -737,7 +787,68 @@ class RobotBridge:
                 "stationaryConfirmed": bool(ctrl_status["stopConfirmed"] or stage in ("IDLE", "MANUAL_IDLE")),
                 "stationarySamples": int(ctrl_status["stationarySamples"]),
                 "caps": self._caps_dict(),
+                "watchdogAlive": bool(ctrl_status.get("watchdogAlive")),
+                "watchdogError": ctrl_status.get("watchdogError"),
             }
+
+
+class PhysicalChassisAdapter:
+    """Real chassis output, using the same caps as the safety controller."""
+
+    def __init__(self, rover, *, max_x=0.35, max_y=0.35, max_yaw=45.0):
+        self.rover = rover
+        self.limits = Limits(max_x=max_x, max_y=max_y, max_yaw=max_yaw)
+
+    def __call__(self, x, y, yaw):
+        if not all(_is_finite_number(v) for v in (x, y, yaw)):
+            raise ValueError("Non-finite chassis velocity")
+        if abs(x) > self.limits.max_x or abs(y) > self.limits.max_y or abs(yaw) > self.limits.max_yaw:
+            raise ValueError("Physical chassis velocity exceeds configured caps")
+        if any((x, y, yaw)):
+            self.rover.chassis.drive_speed(x=x, y=y, z=yaw, timeout=1.0)
+        else:
+            timer = getattr(self.rover.chassis, "_auto_timer", None)
+            if timer is not None and timer.is_alive():
+                timer.cancel()
+            self.rover.chassis.drive_speed(x=0.0, y=0.0, z=0.0)
+
+
+class PhysicalBridgeRuntime:
+    """One passed-in SDK session; telemetry and watchdog have explicit ownership."""
+
+    def __init__(self, rover, frame_buffer=None, *, rover_id="rover-1"):
+        from watchdog_bench import Telemetry
+
+        self.output = PhysicalChassisAdapter(rover)
+        self.controller = SafetyController(self.output, limits=self.output.limits)
+        self.bridge = RobotBridge(self.controller, frame_buffer, rover_id=rover_id, physical=True)
+        controller, bridge = self.controller, self.bridge
+
+        class BridgeTelemetry(Telemetry):
+            def velocity(self, value):
+                previous_sample = self._sample_id
+                super().velocity(value)
+                # Only a NEW coherent sample feeds heartbeat and pose freshness.
+                if self._sample_id != previous_sample:
+                    controller.heartbeat()
+                    bridge.observe_pose_timestamp()
+
+        self.telemetry = BridgeTelemetry(rover, self.controller)
+
+    def start(self):
+        try:
+            self.controller.stop("STARTUP")
+            self.telemetry.start()
+            self.bridge.start()
+        except Exception:
+            self.close()
+            raise
+
+    def close(self):
+        try:
+            self.bridge.close()
+        finally:
+            self.telemetry.close()
 
 
 class BridgeHTTPServer:
@@ -819,6 +930,8 @@ class BridgeHTTPServer:
                     _, m_status = parent.bridge.manual_status()
                     health["bridgeBootId"] = parent.bridge.boot_id
                     health["manualStage"] = m_status.get("stage")
+                    health["watchdogAlive"] = m_status.get("watchdogAlive", False)
+                    health["watchdogError"] = m_status.get("watchdogError")
                     self._send_json(200, health)
                     return
 
@@ -920,6 +1033,12 @@ class BridgeHTTPServer:
         if self._httpd is not None:
             raise RuntimeError("BridgeHTTPServer already started")
         self._httpd = ThreadingHTTPServer((self.host, self.port), self._make_handler())
+        try:
+            self.bridge.start()
+        except Exception:
+            self._httpd.server_close()
+            self._httpd = None
+            raise
         self._thread = threading.Thread(
             target=self._httpd.serve_forever,
             kwargs={"poll_interval": 0.05},
@@ -937,6 +1056,7 @@ class BridgeHTTPServer:
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=2.0)
         self._thread = None
+        self.bridge.close()
 
 
 def main() -> int:
@@ -990,18 +1110,15 @@ def main() -> int:
 
     from camera import EPStreamCapture
     from check_connection import rover_session
-    from safety import Watchdog
-    from watchdog_bench import DJIOutput
 
     with rover_session(args.sn) as (rover, identity):
-        output = DJIOutput(rover, allow_motion=True)
-        ctrl = SafetyController(output.write)
-        watchdog = Watchdog(ctrl)
         buf = RoverFrameBuffer(camera_id=args.rover_id, max_age_s=1.0)
-        bridge = RobotBridge(ctrl, buf, rover_id=args.rover_id)
+        runtime = PhysicalBridgeRuntime(rover, buf, rover_id=args.rover_id)
+        bridge = runtime.bridge
         capture = EPStreamCapture(rover, buf, resolution=args.resolution, subscribe_distance=True)
         server = BridgeHTTPServer(bridge, host=args.host, port=args.port, peer_token=peer_token)
         try:
+            runtime.start()
             capture.start(wait_first_frame_s=5.0)
             base_url = server.start()
             print(
@@ -1022,9 +1139,13 @@ def main() -> int:
         except KeyboardInterrupt:
             pass
         finally:
-            server.close()
-            capture.close()
-            watchdog.close()
+            try:
+                server.close()
+            finally:
+                try:
+                    runtime.close()
+                finally:
+                    capture.close()
     return 0
 
 

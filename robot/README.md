@@ -171,9 +171,29 @@ Measured on physical unit `3JKCK7W0030DJS` (firmware `01.01.1150`, STA/UDP):
     and body-frame velocity caps (`0.35 m/s`, `0.35 m/s`, `45 deg/s` -> `422 VALIDATION_ERROR`).
 
 ```bash
-# Run all 50 offline unit tests (safety, telemetry, camera, bridge):
+# Run offline unit tests (safety, telemetry, camera, bridge):
 robot/.venv/bin/python -m unittest discover -s robot/tests -v
 
 # Start simulator bridge (no hardware actuation):
 PEER_TOKEN=your_peer_token robot/.venv/bin/python robot/bridge.py --mode simulator --port 8004
 ```
+
+The HTTP server owns an independent watchdog in both modes; status and health
+expose `watchdogAlive` and `watchdogError`. Physical startup uses a dedicated
+chassis adapter with the same limits as the safety core, not the bench-only
+0.05 m/s adapter. It subscribes coherent chassis pose/attitude/velocity feedback
+and feeds heartbeat only from new valid observations. Shutdown unsubscribes
+telemetry and stops the watchdog. Zero writes cancel the SDK host timer and do
+not replace it with another timer.
+
+Physical command stop and rover-wide stop remain `UNKNOWN` until telemetry
+confirms stationarity. GET reconciles the command to `STOPPED`; command rearm
+returns `409 NOT_STOPPED` while confirmation is pending or core recovery fails.
+Simulator mode retains the normative command fixtures; those immediate simulated
+states are not physical acceptance evidence. Pending manual release/stop also
+blocks pickup, including the concurrent lease-release window.
+
+PR #17 review fixes were verified offline with SDK-shaped recording fixtures
+and loopback HTTP tests. No physical bridge startup or movement is claimed by
+those checks. Updating these files does not replace a running camera-only server;
+stop the sole existing SDK owner before any separately authorized physical launch.

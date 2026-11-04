@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
+import time
 import unittest
 from pathlib import Path
 from urllib.error import HTTPError
@@ -10,9 +12,9 @@ from urllib.request import Request, urlopen
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from bridge import BridgeHTTPServer, RobotBridge
+from bridge import BridgeHTTPServer, PhysicalBridgeRuntime, PhysicalChassisAdapter, RobotBridge
 from camera import RoverFrameBuffer
-from safety import SafetyController
+from safety import SafetyController, SafetyError
 
 
 FIXTURE_DIR = Path(__file__).resolve().parents[2] / "contracts" / "fixtures"
@@ -55,6 +57,123 @@ def http_call(
 
 
 class BridgeTests(unittest.TestCase):
+    def _ready(self, bridge, clk, start_sample=1):
+        bridge.controller.stop("STARTUP")
+        self._confirm(bridge, clk, start_sample)
+        bridge.controller.rearm()
+
+    def _confirm(self, bridge, clk, start_sample=10):
+        for sample in range(start_sample, start_sample + 3):
+            clk.advance(0.11)
+            bridge.controller.heartbeat()
+            bridge.controller.observe(0, 0, 0, sample_id=sample)
+
+    def _binding(self, clk):
+        return dict(commandId="cmd-test", missionId="mission-1",
+                    objectId="phone-1:session1:track1", targetRevision=1,
+                    confirmationEvidenceId="evidence-1", expiresAt=clk.wall + 2)
+
+    def test_physical_stop_stays_unknown_until_confirmed_and_rearm_never_resumes(self):
+        bridge, clk, writes = self._make_bridge()
+        bridge.physical = True
+        self._ready(bridge, clk)
+        bridge.seed_command("cmd-test", stage="PICKING")
+        status, body = bridge.stop_command("cmd-test", {"missionId": "mission-1"})
+        self.assertEqual((status, body["stage"]), (200, "UNKNOWN"))
+        self.assertEqual(bridge.get_command("cmd-test")[1]["stage"], "UNKNOWN")
+        status, body = bridge.rearm_command("cmd-test", {"missionId": "mission-1"})
+        self.assertEqual((status, body["error"]["code"]), (409, "NOT_STOPPED"))
+        self._confirm(bridge, clk)
+        self.assertEqual(bridge.get_command("cmd-test")[1]["stage"], "STOPPED")
+        before = len(writes)
+        status, body = bridge.rearm_command("cmd-test", {"missionId": "mission-1"})
+        self.assertEqual((status, body["stage"], body["rearmed"]), (200, "STOPPED", True))
+        self.assertEqual(len(writes), before)
+        self.assertEqual(bridge.rearm_command("cmd-test", {"missionId": "mission-1"})[0], 200)
+
+    def test_command_rearm_does_not_swallow_safety_rejection(self):
+        bridge, clk, _ = self._make_bridge()
+        bridge.physical = True
+        self._ready(bridge, clk)
+        bridge.seed_command("cmd-test", stage="PICKING")
+        bridge.stop_command("cmd-test", {"missionId": "mission-1"})
+        self._confirm(bridge, clk)
+        def reject():
+            raise SafetyError("HEARTBEAT_LOST")
+        bridge.controller.rearm = reject
+        status, body = bridge.rearm_command("cmd-test", {"missionId": "mission-1"})
+        self.assertEqual((status, body["error"]["code"]), (409, "NOT_STOPPED"))
+        self.assertFalse(body["rearmed"])
+
+    def test_emergency_stop_preserves_unknown_command_outcome(self):
+        bridge, clk, _ = self._make_bridge()
+        bridge.physical = True
+        self._ready(bridge, clk)
+        bridge.seed_command("cmd-test", stage="PICKING")
+        bridge.emergency_stop()
+        self.assertEqual(bridge.get_command("cmd-test")[1]["stage"], "UNKNOWN")
+
+    def test_pickup_blocked_until_clean_manual_release_is_confirmed(self):
+        bridge, clk, _ = self._make_bridge()
+        self._ready(bridge, clk)
+        self.assertEqual(bridge.manual_lease({})[0], 200)
+        bridge.manual_release()
+        status, body = bridge.pickup(self._binding(clk))
+        self.assertEqual((status, body["error"]["code"]), (503, "TELEMETRY_STALE"))
+        self.assertEqual(bridge.get_command("cmd-test")[0], 404)
+        self._confirm(bridge, clk)
+        self.assertEqual(bridge.pickup(self._binding(clk))[0], 200)
+
+    def test_pickup_blocked_during_manual_stop_and_after_confirmed_fault(self):
+        bridge, clk, _ = self._make_bridge()
+        self._ready(bridge, clk)
+        bridge.manual_lease({})
+        bridge.emergency_stop()
+        self.assertEqual(bridge.pickup(self._binding(clk))[0], 503)
+        self._confirm(bridge, clk)
+        status, body = bridge.pickup(self._binding(clk))
+        self.assertEqual((status, body["error"]["code"]), (409, "STOP_LOCKED"))
+
+    def test_pickup_cannot_race_through_release_before_core_latch(self):
+        bridge, clk, _ = self._make_bridge()
+        self._ready(bridge, clk)
+        bridge.manual_lease({})
+        entered, proceed, completed = threading.Event(), threading.Event(), threading.Event()
+        release = bridge.controller.release
+        result = []
+        def delayed_release(reason):
+            entered.set()
+            if not proceed.wait(1):
+                raise RuntimeError("test release timeout")
+            return release(reason)
+        bridge.controller.release = delayed_release
+        release_thread = threading.Thread(target=bridge.manual_release)
+        def pickup():
+            result.append(bridge.pickup(self._binding(clk)))
+            completed.set()
+        pickup_thread = threading.Thread(target=pickup)
+        try:
+            release_thread.start()
+            self.assertTrue(entered.wait(1))
+            pickup_thread.start()
+            self.assertFalse(completed.wait(0.03))
+        finally:
+            proceed.set()
+            release_thread.join(1)
+            if pickup_thread.ident is not None:
+                pickup_thread.join(1)
+        self.assertFalse(release_thread.is_alive())
+        self.assertFalse(pickup_thread.is_alive())
+        self.assertEqual(result[0][0], 503)
+        self.assertEqual(result[0][1]["error"]["code"], "TELEMETRY_STALE")
+
+    def test_physical_pickup_refuses_stale_telemetry(self):
+        bridge, clk, _ = self._make_bridge()
+        bridge.physical = True
+        self._ready(bridge, clk)
+        clk.advance(0.6)
+        self.assertEqual(bridge.pickup(self._binding(clk))[0], 503)
+
     def _make_bridge(self, clock: FakeClock | None = None) -> tuple[RobotBridge, FakeClock, list[tuple[float, float, float]]]:
         clk = clock or FakeClock()
         writes: list[tuple[float, float, float]] = []
@@ -303,6 +422,121 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(st_bad, 422)
         self.assertEqual(bad_resp["error"]["code"], "VALIDATION_ERROR")
         self.assertEqual(writes[-1], (0.0, 0.0, 0.0))
+
+
+class RecordingModule:
+    """Offline SDK-shaped fixture; no connection or physical outputs."""
+
+    def __init__(self):
+        self.callbacks = {}
+        self.calls = []
+        self._auto_timer = None
+        self.moved = False
+        self.zero_after_motion = threading.Event()
+        self.reject_subscription = None
+
+    def __getattr__(self, name):
+        if name.startswith("sub_"):
+            def subscribe(*, freq, callback):
+                if name == self.reject_subscription:
+                    return False
+                self.callbacks[name[4:]] = callback
+                return True
+            return subscribe
+        if name.startswith("unsub_"):
+            return lambda: self.callbacks.pop(name[6:], None)
+        raise AttributeError(name)
+
+    def drive_speed(self, **kwargs):
+        self.calls.append(kwargs)
+        if any(kwargs[k] for k in ("x", "y", "z")):
+            self.moved = True
+        elif self.moved:
+            self.zero_after_motion.set()
+        return False  # Actual speed protocol has no acknowledgement.
+
+
+class RecordingRover:
+    def __init__(self):
+        self.chassis = RecordingModule()
+        self.battery = RecordingModule()
+
+
+class PhysicalWiringTests(unittest.TestCase):
+    def test_adapter_supports_bridge_caps_and_yaw_not_bench_caps(self):
+        rover = RecordingRover()
+        adapter = PhysicalChassisAdapter(rover)
+        adapter(0.2, -0.1, 20)
+        self.assertEqual(rover.chassis.calls[-1], dict(x=0.2, y=-0.1, z=20, timeout=1.0))
+        for velocity in ((0.36, 0, 0), (0, -0.36, 0), (0, 0, 46), (float("nan"), 0, 0)):
+            with self.assertRaises(ValueError):
+                adapter(*velocity)
+        self.assertEqual(len(rover.chassis.calls), 1)
+
+    def test_zero_cancels_timer_and_does_not_spawn_a_new_timer(self):
+        rover = RecordingRover()
+        class Timer:
+            cancelled = False
+            def is_alive(self):
+                return True
+            def cancel(self):
+                self.cancelled = True
+        timer = rover.chassis._auto_timer = Timer()
+        PhysicalChassisAdapter(rover)(0, 0, 0)
+        self.assertTrue(timer.cancelled)
+        self.assertEqual(rover.chassis.calls[-1], dict(x=0.0, y=0.0, z=0.0))
+
+    def test_physical_startup_subscriptions_and_silence_without_http_polling(self):
+        rover = RecordingRover()
+        runtime = PhysicalBridgeRuntime(rover)
+        runtime.start()
+        try:
+            self.assertTrue(runtime.bridge.physical)
+            for key in ("position", "attitude", "velocity"):
+                self.assertIn(key, rover.chassis.callbacks)
+            rover.battery.callbacks["battery_info"](80)
+            # Exercise actual coherent telemetry adapter, not controller injection.
+            until = time.monotonic() + 2
+            while time.monotonic() < until:
+                rover.chassis.callbacks["position"]((0, 0, 0))
+                rover.chassis.callbacks["attitude"]((0, 0, 0))
+                rover.chassis.callbacks["velocity"]((0, 0, 0, 0, 0, 0))
+                if runtime.controller.status()["stopConfirmed"]:
+                    break
+                time.sleep(0.11)
+            status = runtime.controller.status()
+            self.assertTrue(status["stopConfirmed"])
+            self.assertTrue(status["heartbeatFresh"])
+            self.assertIsNotNone(runtime.bridge._last_pose_received_at)
+            self.assertTrue(status["watchdogAlive"])
+            self.assertEqual(runtime.bridge.manual_rearm()[0], 200)
+            code, lease = runtime.bridge.manual_lease({})
+            self.assertEqual(code, 200)
+            now = time.time()
+            code, body = runtime.bridge.manual_drive(dict(
+                leaseId=lease["leaseId"], leaseGeneration=lease["leaseGeneration"],
+                sequence=1, issuedAt=now, expiresAt=now + 0.5,
+                xMps=0.2, yMps=0, zDegps=0, frame="BODY"))
+            self.assertEqual(code, 200, body)
+            self.assertTrue(rover.chassis.moved)
+            # No HTTP call, status tick, heartbeat or telemetry after drive.
+            self.assertTrue(rover.chassis.zero_after_motion.wait(0.35))
+            self.assertEqual(runtime.controller.status()["reason"], "INPUT_SILENCE")
+            self.assertEqual(runtime.controller.status()["stage"], "UNKNOWN")
+        finally:
+            runtime.close()
+        self.assertFalse(runtime.controller.status()["watchdogAlive"])
+        self.assertFalse(rover.chassis.callbacks)
+        self.assertFalse(rover.battery.callbacks)
+
+    def test_partial_subscription_failure_cleans_up(self):
+        rover = RecordingRover()
+        rover.chassis.reject_subscription = "sub_attitude"
+        runtime = PhysicalBridgeRuntime(rover)
+        with self.assertRaisesRegex(RuntimeError, "subscription rejected"):
+            runtime.start()
+        self.assertFalse(rover.chassis.callbacks)
+        self.assertFalse(runtime.controller.status()["watchdogAlive"])
 
 
 if __name__ == "__main__":
