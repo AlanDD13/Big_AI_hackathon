@@ -43,6 +43,11 @@ The mission queue checkpoint is
 [`contracts/mission-queue-v1.md`](../contracts/mission-queue-v1.md). It stores
 `QUEUED` only and does not call the robot. The uncalibrated demo grid is
 [`contracts/demo-grid-v1.md`](../contracts/demo-grid-v1.md).
+Simulator-first recovery and proposed adapter boundaries are in
+[`contracts/recovery-tools-v1.md`](../contracts/recovery-tools-v1.md).
+This adds no physical endpoints or dispatch authority; P3/P4 agreement and
+hardware acceptance remain required. See
+[`docs/LANGGRAPH_PHYSICAL_HANDOFF.md`](LANGGRAPH_PHYSICAL_HANDOFF.md).
 These are canonical drafts on the vision branch, not merged APIs.
 This records the [FigJam proposal](https://www.figma.com/board/bmW81xDifPQz5Icv98D8Hd/Big-AI?node-id=25-1003).
 
