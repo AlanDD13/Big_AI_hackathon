@@ -44,6 +44,36 @@ class ContractFixtureTest(unittest.TestCase):
             "UNKNOWN",
         )
         self.assertEqual(
+            fixture["hardwareStopStateMachine"]["unknownStageLeaseDriveHttpStatus"],
+            503,
+        )
+        self.assertEqual(
+            fixture["hardwareStopStateMachine"]["unknownStageLeaseDriveCode"],
+            "TELEMETRY_STALE",
+        )
+        self.assertEqual(
+            fixture["hardwareStopStateMachine"]["unknownStageRearmHttpStatus"],
+            409,
+        )
+        self.assertEqual(
+            fixture["hardwareStopStateMachine"]["unknownStageRearmCode"],
+            "NOT_STOPPED",
+        )
+        self.assertEqual(
+            fixture["hardwareStopStateMachine"]["faultLatchedRejectionCode"],
+            "STOP_LOCKED",
+        )
+        self.assertTrue(
+            fixture["hardwareStopStateMachine"]["distinctFromAutonomousMissionUnknown"]
+        )
+        self.assertTrue(
+            fixture["hardwareStopStateMachine"]["watchdogSilenceLatchesStopped"]
+        )
+        self.assertEqual(
+            fixture["hardwareStopStateMachine"]["statusStages"],
+            ["IDLE", "MANUAL_IDLE", "MANUAL_DRIVING", "UNKNOWN", "STOPPED"],
+        )
+        self.assertEqual(
             fixture["hardwareStopStateMachine"]["faultConfirmedStage"],
             "STOPPED",
         )
