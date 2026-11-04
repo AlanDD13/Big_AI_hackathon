@@ -66,6 +66,9 @@ class BackendState:
         self._samples: dict[str, list[MetricSample]] = {}
         self._evidence: dict[str, dict[str, object]] = {}
         self._objects: dict[str, dict[str, object]] = {}
+        self._missions: dict[str, dict[str, object]] = {}
+        self._mission_status_revisions: dict[str, int] = {}
+        self._classifications: dict[str, tuple[str, dict[str, object]]] = {}
         self._alerts: dict[str, dict[str, object]] = {}
         self._potential: dict[str, bool] = {}
         self._revisions: dict[tuple[str, str], int] = {}
@@ -162,6 +165,67 @@ class BackendState:
             )
             return RecordResult(object_id, int(self._objects[object_id]["backendRevision"]), False)
 
+    def record_classification(self, object_id: str, status: str, data: Mapping[str, object]) -> None:
+        """Restore trusted classification data for an already projected object."""
+        with self._lock:
+            if object_id not in self._objects:
+                return
+            projection = (status.upper(), dict(data))
+            if self._classifications.get(object_id) == projection:
+                return
+            self._classifications[object_id] = projection
+            body = dict(self._objects[object_id])
+            revision = self._next_revision_unlocked("object", object_id)
+            body.update(
+                backendRevision=revision,
+                classificationStatus=status.upper(),
+                classification=dict(data),
+                classificationProvider=data.get("provider"),
+            )
+            self._objects[object_id] = body
+            self._append_unlocked("object.updated", "object", revision, None, body)
+
+    def record_mission(
+        self,
+        mission_id: str,
+        object_id: str,
+        destination_zone_id: str,
+        source: str,
+        state: str = "QUEUED",
+        status_revision: int | None = None,
+    ) -> dict[str, object]:
+        """Project an admitted mission once, including concurrent admission replays.
+
+        Admission results may arrive out of order. A persisted status revision
+        allows a replay to refresh the snapshot without publishing a duplicate.
+        """
+        with self._lock:
+            if mission_id in self._missions:
+                prior = self._mission_status_revisions.get(mission_id, -1)
+                if status_revision is not None and status_revision > prior:
+                    self._missions[mission_id] = {
+                        **self._missions[mission_id],
+                        "state": state.upper(),
+                        "backendRevision": self._next_revision_unlocked("mission", mission_id),
+                    }
+                    self._mission_status_revisions[mission_id] = status_revision
+                return dict(self._missions[mission_id])
+            revision = self._next_revision_unlocked("mission", mission_id)
+            body = {
+                "missionId": mission_id,
+                "objectId": object_id,
+                "destinationZoneId": destination_zone_id,
+                "source": source,
+                "state": state.upper(),
+                "backendBootId": self.boot_id,
+                "backendRevision": revision,
+            }
+            self._missions[mission_id] = body
+            if status_revision is not None:
+                self._mission_status_revisions[mission_id] = status_revision
+            self._append_unlocked("mission.updated", "mission", revision, None, body)
+            return dict(body)
+
     def snapshot(self, session_id: str) -> dict[str, object]:
         with self._lock:
             self._refresh_unlocked()
@@ -170,7 +234,7 @@ class BackendState:
                 "backendBootId": self.boot_id,
                 "cursor": self._cursor_unlocked(session_id, self._seq),
                 "objects": [dict(item) for item in self._objects.values()],
-                "missions": [],
+                "missions": [dict(item) for item in self._missions.values()],
                 "robots": [],
                 "alerts": [dict(item) for item in self._alerts.values()],
             }
@@ -238,6 +302,7 @@ class BackendState:
             return
         reason = evidence["invalidReason"] or ("stationary" if potential else "stationarity_required")
         revision = self._next_revision_unlocked("object", object_id)
+        classification = self._classifications.get(object_id)
         body = {
             "objectId": object_id,
             "backendBootId": self.boot_id,
@@ -283,8 +348,9 @@ class BackendState:
                 "valid": evidence["valid"],
                 "invalidReason": evidence["invalidReason"],
             },
-            "classificationStatus": "PENDING",
-            "classification": None,
+            "classificationStatus": classification[0] if classification else "PENDING",
+            "classification": dict(classification[1]) if classification else None,
+            "classificationProvider": classification[1].get("provider") if classification else None,
             "potentialTarget": potential,
             "dispatchEligible": False,
             "eligibilityReason": None if potential else reason,

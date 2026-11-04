@@ -99,6 +99,27 @@ class PostgresObservationLog:
             loaded.append((evidence, source))
         return loaded
 
+    def load_classifications(self) -> list[tuple[str, str, dict[str, object]]]:
+        try:
+            with self._connect() as connection:
+                rows = connection.execute(
+                    """SELECT object.camera_id, object.session_id, object.track_id,
+                              classification.status, classification.data
+                       FROM rover_backend.classifications AS classification
+                       JOIN rover_backend.objects AS object ON object.id = classification.object_id"""
+                ).fetchall()
+        except Exception as exc:
+            raise StorageUnavailable("Classification storage is unavailable") from exc
+        fields = ("category", "subject_kind", "carrying", "confidence", "description", "reason", "provider")
+        return [
+            (
+                f"{camera_id}:{session_id}:{track_id}",
+                status.upper(),
+                {field: data[field] for field in fields if field in data},
+            )
+            for camera_id, session_id, track_id, status, data in rows
+        ]
+
 
 def evidence_from_row(
     camera_id: str,

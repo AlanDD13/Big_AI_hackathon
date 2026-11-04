@@ -8,8 +8,9 @@ Coordinate shared wire-contract changes with AlanDD13.
 The FastAPI process serves the dashboard stream and mapping observations.
 Observations are written to `rover_backend` when `BACKEND_DATABASE_URL` is set,
 and reloaded when the process starts. Session cursors stay in process memory,
-so a restart asks the dashboard for a new snapshot. Mission admission and
-dispatch coordination remain library calls.
+so a restart asks the dashboard for a new snapshot. The mission queue stores
+accepted missions and publishes them through snapshots and `mission.updated`
+events. Robot dispatch remains a separate library call.
 
 ## Run
 
@@ -30,6 +31,15 @@ Operator routes use the `session` cookie from `POST /api/session`. Mapping
 calls `POST /api/observations` with `Authorization: Bearer $PEER_TOKEN`.
 Set `BACKEND_DATABASE_URL` to the runtime Postgres URL to store observations
 in `rover_backend`. Without it, the process keeps observations in memory.
+
+`POST /api/missions` requires an operator session, an `Idempotency-Key`, and
+a JSON body with `objectId`, `destinationZoneId` and `source: "manual"`.
+Queue creation returns 202. Replaying the same request in the same session
+returns the stored mission with 200. New queue requests require PostgreSQL
+and a planner. For disposable local testing, set
+`BACKEND_MISSION_FIXTURE_MAPPING=1` and seed an explicitly labelled fixture
+classification and approved pickup profile. The fixture produces a queue
+row only. Event cursors retain the existing session and boot scope.
 
 ## Test
 

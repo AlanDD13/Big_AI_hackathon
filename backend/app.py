@@ -7,16 +7,25 @@ Neither credential is accepted in place of the other.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from dataclasses import asdict
 import json
 import os
 import secrets
+import time
 from typing import Mapping
 
 from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from psycopg import Error as PostgresError
 
+from backend.collection import CollectionStore, MappingClient, admit_collection
 from backend.evidence import EvidenceConflict, InvalidEvidence, parse_evidence
+from backend.mission_http import (
+    IDEMPOTENCY_KEY_RE, MISSION_ERRORS, FixtureMapping, UnavailableMapping, parse_mission_request,
+)
+from backend.postgres_collection import PostgresCollectionStore
+from backend.postgres_evidence import PostgresEvidenceStore
 from backend.postgres_projection import PostgresObservationLog, StorageUnavailable
 from backend.state import BackendState, StreamItem
 
@@ -36,7 +45,8 @@ def _sse(item: StreamItem) -> str:
     if item.event_id is not None:
         lines.append(f"id: {item.event_id}")
     lines.append(f"event: {item.event}")
-    lines.append("data: " + json.dumps(item.data, separators=(",", ":"), allow_nan=False))
+    data = item.data["body"] if item.event == "mission.updated" else item.data
+    lines.append("data: " + json.dumps(data, separators=(",", ":"), allow_nan=False))
     return "\n".join(lines) + "\n\n"
 
 
@@ -50,6 +60,8 @@ def create_app(
     idle_timeout: float | None = None,
     state: BackendState | None = None,
     observation_log: PostgresObservationLog | None = None,
+    collection_store: CollectionStore | None = None,
+    mapping_client: MappingClient | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Rover backend", version="0.1.0")
     app.state.operator_token = operator_token
@@ -61,7 +73,15 @@ def create_app(
         if observation_log is not None:
             for evidence_body, source in observation_log.load():
                 state.record_observation(evidence_body, persist=False, **source)
+        if isinstance(observation_log, PostgresObservationLog):
+            for object_id, classification_status, classification in observation_log.load_classifications():
+                state.record_classification(object_id, classification_status, classification)
+        if isinstance(collection_store, PostgresCollectionStore):
+            for mission in collection_store.load_missions():
+                state.record_mission(**mission)
     app.state.backend = state
+    collection_now = now if now is not None else time.time
+    mapping = mapping_client if mapping_client is not None else UnavailableMapping()
 
     def cookie_session(request: Request) -> str | None:
         session_id = request.cookies.get("session")
@@ -147,6 +167,62 @@ def create_app(
             return _error(401, "UNAUTHORIZED", "Operator session is missing or expired")
         return _error(404, "EVIDENCE_UNAVAILABLE", "The exact frame is gone")
 
+    @app.post("/api/missions", status_code=202)
+    async def create_mission(request: Request) -> Response:
+        session_id = cookie_session(request)
+        if session_id is None:
+            return _error(401, "UNAUTHORIZED", "Operator session is missing or expired")
+        key = request.headers.get("idempotency-key", "")
+        if IDEMPOTENCY_KEY_RE.fullmatch(key) is None:
+            return _error(422, "VALIDATION_ERROR", "A valid Idempotency-Key is required")
+        try:
+            payload = await request.json()
+        except ValueError:
+            return _error(422, "VALIDATION_ERROR", "Mission body must be JSON")
+        try:
+            mission_request = parse_mission_request(payload)
+        except ValueError as exc:
+            return _error(422, "VALIDATION_ERROR", str(exc))
+        if collection_store is None:
+            return _error(503, "STORAGE_UNAVAILABLE", "Mission storage is unavailable")
+        try:
+            admission = await run_in_threadpool(
+                admit_collection,
+                mission_request,
+                scope=session_id,
+                key=key,
+                store=collection_store,
+                mapping=mapping,
+                now=collection_now,
+            )
+        except (PostgresError, StorageUnavailable):
+            return _error(503, "STORAGE_UNAVAILABLE", "Mission storage is unavailable")
+        if admission.outcome not in {"created", "replayed"}:
+            return _error(*MISSION_ERRORS[admission.outcome])
+        if admission.mission_id is None or admission.mission_state is None:
+            raise RuntimeError("Accepted mission has no stored identity or state")
+        classification = admission.classification
+        if classification is not None and classification.provider in ("fixture", "grok"):
+            app.state.backend.record_classification(
+                mission_request.object_id,
+                classification.status,
+                {
+                    field: value
+                    for field, value in asdict(classification).items()
+                    if field != "status" and value is not None
+                },
+            )
+        mission_state = admission.mission_state.upper()
+        mission = app.state.backend.record_mission(
+            admission.mission_id,
+            mission_request.object_id,
+            mission_request.destination_zone_id,
+            mission_request.source,
+            mission_state,
+            status_revision=admission.status_revision,
+        )
+        return JSONResponse(mission, status_code=202 if admission.outcome == "created" else 200)
+
     @app.post("/api/observations")
     async def observations(request: Request) -> Response:
         if len(app.state.peer_token) < 16:
@@ -208,6 +284,10 @@ def app_from_env() -> FastAPI:
     cookie_secure = os.environ.get("BACKEND_COOKIE_SECURE", "1") != "0"
     database_url = os.environ.get("BACKEND_DATABASE_URL", "")
     observation_log = None
+    collection_store = None
+    mapping_client = (
+        FixtureMapping(time.time) if os.environ.get("BACKEND_MISSION_FIXTURE_MAPPING") == "1" else None
+    )
     if database_url:
         if "sslmode=" not in database_url:
             database_url += ("&" if "?" in database_url else "?") + "sslmode=require"
@@ -218,11 +298,19 @@ def app_from_env() -> FastAPI:
             return psycopg.connect(database_url)
 
         observation_log = PostgresObservationLog(connect)
+        evidence_store = PostgresEvidenceStore(connect)
+
+        def load_mission_evidence(connection, object_id):
+            return evidence_store.load(connection, object_id, require_classification_provider=True)
+
+        collection_store = PostgresCollectionStore(connect, load_mission_evidence, time.time)
     return create_app(
         operator_token=operator_token,
         peer_token=peer_token,
         cookie_secure=cookie_secure,
         observation_log=observation_log,
+        collection_store=collection_store,
+        mapping_client=mapping_client,
     )
 
 

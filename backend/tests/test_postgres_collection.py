@@ -1,6 +1,8 @@
 import os
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from threading import Barrier
 from uuid import uuid4
 
 from backend.collection import (
@@ -79,11 +81,11 @@ class PostgresCollectionTests(unittest.TestCase):
             "test-profile",
         )
 
-    def admit(self, request=None):
+    def admit(self, request=None, *, key="fixture-intent"):
         return admit_collection(
             request or self.request,
             scope=self.request_scope,
-            key="fixture-intent",
+            key=key,
             store=self.store,
             mapping=self.mapping,
             now=self.now,
@@ -100,6 +102,7 @@ class PostgresCollectionTests(unittest.TestCase):
     def test_persists_route_and_replays_before_checking_stale_evidence(self):
         first = self.admit()
         self.assertEqual(first.outcome, "created")
+        self.assertEqual(first.mission_state, "queued")
         self.assertIsNotNone(first.mission_id)
         expected = [
             (
@@ -114,12 +117,63 @@ class PostgresCollectionTests(unittest.TestCase):
         evidence_reads_before_replay = list(self.evidence_reads)
 
         self.clock = 30.0
-        self.assertEqual(self.admit(), Admission("replayed", first.mission_id))
+        self.assertEqual(self.admit(), Admission("replayed", first.mission_id, "queued", 0))
         conflicting = replace(self.request, destination_zone_id="other-zone")
         self.assertEqual(self.admit(conflicting), Admission("key_conflict"))
         self.assertEqual(self.mapping.calls, 1)
         self.assertEqual(self.evidence_reads, evidence_reads_before_replay)
         self.assertEqual(self.missions(), expected)
+
+    def test_resolves_dashboard_id_and_replays_current_state(self):
+        wire_id = f"test-camera:test-session:{self.object_id}"
+        wire_request = replace(self.request, object_id=wire_id)
+
+        first = self.admit(wire_request)
+        self.assertEqual(first.outcome, "created")
+        self.assertEqual(first.mission_state, "queued")
+        self.assertEqual(self.evidence_reads, [self.object_id, self.object_id])
+        self.assertEqual(self.admit(), Admission("key_conflict"))
+
+        with self.database() as connection:
+            connection.execute(
+                "UPDATE rover_backend.missions SET state = 'cancelled' WHERE id = %s",
+                (first.mission_id,),
+            )
+            stored_object_id, stored_request_object_id = connection.execute(
+                """SELECT object_id::text, request_data ->> 'object_id'
+                   FROM rover_backend.missions WHERE id = %s""",
+                (first.mission_id,),
+            ).fetchone()
+        self.assertEqual(stored_object_id, self.object_id)
+        self.assertEqual(stored_request_object_id, wire_id)
+        self.assertEqual(self.admit(wire_request), Admission("replayed", first.mission_id, "cancelled", 1))
+        self.assertEqual(self.mapping.calls, 1)
+
+    def test_unknown_dashboard_object_never_reaches_planner(self):
+        request = replace(self.request, object_id="unknown-camera:unknown-session:unknown-track")
+        self.assertEqual(self.admit(request), Admission("object_not_found"))
+        self.assertEqual(self.mapping.calls, 0)
+        self.assertEqual(self.missions(), [])
+
+    def test_two_requests_for_same_dashboard_object_reserve_once(self):
+        request = replace(
+            self.request, object_id=f"test-camera:test-session:{self.object_id}"
+        )
+        planned = Barrier(2, timeout=5)
+        self.mapping.before_return = planned.wait
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            first = workers.submit(self.admit, request, key="first-intent")
+            second = workers.submit(self.admit, request, key="second-intent")
+            results = [first.result(timeout=10), second.result(timeout=10)]
+
+        self.assertCountEqual(
+            [result.outcome for result in results], ["created", "object_reserved"]
+        )
+        stored = self.missions()
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0][1], "queued")
+        self.assertIsNone(stored[0][3])
 
     def test_revision_change_during_mapping_prevents_reservation(self):
         def advance_object_revision():

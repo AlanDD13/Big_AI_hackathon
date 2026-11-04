@@ -114,7 +114,13 @@ class PostgresEvidenceStore:
             )
             return str(object_id)
 
-    def load(self, connection: Connection, object_id: str) -> CollectionEvidence | None:
+    def load(
+        self,
+        connection: Connection,
+        object_id: str,
+        *,
+        require_classification_provider: bool = False,
+    ) -> CollectionEvidence | None:
         # One query gives unlocked planning a consistent view as well.
         row = connection.execute(
             """SELECT object.revision, object.state ->> 'pickupProfileId',
@@ -134,13 +140,18 @@ class PostgresEvidenceStore:
 
         revision, profile, status, classification, samples = row
         typed_classification = None
-        if status is not None:
+        if status is not None and (
+            not require_classification_provider or classification.get("provider") in ("grok", "fixture")
+        ):
             typed_classification = Classification(
                 status.upper(),
                 classification.get("category", ""),
                 classification.get("subject_kind", ""),
                 classification.get("carrying", ""),
                 classification.get("confidence", ""),
+                classification.get("provider"),
+                classification.get("description"),
+                classification.get("reason"),
             )
         typed_samples = []
         for sample in samples:
