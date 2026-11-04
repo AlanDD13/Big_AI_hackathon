@@ -47,9 +47,12 @@ Error body, including validation errors: `{"error":{"code":"<CODE>","message":"<
 | Evidence revision changed while planning | 409 | `EVIDENCE_CHANGED` | |
 | No usable route | 409 | `ROUTE_UNAVAILABLE` | |
 | Mapping call failed | 503 | `MAPPING_UNAVAILABLE` | |
+| Queue write failed | 503 | `STORAGE_UNAVAILABLE` | no mission id |
 
 Replay returns 200, not 202. It does not emit a second SSE event and does not
-enqueue a second mission. A fixture classification already stored on the object
+enqueue a second mission. A failed queue write returns `503 STORAGE_UNAVAILABLE`
+and no mission id. A concurrent reservation of the same object stays
+`409 EVIDENCE_CHANGED`; this slice does not add `OBJECT_RESERVED`. A fixture classification already stored on the object
 may satisfy the classification gate only when its provider is `fixture` and the
 dashboard keeps that label. This route must not invent a classification.
 Mapping may be a local fixture whose `planId` starts with `fixture-` when no

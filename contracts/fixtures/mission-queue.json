@@ -37,6 +37,7 @@
     {"id": "evidence_changed", "http": 409, "code": "EVIDENCE_CHANGED"},
     {"id": "route_unavailable", "http": 409, "code": "ROUTE_UNAVAILABLE"},
     {"id": "mapping_unavailable", "http": 503, "code": "MAPPING_UNAVAILABLE"},
+    {"id": "storage_unavailable", "http": 503, "code": "STORAGE_UNAVAILABLE"},
     {"id": "expired_session", "http": 401, "code": "UNAUTHORIZED"},
     {"id": "bad_body", "http": 422, "code": "VALIDATION_ERROR"}
   ]

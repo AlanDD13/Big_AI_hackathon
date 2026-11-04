@@ -26,8 +26,8 @@ sector = "ABCD"[rowFromBottom - 1] + column
 ```
 
 `pixel_to_sector(855, 423, 1920, 1080)` is `C2`. The centre of C2 is
-`(0.75, 1.25)` m. The centre of A1 is `(0.25, 0.25)` m. Pixels outside the
-frame produce no label. `A5` and `E1` are not valid labels. The wire form is
+`(0.75, 1.25)` m. The centre of A1 is `(0.25, 0.25)` m. The frame range is
+half-open: `x == width` or `y == height` is outside and produces no label. `A5` and `E1` are not valid labels. The wire form is
 `A1`, not `A-1`.
 
 ## Who publishes it

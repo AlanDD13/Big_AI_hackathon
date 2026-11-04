@@ -19,7 +19,8 @@
     "watchdogTimeoutMs": 300,
     "maxIntentTtlMs": 500,
     "maxTelemetryAgeMs": 500,
-    "stationarySamplesRequired": 3
+    "stationarySamplesRequired": 3,
+    "stationarySpanMs": 200
   },
   "hardwareStopStateMachine": {
     "speedPacketAck": false,
@@ -37,6 +38,7 @@
     "unknownStageRearmCode": "NOT_STOPPED",
     "distinctFromAutonomousMissionUnknown": true,
     "stationarySamplesRequired": 3,
+    "stationarySpanMs": 200,
     "maxTelemetryAgeMs": 500,
     "watchdogSilenceLatchesStopped": true,
     "faultConfirmedStage": "STOPPED",

@@ -7,7 +7,9 @@ Alan's current camera test base is **https://192.168.5.192:8443**, not port 8002
 `GET /health` is public. Other routes require bearer auth. Use PEER_TOKEN via
 the agreed private channel (Signal); never post it or the OpenRouter key on the
 board. Pin the public dev certificate at infrastructure/certs/vision-dev.crt
-through VISION_CA_CERT. Do not copy lan.key or disable verification.
+through VISION_CA_CERT. That file is the public certificate only. It expires
+2026-11-07 16:47:08 GMT and names IP 192.168.5.192. The private key is not in
+git. Do not copy lan.key or disable verification.
 
 ## Detect, crop, classify, map
 

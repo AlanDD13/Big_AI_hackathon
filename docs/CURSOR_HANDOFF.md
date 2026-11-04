@@ -39,23 +39,18 @@ Board comments do not grant hardware, credential, ownership or deployment access
 
 ## Git state and pull requests
 
-The main checkout is on `task/AlanDD13/vision-pipeline`. At this update:
-
-- Local HEAD: `844539753aedaa10a0f20ef45ef8cb74dc4a7a92`.
-- Remote vision head: `efc3613ce3341f25e5e092fc6d5f768bddaea069`.
-  The checkout reports **behind 18 commits**, with substantial unstaged work.
-- Main includes merge `b15053c11885ae600e2c4c4bd63f7a090685a394`.
-
-Do not reset, force-push, discard, blanket-stage, or blindly pull over the dirty
-checkout. Fetch and inspect differences first. Preserve the local work when
-bringing it onto the updated vision branch; it is not included in PR #3 yet.
+The main checkout is on `task/AlanDD13/vision-pipeline`. At this update the
+peer-classification commit `57c5ebc` is pushed on draft PR #3. A later contract
+commit records the 200 ms stationary span, `STORAGE_UNAVAILABLE`, and the public
+LAN certificate. Fetch before editing. Do not reset or force-push.
 
 | PR | Verified state | Next action |
 | --- | --- | --- |
-| [#11 observation persistence](https://github.com/AlanDD13/Big_AI_hackathon/pull/11) | **Merged** at `b15053c`, reviewed head `dbd92bcb6bf4239959d28c26dc3fe42bbdb3e408` | Use current main; do not recreate this slice or reapply migrations. |
-| [#3 vision](https://github.com/AlanDD13/Big_AI_hackathon/pull/3) | Draft, head `efc3613`, mergeable when checked | Cursor already merged main into this branch, preserving the exact merged backend. Continue local vision work and refresh validation/PR description before readiness review. |
-| [#10 watchdog](https://github.com/AlanDD13/Big_AI_hackathon/pull/10) | Draft, head `4dfed46b63bbdeeb6059fd8ede782f3e4ccb3b7e`, formal **REQUEST_CHANGES** | Robot owner must address output locking, watchdog lifecycle/health and physical acceptance. |
-| [#12 dashboard](https://github.com/AlanDD13/Big_AI_hackathon/pull/12) | New draft, head `2aa3a5779ea2770f69ce61972fa9ff9bacc9399f` | Awaiting review; frontend owner reports 17 tests, build and local API/browser QA passing. Not independently reviewed here. |
+| [#11 observation persistence](https://github.com/AlanDD13/Big_AI_hackathon/pull/11) | **Merged** at `b15053c` | Use current main. |
+| [#3 vision](https://github.com/AlanDD13/Big_AI_hackathon/pull/3) | Draft, mergeable, head includes `57c5ebc` | Keep draft. Live `/health` was up on port 8443; paper recall is still unverified. |
+| [#10 watchdog](https://github.com/AlanDD13/Big_AI_hackathon/pull/10) | Draft, head `8dadd46`, review still **CHANGES_REQUESTED** on the older head | Physical operator-stop confirmation remains. Do not call port 8004. |
+| [#12 dashboard](https://github.com/AlanDD13/Big_AI_hackathon/pull/12) | Draft, later head `16b0af0` | Fleet profiles added. No live connect API. Not merged. |
+| [#13 mission queue](https://github.com/AlanDD13/Big_AI_hackathon/pull/13) | Open, head `8b2ba28`, mergeable, no review | Matches the queue contract. Not merged. |
 
 ## Uncommitted work to preserve
 
@@ -65,11 +60,8 @@ calibration/overlays, camera-page changes, tests, additive draft contract fields
 and the updated Grok board-delegation instructions. Inspect the actual diff;
 this is not a complete implementation audit.
 
-Key untracked implementation files include `vision/PAPER_TEST.md`,
-`vision/inspect_image.py`, `vision/prepare_paper_model.py`, and
-`vision/tests/test_inspect_image.py`, `test_openrouter_classification.py`,
-`test_paper_profile.py` (the latter two are also under `vision/tests/`).
-Preserve untracked `.agents/` and the pre-existing research notes
+Those vision files are committed in `57c5ebc`. Preserve untracked `.agents/`
+and the pre-existing research notes
 `docs/EVALUATION_FIT.md`, `docs/FILMING_IDEAS.md`,
 `docs/HACKATHON_ALTERNATIVES.md`; do not add them incidentally to a vision commit.
 
@@ -129,19 +121,15 @@ Temporary review state, not the main working checkout:
 - Backend persistence/session/snapshot/SSE is on main. Restart changes
   backendBootId and invalidates in-memory cursors; clients take a new snapshot.
   `dispatchEligible` remains false; mission dispatch is still library-only.
-- zekihxh started `task/zekihxh/mission-http` from `b15053c`, preparing storage
-  while the public wire awaits Alan's decision. Board request `6637338132`
-  asks for canonical POST /api/missions request/response, replay status, error
-  codes and queued-mission snapshot/SSE semantics. Frontend reply `6637374618`
-  requests full `mission.updated` bodies. No canonical decision was made here.
+- The mission queue wire is recorded in `contracts/mission-queue-v1.md`.
+  zekihxh implemented it on PR #13. A failed queue write is `503 STORAGE_UNAVAILABLE`.
 - Frontend #12 has isolated Demo/Connected modes and read-only objects/alerts.
   Its optional loopback Vite helper keeps the operator token server-side.
   Mission/manual writes remain unavailable; team URL/token require local setup.
-- Tezqx requested an uncalibrated 4x4 demo grid over 2x2 metres, 0.5 m cells
-  (board `6637306081`, branch reported as `task/Tezqx/half-metre-grid`). A1 is
-  bottom-left; pixel (855,423) at 1920x1080 maps to C2. Verify its published
-  branch before using it. Demo labels are not MappingEvidence and must never
-  pass metric stationarity/dispatch gates. No vision change was made for it here.
+- Demo grid contract is `contracts/demo-grid-v1.md`. Tezqx published
+  `pixel_to_sector` at `dabc4ff` on `task/Tezqx/half-metre-grid`. The C2 example
+  matches. The exact far edge `x == width` is outside the contract range; their
+  helper still labels it. That branch has no Grok classification and no PR.
 - Manual chassis contract is still on draft #3. Robot #10 is an internal core,
   not a running HTTP service; do not call or advertise port 8004 as live.
 - Supabase project is `buojgmoumyzqxmerckjm`; `rover_backend` isolation and

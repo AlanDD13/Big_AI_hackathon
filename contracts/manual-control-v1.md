@@ -169,10 +169,12 @@ session returns `401 Unauthorized`.
      and invalidates the lease. Because real EP Core `ProtoChassisSpeedMode`
      packets have no protocol ACK, P4 enters `UNKNOWN` when zero velocity is
      requested until **3 consecutive fresh (`<= 0.5 s`) stationary telemetry
-     observations** confirm zero motion. The immediate `200 OK` body is always
+     observations spanning at least 200 ms** confirm zero motion. Three fresh
+     samples closer together than that do not confirm the stop. The immediate `200 OK` body is always
      `stage: "UNKNOWN"`, `stationaryConfirmed: false`, `stationarySamples: 0`,
      `motion: false`; callers poll `GET /api/manual/status` for the later
-     `UNKNOWN -> IDLE` transition after 3 consecutive fresh stationary samples.
+     `UNKNOWN -> IDLE` transition after 3 consecutive fresh stationary samples
+    spanning at least 200 ms.
      If confirmation times out/fails, a clean release STAYS `UNKNOWN`
      (`503 TELEMETRY_STALE` on lease/drive, `409 NOT_STOPPED` on rearm) unless a
      later fault sample confirms stop, which latches `STOPPED`.
@@ -282,11 +284,13 @@ session returns `401 Unauthorized`.
     authority, and enters `stage: "UNKNOWN"` (`503 TELEMETRY_STALE` on
     `lease`/`drive` and `409 NOT_STOPPED` on `rearm`, distinct from P3's
     autonomous mission `unknown` state which is `409 AUTONOMOUS_ACTIVE`)
-    until **3 consecutive fresh (`<= 0.5 s`) stationary telemetry observations**
-    confirm the chassis has physically stopped (`stationarySamplesRequired: 3`).
+    until **3 consecutive fresh (`<= 0.5 s`) stationary telemetry observations
+    spanning at least 200 ms** confirm the chassis has physically stopped
+    (`stationarySamplesRequired: 3`, `stationarySpanMs: 200`).
   - **After any fault or explicit stop** (watchdog `> 300 ms` silence timeout,
     intent expiry, stale telemetry `> 0.5 s`, or `POST /stop`), once 3
-    consecutive fresh stationary telemetry observations confirm zero motion,
+    consecutive fresh stationary telemetry observations spanning at least 200 ms
+    confirm zero motion,
     state **latches in `stage: "STOPPED"` (`409 STOP_LOCKED` on `lease`/`drive`)**.
     If stationary telemetry is not confirmed, state remains `stage: "UNKNOWN"`
     (`503 TELEMETRY_STALE` on `lease`/`drive`, `409 NOT_STOPPED` on `rearm`) and

@@ -58,6 +58,7 @@ class ContractFixtureTest(unittest.TestCase):
         self.assertEqual(fixture["caps"]["maxIntentTtlMs"], 500)
         self.assertEqual(fixture["caps"]["maxTelemetryAgeMs"], 500)
         self.assertEqual(fixture["caps"]["stationarySamplesRequired"], 3)
+        self.assertEqual(fixture["caps"]["stationarySpanMs"], 200)
         self.assertEqual(
             fixture["hardwareStopStateMachine"]["zeroRequestInitialStage"],
             "UNKNOWN",
@@ -144,6 +145,7 @@ class ContractFixtureTest(unittest.TestCase):
         codes = {item["id"]: (item["http"], item["code"]) for item in fixture["errors"]}
         self.assertEqual(codes["missing_object"], (404, "OBJECT_NOT_FOUND"))
         self.assertEqual(codes["idempotency_conflict"], (409, "IDEMPOTENCY_CONFLICT"))
+        self.assertEqual(codes["storage_unavailable"], (503, "STORAGE_UNAVAILABLE"))
         self.assertEqual(codes["expired_session"], (401, "UNAUTHORIZED"))
         text = (ROOT / "mission-queue-v1.md").read_text()
         self.assertIn("does not call the robot", text)
