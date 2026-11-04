@@ -153,10 +153,19 @@ class ApiTests(unittest.TestCase):
         observed = snapshot["objects"][0]
         self.assertEqual(observed["state"], "OBSERVING")
         self.assertEqual(observed["floorPointM"], [1.0, 1.0])
+        self.assertEqual(observed["mapping"]["floorPointM"], [1.0, 1.0])
         self.assertFalse(observed["potentialTarget"])
         self.assertFalse(observed["dispatchEligible"])
         self.assertIsNone(observed["detectorScore"])
         self.assertIsNone(observed["grokConfidence"])
+        self.assertEqual(observed["eligibilityReason"], "stationarity_required")
+
+        demo = self.client.post(
+            "/api/observations",
+            json={"sector": "A1", "demoPointM": [0.5, 0.5], "mapId": "demo-grid", "calibrated": False},
+            headers={"Authorization": f"Bearer {PEER}"},
+        )
+        self.assertEqual(demo.status_code, 422)
 
     def test_sse_cursor_precedence_expiry_and_evidence(self):
         self.sign_in()
@@ -254,3 +263,44 @@ class ApiTests(unittest.TestCase):
         self.assertEqual([alert["kind"] for alert in alerts], ["potential_target", "target_revoked"])
         self.assertEqual(alerts[1]["action"], "HOLD_BEFORE_PICKUP")
         self.assertFalse(self.client.get("/api/snapshot").json()["objects"][0]["potentialTarget"])
+
+
+class RecordingLog:
+    def __init__(self):
+        self.saved = []
+
+    def save(self, evidence, **source):
+        self.saved.append((evidence["frameId"], source["vision_event_id"]))
+
+    def load(self):
+        return []
+
+
+class PostgresWiringTests(unittest.TestCase):
+    def test_new_observation_is_saved_once(self):
+        log = RecordingLog()
+        clock = {"now": 1000.0}
+        app = create_app(
+            operator_token=OPERATOR,
+            peer_token=PEER,
+            cookie_secure=False,
+            now=lambda: clock["now"],
+            boot_id="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            idle_timeout=0,
+            observation_log=log,
+        )
+        client = TestClient(app)
+        self.assertEqual(client.post("/api/session", json={"token": OPERATOR}).status_code, 204)
+        created = client.post(
+            "/api/observations",
+            json=evidence(1, 1000),
+            headers={"Authorization": f"Bearer {PEER}", "X-Vision-Event-Id": "boot:1"},
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        replay = client.post(
+            "/api/observations",
+            json=evidence(1, 1000),
+            headers={"Authorization": f"Bearer {PEER}", "X-Vision-Event-Id": "boot:1"},
+        )
+        self.assertTrue(replay.json()["replayed"])
+        self.assertEqual(log.saved, [(1, "boot:1")])

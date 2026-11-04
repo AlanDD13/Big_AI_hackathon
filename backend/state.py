@@ -15,6 +15,7 @@ from typing import Mapping
 from uuid import uuid4
 
 from backend.evidence import EvidenceConflict, object_id_for, sample_for
+from backend.postgres_projection import ObservationSource
 from backend.stationarity import MetricSample, evaluate_stationarity
 
 
@@ -43,6 +44,7 @@ class BackendState:
         boot_id: str | None = None,
         now: Callable[[], float] | None = None,
         token_factory: Callable[[], str] | None = None,
+        observation_log: object | None = None,
     ) -> None:
         if boot_id is None:
             boot_id = secrets.token_hex(16)
@@ -67,6 +69,7 @@ class BackendState:
         self._alerts: dict[str, dict[str, object]] = {}
         self._potential: dict[str, bool] = {}
         self._revisions: dict[tuple[str, str], int] = {}
+        self._observation_log = observation_log
 
     def open_session(self) -> str:
         session_id = self._token()
@@ -97,6 +100,7 @@ class BackendState:
         producer_boot_id: str | None = None,
         entity_version: int | None = None,
         vision_revision: int | None = None,
+        persist: bool = True,
     ) -> RecordResult:
         canonical = json.dumps(evidence, sort_keys=True, separators=(",", ":"), allow_nan=False)
         object_id = object_id_for(evidence)
@@ -108,6 +112,12 @@ class BackendState:
             int(evidence["frameId"]),
         )
         track_key = frame_key[:4]
+        source: ObservationSource = {
+            "vision_event_id": vision_event_id,
+            "producer_boot_id": producer_boot_id,
+            "entity_version": entity_version,
+            "vision_revision": vision_revision,
+        }
         with self._lock:
             if vision_event_id is not None:
                 previous = self._vision_events.get(vision_event_id)
@@ -117,27 +127,32 @@ class BackendState:
                     return RecordResult(object_id, int(self._objects[object_id]["backendRevision"]), True)
 
             stored = self._frames.get(frame_key)
+            if stored is not None and stored != canonical:
+                raise EvidenceConflict("Frame was reused with different evidence")
+
+            samples = self._samples.get(object_id)
+            sample = sample_for(evidence)
+            if stored is None:
+                latest = self._latest_frame.get(track_key)
+                if latest is not None and int(evidence["frameId"]) < latest:
+                    raise EvidenceConflict("Frame is older than stored evidence for this track")
+                if samples and sample.received_at < samples[-1].received_at:
+                    raise EvidenceConflict("Observation receipt time is older than stored evidence")
+            if persist and self._observation_log is not None and (stored is None or vision_event_id is not None):
+                try:
+                    self._observation_log.save(evidence, **source)
+                except ValueError as exc:
+                    raise EvidenceConflict(str(exc)) from exc
+
+            if vision_event_id is not None:
+                self._vision_events[vision_event_id] = canonical
             if stored is not None:
-                if stored != canonical:
-                    raise EvidenceConflict("Frame was reused with different evidence")
-                if vision_event_id is not None:
-                    self._vision_events[vision_event_id] = canonical
                 return RecordResult(object_id, int(self._objects[object_id]["backendRevision"]), True)
 
-            latest = self._latest_frame.get(track_key)
-            if latest is not None and int(evidence["frameId"]) < latest:
-                raise EvidenceConflict("Frame is older than stored evidence for this track")
-
-            samples = self._samples.setdefault(object_id, [])
-            sample = sample_for(evidence)
-            if samples and sample.received_at < samples[-1].received_at:
-                raise EvidenceConflict("Observation receipt time is older than stored evidence")
-            samples.append(sample)
+            self._samples.setdefault(object_id, []).append(sample)
             self._frames[frame_key] = canonical
             self._latest_frame[track_key] = int(evidence["frameId"])
             self._evidence[object_id] = dict(evidence)
-            if vision_event_id is not None:
-                self._vision_events[vision_event_id] = canonical
             self._publish_object_unlocked(
                 object_id,
                 vision_event_id=vision_event_id,
@@ -201,7 +216,7 @@ class BackendState:
                 vision_event_id=None,
                 producer_boot_id=self._objects[object_id].get("producerBootId"),
                 entity_version=self._objects[object_id].get("entityVersion"),
-                vision_revision=self._objects[object_id].get("visionRevision"),
+                vision_revision=self._objects[object_id].get("revision"),
                 refresh=True,
             )
 
@@ -225,36 +240,60 @@ class BackendState:
         revision = self._next_revision_unlocked("object", object_id)
         body = {
             "objectId": object_id,
-            "state": "OBSERVING",
+            "backendBootId": self.boot_id,
+            "backendRevision": revision,
+            "eventId": vision_event_id,
+            "visionEventId": vision_event_id,
+            "producerBootId": producer_boot_id,
+            "entityVersion": entity_version,
+            "revision": vision_revision,
+            "state": "POTENTIAL_TARGET" if potential else "OBSERVING",
+            "status": "POTENTIAL_TARGET" if potential else "OBSERVING",
             "cameraId": evidence["cameraId"],
             "sessionId": evidence["sessionId"],
             "geometryVersion": evidence["geometryVersion"],
             "trackId": evidence["trackId"],
             "frameId": evidence["frameId"],
-            "mapId": evidence["mapId"],
-            "mapVersion": evidence["mapVersion"],
-            "calibrationId": evidence["calibrationId"],
-            "calibrationValid": evidence["calibrationValid"],
             "capturedAt": evidence["capturedAt"],
             "receivedAt": evidence["receivedAt"],
-            "floorPointM": evidence["floorPointM"],
-            "positionErrorM": evidence["positionErrorM"],
-            "valid": evidence["valid"],
-            "invalidReason": evidence["invalidReason"],
+            "lastSeenAt": evidence["receivedAt"],
+            "cameraKind": "FIXED" if evidence["invalidReason"] != "rover_confirmation_only" else "ROVER",
+            "bboxPx": None,
+            "detectorLabel": None,
             "detectorScore": None,
             "grokConfidence": None,
+            "motionState": "STATIONARY" if potential else "OBSERVING",
+            "metricStationarySeconds": stationary.span_seconds,
+            "floorPointM": evidence["floorPointM"],
+            "positionErrorM": evidence["positionErrorM"],
+            "mapping": {
+                "cameraId": evidence["cameraId"],
+                "sessionId": evidence["sessionId"],
+                "geometryVersion": evidence["geometryVersion"],
+                "frameId": evidence["frameId"],
+                "trackId": evidence["trackId"],
+                "mapId": evidence["mapId"],
+                "mapVersion": evidence["mapVersion"],
+                "calibrationId": evidence["calibrationId"],
+                "calibrationValid": evidence["calibrationValid"],
+                "capturedAt": evidence["capturedAt"],
+                "receivedAt": evidence["receivedAt"],
+                "floorPointM": evidence["floorPointM"],
+                "positionErrorM": evidence["positionErrorM"],
+                "valid": evidence["valid"],
+                "invalidReason": evidence["invalidReason"],
+            },
+            "classificationStatus": "PENDING",
+            "classification": None,
+            "potentialTarget": potential,
+            "dispatchEligible": False,
+            "eligibilityReason": None if potential else reason,
+            "evidenceUrl": None,
             "stationary": {
                 "sampleCount": stationary.sample_count,
                 "spanSeconds": stationary.span_seconds,
                 "eligible": potential,
             },
-            "potentialTarget": potential,
-            "dispatchEligible": False,
-            "eligibilityReason": reason,
-            "backendRevision": revision,
-            "producerBootId": producer_boot_id,
-            "entityVersion": entity_version,
-            "visionRevision": vision_revision,
         }
         self._objects[object_id] = body
         self._append_unlocked(
@@ -284,11 +323,20 @@ class BackendState:
         revision = self._next_revision_unlocked("alert", alert_id)
         alert = {
             "alertId": alert_id,
-            "objectId": object_id,
+            "type": f"alert.{kind}",
             "kind": kind,
-            "reason": reason,
-            "action": action,
+            "eventId": object_body.get("eventId"),
+            "visionEventId": object_body.get("visionEventId"),
+            "objectId": object_id,
+            "backendBootId": self.boot_id,
             "backendRevision": revision,
+            "producerBootId": object_body.get("producerBootId"),
+            "entityVersion": object_body.get("entityVersion"),
+            "revision": object_body.get("revision"),
+            "reason": None if kind == "potential_target" else reason,
+            "action": action,
+            "acknowledged": False,
+            "createdAt": self._now(),
             "object": dict(object_body),
         }
         self._alerts[alert_id] = alert
@@ -311,6 +359,7 @@ class BackendState:
                     "backendBootId": self.boot_id,
                     "entity": entity,
                     "backendRevision": revision,
+                    "eventId": vision_event_id,
                     "visionEventId": vision_event_id,
                     "body": body,
                 },
