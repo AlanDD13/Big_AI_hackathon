@@ -25,6 +25,17 @@ class ContractFixtureTest(unittest.TestCase):
             },
         )
 
+    def test_manual_release_response_is_unknown_until_confirmed(self):
+        fixture = load("fixtures/manual-control.json")
+        resp = fixture["releaseResponse"]
+        self.assertEqual(resp["stage"], "UNKNOWN")
+        self.assertIs(resp["stationaryConfirmed"], False)
+        self.assertEqual(resp["stationarySamples"], 0)
+        self.assertIs(resp["motion"], False)
+        self.assertEqual(fixture["hardwareStopStateMachine"]["cleanReleaseTimeoutStage"], "UNKNOWN")
+        text = (ROOT / "manual-control-v1.md").read_text()
+        self.assertIn("STAYS", text)
+
     def test_manual_control_is_not_slice_one(self):
         fixture = load("fixtures/manual-control.json")
         self.assertEqual(fixture["status"], "MANUAL_CHASSIS_SLICE_1")

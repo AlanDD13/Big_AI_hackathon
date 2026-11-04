@@ -43,6 +43,7 @@
     "stoppedStageLeaseDriveHttpStatus": 409,
     "faultLatchedRejectionCode": "STOP_LOCKED",
     "cleanReleaseConfirmedStage": "IDLE",
+    "cleanReleaseTimeoutStage": "UNKNOWN",
     "rearmAllowedFrom": ["STOPPED"],
     "rearmTargetStage": "IDLE",
     "rearmRestoresAuthorityOrMotion": false
@@ -118,8 +119,11 @@
   "releaseResponse": {
     "roverId": "rover-1",
     "released": true,
-    "stage": "IDLE",
-    "zeroVelocityApplied": true
+    "stage": "UNKNOWN",
+    "zeroVelocityRequested": true,
+    "stationaryConfirmed": false,
+    "stationarySamples": 0,
+    "motion": false
   },
   "overheadRequest": {
     "leaseId": "lease-1",

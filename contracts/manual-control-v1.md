@@ -169,17 +169,22 @@ session returns `401 Unauthorized`.
      and invalidates the lease. Because real EP Core `ProtoChassisSpeedMode`
      packets have no protocol ACK, P4 enters `UNKNOWN` when zero velocity is
      requested until **3 consecutive fresh (`<= 0.5 s`) stationary telemetry
-     observations** confirm zero motion, then transitions to `IDLE` (normal
-     operator release) or latches `STOPPED` (if triggered by a fault). Returns
-     `200 OK`:
+     observations** confirm zero motion. The immediate `200 OK` body is always
+     `stage: "UNKNOWN"`, `stationaryConfirmed: false`, `stationarySamples: 0`,
+     `motion: false`; callers poll `GET /api/manual/status` for the later
+     `UNKNOWN -> IDLE` transition after 3 consecutive fresh stationary samples.
+     If confirmation times out/fails, a clean release STAYS `UNKNOWN`
+     (`503 TELEMETRY_STALE` on lease/drive, `409 NOT_STOPPED` on rearm) unless a
+     later fault sample confirms stop, which latches `STOPPED`.
      ```json
      {
        "roverId": "rover-1",
        "released": true,
-       "stage": "IDLE",
+       "stage": "UNKNOWN",
        "zeroVelocityRequested": true,
-       "stationaryConfirmed": true,
-       "stationarySamples": 3
+       "stationaryConfirmed": false,
+       "stationarySamples": 0,
+       "motion": false
      }
      ```
 
@@ -292,8 +297,9 @@ session returns `401 Unauthorized`.
     `rearmed: true`) without restoring any prior lease, authority, or motion.
   - **Clean voluntary operator `release`** (`POST /manual/release` with no fault):
     after 3 consecutive fresh stationary observations confirm zero motion, state
-    transitions `UNKNOWN -> IDLE` (or latches `STOPPED` if stationary confirmation
-    fails or times out).
+    transitions `UNKNOWN -> IDLE`. If confirmation times out or fails, state STAYS
+    `UNKNOWN` (never latches `STOPPED` on timeout alone); only a later fault
+    sample confirming stop latches `STOPPED`.
 
 ## 4. Overhead Click & Manipulation Stay Simulated in Slice 1
 
