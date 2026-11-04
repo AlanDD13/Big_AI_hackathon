@@ -1,6 +1,11 @@
 # Shared contracts
 
 Owner: `AlanDD13`. Status: **draft for team agreement, not a frozen API**.
+Persistence decision: `zekihxh` owns a shared Supabase Postgres database,
+replacing the initial SQLite proposal. Backend owns schema/migrations and
+durable object/event/classification/alert/mission state. All five agents use
+documented APIs or individually authorized project access; secret/service-role
+keys remain backend-only. Project provisioning and access still need verification.
 The vision producer's versioned interface is now specified in
 [`contracts/vision-v1.md`](../contracts/vision-v1.md), with JSON schemas and
 fixtures. Consumer acknowledgement is pending; this does not freeze unrelated

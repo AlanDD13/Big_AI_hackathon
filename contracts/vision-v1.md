@@ -8,7 +8,7 @@ No consumer may assume a requested interface is merged or implemented by peers.
 
 - Alan: `vision/`, Grok image classification, shared schemas and this contract.
 - Tezqx: pixel-to-map transforms, map/version/calibration data, metric positions.
-- zekihxh: backend SQLite, durable object/classification/alert/mission state and
+- zekihxh: Supabase Postgres, durable object/classification/alert/mission state and
   dashboard SSE. Vision never writes the backend database.
 - LcyShox: dashboard showing observations immediately, scores and status updates.
 - platonyesin-dev: sole DJI connection; rover frame endpoint and physical control.
@@ -124,10 +124,15 @@ Backend owns acknowledgement, alert persistence and optional hold/stop dispatch.
 Revocation means HOLD_BEFORE_PICKUP; expected motion during authorized PICKING
 is handled by mission state, not blindly turned into another pickup command.
 
-Backend should persist current objects, sampled observations, classifications,
-alerts, missions and event IDs in SQLite; evidence JPEGs belong in files with DB
-references. Raw continuous video is not stored in SQLite. No other component
-opens backend's DB. Backend SSE relays updates to the dashboard; browser never
+Lead decision after checkpoint e3976c1: backend persistence uses shared Supabase
+Postgres instead of SQLite. Backend owns schema/migrations and project setup;
+all teammates receive documented APIs, fixtures and individually authorized
+project/agent access where needed. Secret/service-role credentials remain
+backend-only and are never shared in Git, board posts or browser code.
+Persist current objects, sampled observations, classifications, alerts, missions
+and event IDs; evidence JPEGs use separate file/object storage with DB references.
+Raw continuous video is not stored in database rows. Backend SSE relays updates
+to the dashboard; browser never
 needs a Grok key. Vision GET /api/objects and /api/events are diagnostic/consumer
 interfaces, not a replacement dashboard or durable backend.
 
