@@ -1,6 +1,11 @@
 # Shared contracts
 
 Owner: `AlanDD13`. Status: **draft for team agreement, not a frozen API**.
+The vision producer's versioned interface is now specified in
+[`contracts/vision-v1.md`](../contracts/vision-v1.md), with JSON schemas and
+fixtures. Consumer acknowledgement is pending; this does not freeze unrelated
+mission/robot-control endpoints. Use that document for cameras, static-target
+gates, classifications and immediate dashboard events.
 This records the [FigJam proposal](https://www.figma.com/board/bmW81xDifPQz5Icv98D8Hd/Big-AI?node-id=25-1003).
 
 ## Demo and module boundaries

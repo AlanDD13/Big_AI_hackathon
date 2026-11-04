@@ -1,0 +1,115 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "cameraId": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Cameraid",
+      "type": "string"
+    },
+    "sessionId": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Sessionid",
+      "type": "string"
+    },
+    "geometryVersion": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Geometryversion",
+      "type": "string"
+    },
+    "frameId": {
+      "minimum": 0,
+      "title": "Frameid",
+      "type": "integer"
+    },
+    "trackId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Trackid",
+      "type": "string"
+    },
+    "mapId": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Mapid",
+      "type": "string"
+    },
+    "mapVersion": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Mapversion",
+      "type": "string"
+    },
+    "calibrationId": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Calibrationid",
+      "type": "string"
+    },
+    "calibrationValid": {
+      "title": "Calibrationvalid",
+      "type": "boolean"
+    },
+    "capturedAt": {
+      "minimum": 0,
+      "title": "Capturedat",
+      "type": "number"
+    },
+    "floorPointM": {
+      "anyOf": [
+        {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Floorpointm"
+    },
+    "positionErrorM": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Positionerrorm"
+    },
+    "valid": {
+      "title": "Valid",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "cameraId",
+    "sessionId",
+    "geometryVersion",
+    "frameId",
+    "trackId",
+    "mapId",
+    "mapVersion",
+    "calibrationId",
+    "calibrationValid",
+    "capturedAt",
+    "valid"
+  ],
+  "title": "MappingEvidence",
+  "type": "object"
+}
