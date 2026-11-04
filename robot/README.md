@@ -100,3 +100,11 @@ integration is included in this task.
 See [HARDWARE_CHECKS.md](HARDWARE_CHECKS.md) for real camera/sensor/chassis/arm/
 gripper results, reproduction commands, SDK quirks and remaining limitations.
 `check_hardware.py` is a staged bench diagnostic, not a live control bridge.
+
+## Watchdog and recovery (step 5)
+
+See [WATCHDOG.md](WATCHDOG.md) for the internal safety core, offline tests,
+real-SDK bench results and remaining physical stop-confirmation issue.
+The implementation requests zero independently of input delivery, keeps an
+unconfirmed stop UNKNOWN, latches confirmed faults, and requires explicit
+rearm plus new authority before movement. No HTTP/live-control service exists.
