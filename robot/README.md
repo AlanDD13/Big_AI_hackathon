@@ -107,4 +107,44 @@ See [WATCHDOG.md](WATCHDOG.md) for the internal safety core, offline tests,
 and real-SDK stationary and moving bench results.
 The implementation requests zero independently of input delivery, keeps an
 unconfirmed stop UNKNOWN, latches confirmed faults, and requires explicit
-rearm plus new authority before movement. No HTTP/live-control service exists.
+rearm plus new authority before movement.
+
+## Rover camera and TOF sensor service (step 6)
+
+`robot/camera.py` captures live video frames (`start_video_stream` -> BGR -> JPEG)
+and 4-slot infrared TOF distance telemetry (`sub_distance`) from the EP Core and
+exposes `GET /camera/frame` (`Authorization: Bearer <PEER_TOKEN>`) plus public
+`GET /health` per `contracts/robot-simulator-v1.md` and `contracts/vision-v1.md`:
+
+- Returns `200 OK` (`image/jpeg`) with `X-Camera-Id`, `X-Session-Id`,
+  `X-Geometry-Version`, `X-Frame-Id`, `X-Captured-At`, `X-Timestamp-Basis: RECEIVE`,
+  and `X-Distance-Mm-Slot0`.
+- Returns identical bytes for repeated reads of the same `X-Frame-Id`; increments
+  `X-Geometry-Version` if resolution changes; mints a new `X-Session-Id` on
+  restart.
+- Fails closed with `503 STALE_FRAME` when no frame has been captured, the stream
+  is stopped/faulted, or the newest frame is older than `1.0 s` (never serves a
+  stale or placeholder image).
+
+Run the bounded live camera + sensor verification or continuous frame server from
+repository root:
+
+```bash
+# Offline unit tests (47 tests across safety, telemetry, and camera):
+robot/.venv/bin/python -m unittest discover -s robot/tests -v
+
+# Bounded physical rover camera + TOF sensor check (360p or 720p, closes session cleanly):
+robot/.venv/bin/python robot/camera.py --sn YOUR_ROBOT_SERIAL --resolution 360p --duration 4.0
+robot/.venv/bin/python robot/camera.py --sn YOUR_ROBOT_SERIAL --resolution 720p --duration 3.0
+
+# Continuous GET /camera/frame server on :8004 (requires PEER_TOKEN in env):
+PEER_TOKEN=your_peer_token robot/.venv/bin/python robot/camera.py --sn YOUR_ROBOT_SERIAL --serve --port 8004
+```
+
+Measured on physical unit `3JKCK7W0030DJS` (firmware `01.01.1150`, STA/UDP):
+- `360p` (`640x360`): `29.9 FPS` sustained capture (`120` frames in `4.0 s`),
+  `0.57–1.13 ms` HTTP poll latency, `21.1 ms` frame age, `503 STALE_FRAME` before
+  start and after close, `401 UNAUTHORIZED` on invalid bearer token.
+- `720p` (`1280x720`): `30.9 FPS` sustained capture (`95` frames in `3.0 s`),
+  `0.53–0.68 ms` HTTP poll latency, `24.6 ms` frame age, `slot_0` forward TOF
+  reading `2294–2305 mm`.
