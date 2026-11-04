@@ -10,6 +10,7 @@ from itertools import islice
 from dataclasses import dataclass
 from io import BytesIO
 import math
+import os
 import uuid
 
 
@@ -165,11 +166,55 @@ def resolve_device(requested: str | None = 'auto') -> str:
     return 'cpu'
 
 
+_BACKGROUND = {'wall', 'floor', 'ceiling', 'table', 'desk', 'door', 'window', 'room', 'carpet', 'rug',
+               'furniture', 'shelf', 'cabinet', 'curtain', 'sofa', 'couch', 'bed', 'chair', 'television',
+               'tv', 'monitor', 'screen', 'laptop', 'computer', 'keyboard', 'building', 'tile', 'ground'}
+
+
+def _env_float(name, default):
+    try:
+        return float(os.getenv(name, default))
+    except ValueError:
+        return default
+
+
+def _background(label):
+    return bool(set(label.lower().replace('-', ' ').replace('_', ' ').split()) & _BACKGROUND)
+
+
+def curate(detections, width, height, min_confidence, min_area_frac, max_area_frac, max_objects):
+    """Thin out candidate objects. Living detections are never dropped, because they
+    exclude overlapping objects and must stay visible to the safety filter."""
+    kept, objects = [], []
+    area = float(width * height) or 1.0
+    for d in detections:
+        if _living(d.label):
+            kept.append(d)
+            continue
+        frac = (d.bbox[2] - d.bbox[0]) * (d.bbox[3] - d.bbox[1]) / area
+        if (d.score >= min_confidence and min_area_frac <= frac <= max_area_frac
+                and not _background(d.label)):
+            objects.append(d)
+    objects.sort(key=lambda d: d.score, reverse=True)
+    chosen = []
+    for d in objects:  # class-agnostic suppression of near-duplicate boxes
+        if all(_iou(d.bbox, c.bbox) < .5 for c in chosen):
+            chosen.append(d)
+        if len(chosen) >= max_objects:
+            break
+    return kept + chosen
+
+
 class YoloDetector:
-    def __init__(self, model='yoloe-26s-seg-pf.pt', device='mps', confidence=.25):
+    def __init__(self, model='yoloe-26s-seg-pf.pt', device='mps', confidence=.25,
+                 min_confidence=None, min_area_frac=None, max_area_frac=None, max_objects=None):
         self.model_name = model
         self.device = resolve_device(device)
         self.confidence = confidence
+        self.min_confidence = _env_float('VISION_MIN_CONFIDENCE', .45) if min_confidence is None else min_confidence
+        self.min_area_frac = _env_float('VISION_MIN_AREA_FRAC', .002) if min_area_frac is None else min_area_frac
+        self.max_area_frac = _env_float('VISION_MAX_AREA_FRAC', .4) if max_area_frac is None else max_area_frac
+        self.max_objects = int(_env_float('VISION_MAX_OBJECTS', 6)) if max_objects is None else max_objects
         self._model = None
 
     def detect(self, jpeg: bytes) -> list[Detection]:
@@ -179,6 +224,7 @@ class YoloDetector:
             self._model = YOLOE(self.model_name)
         with Image.open(BytesIO(jpeg)) as image:
             image = image.convert('RGB')
+            size = image.size
             results = self._model.predict(source=image, device=self.device, conf=self.confidence, verbose=False)
         detections = []
         for result in results:
@@ -188,4 +234,5 @@ class YoloDetector:
                 d = Detection(label, float(box.conf[0]), coords, ((coords[0]+coords[2])/2, coords[3]))
                 if _valid(d):
                     detections.append(d)
-        return detections
+        return curate(detections, size[0], size[1], self.min_confidence, self.min_area_frac,
+                      self.max_area_frac, self.max_objects)
