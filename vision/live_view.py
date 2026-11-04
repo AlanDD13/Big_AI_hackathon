@@ -20,6 +20,8 @@ import cv2
 import numpy as np
 
 from vision.graspability import estimate_graspability, limits_from_env, scale_from_reference
+from vision.demo_grid import draw_demo_grid
+from mapping.grid_mapper import pixel_to_sector
 
 
 def annotation_lines(obj, mm_per_px, max_opening):
@@ -90,6 +92,9 @@ def main():
     context.check_hostname = False
     context.verify_mode = ssl.CERT_NONE
     base = args.url.rstrip("/")
+    window_name = f"vision {args.camera}"
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+    cv2.resizeWindow(window_name, 1100, 790)
     while True:
         try:
             objects = json.loads(_get(f"{base}/api/objects", token, context))["objects"]
@@ -106,6 +111,7 @@ def main():
                     if scale_epoch is not None and epoch != scale_epoch:
                         mm_per_px = None
                     scale_epoch = epoch
+                    draw_demo_grid(frame)
                     for o in mine:
                         if o['sessionId'] != session_id or o["frameId"] != frame_id or o.get('status') == 'LOST':
                             continue
@@ -113,13 +119,15 @@ def main():
                         excluded = bool(o.get("exclusionReason"))
                         color = (0, 0, 255) if excluded else (0, 200, 0)
                         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                        for line, tag in enumerate(annotation_lines(o, mm_per_px, max_opening)):
+                        sector = pixel_to_sector((x1 + x2) / 2, (y1 + y2) / 2, frame.shape[1], frame.shape[0])
+                        labels = [f'Demo sector: {sector}', *annotation_lines(o, mm_per_px, max_opening)]
+                        for line, tag in enumerate(labels):
                             y = min(frame.shape[0] - 6, max(18, y1 - 6) + line * 18)
                             cv2.putText(frame, tag, (max(0, min(x1, frame.shape[1] - 300)), y),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
                     cv2.putText(frame, 'c: measure reference width | q: quit | Pickup estimates are advisory',
                                 (8, frame.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, .45, (0, 180, 255), 1)
-                    cv2.imshow(f"vision {args.camera}", frame)
+                    cv2.imshow(window_name, frame)
         except Exception as exc:  # keep polling through transient errors
             print("poll error:", exc, file=sys.stderr)
         key = cv2.waitKey(200) & 0xFF

@@ -19,8 +19,9 @@ button { padding: 5px 16px; }
 .grok-control label { flex-direction: row; align-items: center; font-size: 16px; font-weight: 600; }
 #grok-toggle { width: 26px; height: 26px; min-height: 26px; }
 #grok-status { font-size: 13px; }
-.preview-frame { flex: 1 1 0; min-height: 100px; display: flex; overflow: hidden; background: #101418; border-radius: 8px; }
+.preview-frame { position: relative; flex: 1 1 0; min-height: 100px; display: flex; overflow: hidden; background: #101418; border-radius: 8px; }
 #preview { display: block; width: 100%; height: 100%; min-height: 0; object-fit: contain; }
+#grid-overlay { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
 </style></head>
 <body><main><h1>Camera source</h1>
 <div class="controls">
@@ -35,6 +36,6 @@ button { padding: 5px 16px; }
 </div>
 <p id="camera-details" role="status">Lens not started. Auto prefers a rear ultra-wide lens when available.</p>
 <p id="status" role="status">Stopped</p>
-<div class="preview-frame"><video id="preview" autoplay playsinline muted></video></div>
-<p class="hint">Entire camera frame shown — no cropping. Preview fits the screen; uploads keep native video resolution. Keep the iPad in landscape and fixed; synchronize clocks before mapping.</p>
+<div class="preview-frame"><video id="preview" autoplay playsinline muted></video><canvas id="grid-overlay" aria-label="4 by 4 demo sector grid"></canvas></div>
+<p class="hint">A1–A4 at top; D1–D4 at bottom. Demo grid is uncalibrated — cells are not measured 0.5m squares. Entire camera frame shown; uploads keep native resolution without the grid.</p>
 </main><script src="camera.js" defer></script></body></html>

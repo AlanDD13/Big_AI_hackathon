@@ -16,6 +16,10 @@ function page({ultra = false, zoom = false, largeJpeg = false} = {}) {
   elements.preview.videoWidth = 3840;
   elements.preview.videoHeight = 2160;
   elements.preview.play = async () => {};
+  const gridLabels = [];
+  const grid = {width: 0, height: 0, getContext: () => ({beginPath() {}, moveTo() {}, lineTo() {}, stroke() {},
+    strokeText() {}, fillText(label) { gridLabels.push(label); }})};
+  elements['grid-overlay'] = grid;
   const calls = [], uploads = [], applied = [], qualities = [], tracks = [], controls = [];
   let grokEnabled = false;
   const devices = [{kind: 'videoinput', deviceId: 'rear', label: 'Back Camera'}];
@@ -60,7 +64,7 @@ function page({ultra = false, zoom = false, largeJpeg = false} = {}) {
     }
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../web/camera.js'), 'utf8'), context);
-  return {elements, canvas, calls, uploads, applied, qualities, tracks, controls,
+  return {elements, canvas, calls, uploads, applied, qualities, tracks, controls, grid, gridLabels,
     async start() {
       // Camera script initializes credential fields from the URL fragment.
       elements['camera-id'].value = 'phone-2'; elements.token.value = 'scoped-camera-token';
@@ -137,4 +141,16 @@ test('Grok switch shows server-confirmed OFF and sends explicit ON/OFF changes',
   await p.elements['grok-toggle'].listeners.change();
   assert.match(p.elements['grok-status'].textContent, /OFF/);
   assert.deepEqual(p.controls.filter(c => c.method === 'PUT').map(c => JSON.parse(c.body).enabled), [true, false]);
+});
+
+test('preview draws all sixteen sectors separately from native camera uploads', async () => {
+  const p = page();
+  await p.start();
+  assert.equal(p.gridLabels.length, 16);
+  assert.equal(p.gridLabels[0], 'A1');
+  assert.equal(p.gridLabels[15], 'D4');
+  assert.equal(p.grid.width, 3840);
+  assert.equal(p.grid.height, 2160);
+  assert.notEqual(p.grid, p.canvas);
+  assert.equal(p.uploads.length, 1);
 });

@@ -53,6 +53,14 @@ Completed assessments are reused for the same episode. Explicit stateless peer
 requests are independent of this switch. Runtime overrides reset to the environment
 default when the service restarts. Pickup estimates never verify a physical grab.
 
+Both the iPad `/camera` preview and `python -m vision.live_view` now draw the
+4x4 demo grid from the mapping convention: A1 at top-left, D4 at bottom-right.
+The PC viewer also labels each detected bbox centre with its demo sector.
+The browser overlay is separate from the raw upload canvas. Full-frame cells
+are uncalibrated demo labels, not measured half-metre squares; the old phone
+floor mask is not reused for a changed iPad view. Restart an existing PC viewer
+after updating these files; reload the iPad page and press Start.
+
 The /camera page is an operational camera-source page, not the main dashboard.
 For independent phones, use LAN HTTPS with --cert and --key; plain LAN HTTP is
 rejected by the CLI. Configure camera IDs with VISION_CAMERAS, for example

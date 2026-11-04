@@ -31,6 +31,28 @@ async function syncGrok(enabled) {
 grokToggle.addEventListener('change', () => syncGrok(grokToggle.checked));
 const isUltraWide = label => /ultra[\s-]*wide|0[.,]5\s*[x×]/i.test(label);
 const canvas = document.createElement('canvas');
+const gridOverlay = document.querySelector('#grid-overlay');
+function drawDemoGrid(width, height) {
+  if (gridOverlay.width === width && gridOverlay.height === height) return;
+  gridOverlay.width = width; gridOverlay.height = height;
+  const context = gridOverlay.getContext('2d');
+  context.strokeStyle = '#ffcf40'; context.fillStyle = '#ffcf40';
+  context.lineWidth = Math.max(2, width / 1000);
+  context.beginPath();
+  for (let n = 1; n < 4; n++) {
+    context.moveTo(n * width / 4, 0); context.lineTo(n * width / 4, height);
+    context.moveTo(0, n * height / 4); context.lineTo(width, n * height / 4);
+  }
+  context.stroke();
+  context.font = `bold ${Math.max(18, Math.round(width / 60))}px system-ui`;
+  context.textAlign = 'center'; context.textBaseline = 'middle';
+  for (let row = 0; row < 4; row++) for (let column = 0; column < 4; column++) {
+    const label = `${'ABCD'[row]}${column + 1}`;
+    const x = (column + .5) * width / 4, y = (row + .5) * height / 4;
+    context.strokeStyle = '#101418'; context.lineWidth = Math.max(4, width / 450);
+    context.strokeText(label, x, y); context.fillText(label, x, y);
+  }
+}
 let stream = null, running = false, generation = 0, timer = null, abort = null, upload = null;
 const fragment = new URLSearchParams(location.hash.slice(1));
 cameraId.value = fragment.get('cameraId') || '';
@@ -41,6 +63,7 @@ function halt(message = 'Stopped') {
   if (abort) abort.abort();
   if (stream) stream.getTracks().forEach(track => track.stop());
   stream = null; preview.srcObject = null; start.disabled = false; stop.disabled = true; lens.disabled = false;
+  gridOverlay.width = 0; gridOverlay.height = 0;
   status.textContent = message;
 }
 stop.addEventListener('click', () => halt());
@@ -108,6 +131,7 @@ start.addEventListener('click', async () => {
         if (!w || !h) throw new Error('Camera is not ready');
         if (w < h) throw new Error('Turn the phone to landscape and restart capture.');
         if (w * h > 16000000) throw new Error('Camera video exceeds the 16MP limit. Choose another lens.');
+        drawDemoGrid(w, h);
         const size = `${w}x${h}:${screen.orientation?.angle ?? window.orientation ?? 0}:${track.getSettings().zoom ?? ''}`;
         if (previous && previous !== size) geometry++;
         previous = size;
