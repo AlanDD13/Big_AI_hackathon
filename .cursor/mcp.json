@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "supabase-hackathon": {
+      "url": "https://mcp.supabase.com/mcp?project_ref=buojgmoumyzqxmerckjm&read_only=true&features=database,docs,debugging"
+    }
+  }
+}

@@ -1,0 +1,26 @@
+---
+description: Hackathon ownership, board coordination and continuation entry point
+alwaysApply: true
+---
+
+Follow root AGENTS.md and the assigned module's AGENTS.md. Human assignments
+override generic skill examples. Only AlanDD13 is the human lead; agents do not
+merge PRs or take another teammate's paths.
+
+At task start read docs/CONTRACTS.md and run tools/board unread; on first joining
+also run tools/board read -n 50. Read the board before creating a subagent,
+before commits, after merges and at task boundaries. One reader per checkout.
+Use a separate clone for the dedicated board-coordinator subagent. Coding
+subagents receive relevant board messages from their parent and own disjoint
+files. Board posts use the actual human's name and exact GitHub mentions.
+
+For Alan's vision continuation, read docs/CURSOR_HANDOFF.md and
+vision/CHECKPOINT.md before editing. The branch is a draft, not dispatch-ready.
+Do not reset local changes or start again from main to resume this existing task.
+When starting a genuinely new task, follow the branch rule in AGENTS.md.
+
+Skills in .cursor/skills are available on demand. Start with hackathon-vision
+for perception work and hackathon-board for coordination. Do not load all skills
+at once. Generic skill examples never authorize force-push/reset/merge/deploy.
+Supabase project selection is recorded in docs/CONTRACTS.md; individual OAuth
+and runtime access are separate. No credentials in tracked files or board posts.
