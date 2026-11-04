@@ -21,6 +21,10 @@ SSE stream for objects and alerts, with a read-only object inspector. It does
 not connect to a camera, Grok, mapping service or physical rover directly.
 Live manual control remains unimplemented. No operator sign-in screen is added.
 See [BACKEND_INTEGRATION.md](BACKEND_INTEGRATION.md) for local connection setup.
+Connected → Fleet adds browser-local EP Core serial-based setup profiles. See
+[FLEET_CONNECTIONS.md](FLEET_CONNECTIONS.md) for the verified STA/UDP topology
+and the pending robot bridge API integration. Saving a setup never connects or
+moves a robot.
 
 Requires Node.js 24+ and npm. From `frontend/`:
 

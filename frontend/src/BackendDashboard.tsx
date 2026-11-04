@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Bell, Box, CircleHelp, RefreshCw, ShieldAlert } from 'lucide-react';
 import CameraWidget from './CameraWidget';
+import FleetPanel from './FleetPanel';
 import { connectBackend, number, objectFacts, text } from './backend';
 import type { BackendObject, Connection } from './backend';
 import './backend.css';
@@ -10,7 +11,7 @@ const score = (value: unknown) => { const n = number(value); return n === null ?
 const time = (value: unknown) => { const n = number(value); const d = new Date(n !== null ? n * 1000 : text(value, '')); return Number.isNaN(d.getTime()) ? 'Unavailable' : d.toLocaleString(); };
 function Fact({ title, children }: { title: string; children: React.ReactNode }) { return <div><dt>{title}</dt><dd>{children}</dd></div>; }
 
-export default function BackendDashboard() {
+export default function BackendDashboard({ view }: { view: 'objects' | 'fleet' }) {
   const [connection, setConnection] = useState<Connection>({ status: 'loading', message: 'Loading backend snapshot…', store: null, updatedAt: null });
   const [selected, setSelected] = useState<string | null>(null);
   const [query, setQuery] = useState('');
@@ -32,6 +33,8 @@ export default function BackendDashboard() {
   const alertKey = (id: string) => `${store?.backendBootId}:${id}`;
   const unread = alerts.filter(a => !readAlerts.has(alertKey(a.alertId))).length;
   function selectObject(id: string) { setSelected(id); }
+
+  if (view === 'fleet') return <FleetPanel connection={connection} onRefresh={() => client.current?.retry()}/>;
 
   return <div className="backend-workspace">
     <div className="page-heading"><div><div className="eyebrow">WAREHOUSE / BACKEND</div><h1>Objects & alerts</h1><p>Review observations and evidence before planning a recovery.</p></div><button className="button secondary" onClick={() => client.current?.retry()}><RefreshCw size={15}/>Refresh</button></div>
