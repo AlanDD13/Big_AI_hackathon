@@ -51,6 +51,9 @@ class ObjectState:
     metric_static_s: float = 0
     metric_last_frame: int = -1
     potential_target: bool = False
+    # Set when alert.potential_target is published; cleared only by a real revocation.
+    # Frame-pending suppression must not clear it, or the same episode alerts twice.
+    alert_open_revision: int | None = None
     evidence_crop: bytes | None = None
 
 
@@ -86,8 +89,8 @@ class VisionService:
 
     def emit(self, event_type, payload):
         self.sequence += 1
-        event = Event(event_id=f"{self.boot_id}:{self.sequence}", sequence=self.sequence,
-                      type=event_type, timestamp=self.now(), payload=payload)
+        event = Event(producer_boot_id=self.boot_id, event_id=f"{self.boot_id}:{self.sequence}",
+                      sequence=self.sequence, type=event_type, timestamp=self.now(), payload=payload)
         self.events.append(event)
         for queue in tuple(self.subscribers):
             if queue.full():
@@ -141,7 +144,10 @@ class VisionService:
                 state.status = "LOST"
                 self._emit_object("object.updated", state)
             elif state.camera_id == frame.camera_id and state.status != "LOST":
+                before_target = state.potential_target
                 self._evaluate(state)
+                if state.potential_target != before_target:
+                    self._emit_object("object.updated", state)
         self.pending_frames[frame.camera_id] = frame
         self.wake.set()
 
@@ -249,8 +255,9 @@ class VisionService:
             self._emit_object("object.removed", oldest, reason="RETENTION_LIMIT")
 
     def invalidate(self, state, reason):
-        was_target = state.potential_target
+        alert_open = state.alert_open_revision is not None
         state.potential_target = False
+        state.alert_open_revision = None
         state.metric_anchor = state.metric_start = state.metric_last = None
         state.metric_count, state.metric_static_s, state.metric_last_frame = 0, 0, -1
         state.revision += 1
@@ -258,7 +265,7 @@ class VisionService:
         state.classification_status = "PENDING"
         state.mapping = None
         state.eligibility_reason = reason
-        if was_target:
+        if alert_open:
             state.status = "STATIC_PENDING_REVIEW"
             self._emit_object("alert.target_revoked", state, reason=reason,
                               action="HOLD_BEFORE_PICKUP")
@@ -266,7 +273,9 @@ class VisionService:
     def _evaluate(self, state):
         result = state.classification
         latest = self.frames.latest(state.camera_id)
-        current = latest and (latest.session_id, latest.geometry_version, latest.frame_id) == (state.session_id, state.geometry_version, state.frame_id)
+        same_epoch = bool(latest) and (latest.session_id, latest.geometry_version) == (state.session_id, state.geometry_version)
+        current = same_epoch and latest.frame_id == state.frame_id
+        frame_pending = same_epoch and latest.frame_id > state.frame_id
         eligible = bool(
             current and state.status != "LOST" and
             state.kind == "FIXED" and state.motion_state == "STATIONARY" and
@@ -276,7 +285,6 @@ class VisionService:
             result and result["subject_kind"] == "INANIMATE" and result["carrying"] == "NO" and
             result["category"] in {"TRASH", "POTENTIALLY_LOST_PROPERTY"} and result["confidence"] != "LOW"
         )
-        was_target = state.potential_target
         state.potential_target = eligible
         state.eligibility_reason = None if eligible else ("FRAME_PENDING" if latest and not current else "NOT_ELIGIBLE")
         if state.status == "LOST":
@@ -287,10 +295,16 @@ class VisionService:
             state.status = "POTENTIAL_TARGET"
         elif state.motion_state == "STATIONARY":
             state.status = "STATIC_PENDING_REVIEW"
-        if eligible and not was_target:
+        # A newer unprocessed frame removes dispatch availability for this episode
+        # without a revocation alert. The same revision can become available again
+        # without a second potential-target notification.
+        if eligible and state.alert_open_revision != state.revision:
             self._emit_object("alert.potential_target", state)
-        elif was_target and not eligible:
-            self._emit_object("alert.target_revoked", state, reason="ELIGIBILITY_CHANGED", action="HOLD_BEFORE_PICKUP")
+            state.alert_open_revision = state.revision
+        elif not eligible and not frame_pending and state.alert_open_revision is not None:
+            state.alert_open_revision = None
+            self._emit_object("alert.target_revoked", state, reason="ELIGIBILITY_CHANGED",
+                              action="HOLD_BEFORE_PICKUP")
 
     @staticmethod
     def _images(frame, box):

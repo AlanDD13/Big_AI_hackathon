@@ -1,0 +1,219 @@
+{
+  "schemaVersion": "vision.v1",
+  "fixtureClass": "LABELLED_CONTRACT_FIXTURE",
+  "liveEvidence": false,
+  "merge": "Each event.payload overrides sampleObject. Keys omitted from payload keep the sample value. Merged payloads are the normative object publications.",
+  "producerBootA": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "producerBootB": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "sampleObject": {
+    "objectId": "phone-1:session1:cccccccccccccccccccccccccccccccc",
+    "cameraId": "phone-1",
+    "sessionId": "session1",
+    "geometryVersion": "geometry1",
+    "trackId": "cccccccccccccccccccccccccccccccc",
+    "frameId": 11,
+    "capturedAt": 1005.0,
+    "lastSeenAt": 1005.0,
+    "cameraKind": "FIXED",
+    "bboxPx": [20, 20, 50, 90],
+    "detectorLabel": "bottle",
+    "detectorScore": 0.87,
+    "motionState": "STATIONARY",
+    "pixelStationarySeconds": 5.0,
+    "metricStationarySeconds": 5.0,
+    "status": "POTENTIAL_TARGET",
+    "exclusionReason": null,
+    "classificationStatus": "COMPLETED",
+    "classification": {
+      "category": "TRASH",
+      "subject_kind": "INANIMATE",
+      "carrying": "NO",
+      "confidence": "HIGH",
+      "description": "Labelled fixture bottle",
+      "reason": "Contract fixture, not live Grok"
+    },
+    "classificationProvider": "fixture",
+    "mapping": {
+      "cameraId": "phone-1",
+      "sessionId": "session1",
+      "geometryVersion": "geometry1",
+      "frameId": 11,
+      "trackId": "cccccccccccccccccccccccccccccccc",
+      "mapId": "demo-floor",
+      "mapVersion": "1",
+      "calibrationId": "cal1",
+      "calibrationValid": true,
+      "capturedAt": 1005.0,
+      "receivedAt": 1005.0,
+      "floorPointM": [0.2, 0.3],
+      "positionErrorM": 0.01,
+      "valid": true,
+      "invalidReason": null
+    },
+    "potentialTarget": true,
+    "revision": 3,
+    "entityVersion": 4,
+    "producerBootId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "eligibilityReason": null,
+    "frameRef": "/api/frames/phone-1/session1/11"
+  },
+  "cases": [
+    {
+      "id": "same_revision_entity_update",
+      "expect": "Apply increasing entityVersion within the boot. revision stays 3. This is not a new alert episode.",
+      "events": [
+        {
+          "schemaVersion": "vision.v1",
+          "producerBootId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "eventId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:4",
+          "sequence": 4,
+          "type": "object.updated",
+          "timestamp": 1005.0,
+          "payload": {"entityVersion": 4}
+        },
+        {
+          "schemaVersion": "vision.v1",
+          "producerBootId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "eventId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:5",
+          "sequence": 5,
+          "type": "object.updated",
+          "timestamp": 1005.5,
+          "payload": {"entityVersion": 5, "frameId": 12, "lastSeenAt": 1005.5, "frameRef": "/api/frames/phone-1/session1/12"}
+        }
+      ]
+    },
+    {
+      "id": "frame_pending_same_episode",
+      "expect": "potentialTarget false with eligibilityReason FRAME_PENDING and the same revision removes dispatch availability. It is not alert.target_revoked. The same revision may return to potentialTarget true through object.observed or object.updated without a second alert.potential_target.",
+      "events": [
+        {
+          "schemaVersion": "vision.v1",
+          "producerBootId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "eventId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:6",
+          "sequence": 6,
+          "type": "object.updated",
+          "timestamp": 1006.0,
+          "payload": {"entityVersion": 6, "potentialTarget": false, "eligibilityReason": "FRAME_PENDING", "status": "STATIC_PENDING_REVIEW"}
+        },
+        {
+          "schemaVersion": "vision.v1",
+          "producerBootId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "eventId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:7",
+          "sequence": 7,
+          "type": "object.observed",
+          "timestamp": 1006.1,
+          "payload": {"entityVersion": 7, "potentialTarget": true, "eligibilityReason": null, "status": "POTENTIAL_TARGET", "frameId": 12, "frameRef": "/api/frames/phone-1/session1/12"}
+        }
+      ]
+    },
+    {
+      "id": "revocation",
+      "expect": "A real eligibility loss publishes alert.target_revoked once. Retry uses the same eventId and the same entityVersion. action is HOLD_BEFORE_PICKUP. potentialTarget is false. A new producer boot must not restore dispatchability.",
+      "events": [
+        {
+          "schemaVersion": "vision.v1",
+          "producerBootId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "eventId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:8",
+          "sequence": 8,
+          "type": "alert.target_revoked",
+          "timestamp": 1006.5,
+          "payload": {
+            "entityVersion": 8,
+            "revision": 4,
+            "potentialTarget": false,
+            "eligibilityReason": "TARGET_MOVED",
+            "status": "STATIC_PENDING_REVIEW",
+            "classification": null,
+            "classificationStatus": "PENDING",
+            "classificationProvider": null,
+            "mapping": null,
+            "metricStationarySeconds": 0,
+            "reason": "TARGET_MOVED",
+            "action": "HOLD_BEFORE_PICKUP"
+          }
+        },
+        {
+          "schemaVersion": "vision.v1",
+          "producerBootId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "eventId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:8",
+          "sequence": 8,
+          "type": "alert.target_revoked",
+          "timestamp": 1006.5,
+          "payload": {
+            "entityVersion": 8,
+            "revision": 4,
+            "potentialTarget": false,
+            "eligibilityReason": "TARGET_MOVED",
+            "status": "STATIC_PENDING_REVIEW",
+            "classification": null,
+            "classificationStatus": "PENDING",
+            "classificationProvider": null,
+            "mapping": null,
+            "metricStationarySeconds": 0,
+            "reason": "TARGET_MOVED",
+            "action": "HOLD_BEFORE_PICKUP"
+          }
+        }
+      ]
+    },
+    {
+      "id": "new_boot_reset",
+      "expect": "entityVersion restarts at 1 on producerBootB. Do not order it against entityVersion values from producerBootA.",
+      "events": [
+        {
+          "schemaVersion": "vision.v1",
+          "producerBootId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "eventId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:1",
+          "sequence": 1,
+          "type": "object.observed",
+          "timestamp": 1010.0,
+          "payload": {
+            "producerBootId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "entityVersion": 1,
+            "revision": 0,
+            "potentialTarget": false,
+            "eligibilityReason": "NOT_ELIGIBLE",
+            "status": "OBSERVING",
+            "classification": null,
+            "classificationStatus": "PENDING",
+            "classificationProvider": null,
+            "mapping": null,
+            "metricStationarySeconds": 0,
+            "frameId": 0,
+            "frameRef": "/api/frames/phone-1/session1/0"
+          }
+        }
+      ]
+    },
+    {
+      "id": "delayed_old_boot",
+      "expect": "After any accepted producerBootB snapshot or event, discard this producerBootA event. It must not restore potentialTarget.",
+      "events": [
+        {
+          "schemaVersion": "vision.v1",
+          "producerBootId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "eventId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:40",
+          "sequence": 40,
+          "type": "object.updated",
+          "timestamp": 1009.0,
+          "payload": {"entityVersion": 40, "potentialTarget": true, "eligibilityReason": null}
+        }
+      ]
+    },
+    {
+      "id": "sequence_gap_and_complete_snapshot",
+      "expect": "After sequence 5, sequence 8 is a gap. Do not apply it. Replace state with the complete snapshot, then accept only same-boot events with sequence greater than the snapshot watermark.",
+      "gap": {"lastApplied": 5, "rejected": 8},
+      "snapshot": {
+        "schemaVersion": "vision.v1",
+        "producerBootId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bootId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sequence": 9,
+        "scope": "ACTIVE_OBJECTS",
+        "complete": true,
+        "objects": ["sampleObject"]
+      },
+      "absentMeansDropped": "phone-1:session1:dddddddddddddddddddddddddddddddd"
+    }
+  ]
+}

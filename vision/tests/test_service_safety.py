@@ -159,13 +159,42 @@ async def test_new_frame_revokes_eligibility_without_erasing_evidence(fixture):
     state = next(iter(service.objects.values()))
     assert state.potential_target
     original_revision = state.revision
+    alerts = [e for e in service.events if e.type == 'alert.potential_target']
+    revokes = [e for e in service.events if e.type == 'alert.target_revoked']
+    assert len(alerts) == 1
     incoming = frame(service, clock, data, 11)
     service.enqueue_frame(incoming)
-    assert not service.snapshot()[0]['potentialTarget']
+    pending = service.snapshot()[0]
+    assert not pending['potentialTarget']
+    assert pending['eligibilityReason'] == 'FRAME_PENDING'
     assert state.revision == original_revision
     assert state.classification is not None and state.metric_count >= 10
+    published = next(e.payload for e in reversed(service.events) if e.type == 'object.updated')
+    assert published['potentialTarget'] is False
+    assert published['eligibilityReason'] == 'FRAME_PENDING'
+    assert published['revision'] == original_revision
+    assert [e for e in service.events if e.type == 'alert.target_revoked'] == revokes
     await service.process_frame(incoming)
     assert service.snapshot()[0]['potentialTarget']
+    assert len([e for e in service.events if e.type == 'alert.potential_target']) == 1
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_real_loss_during_frame_pending_still_revokes(fixture):
+    service, detector, classifier, clock, data = fixture
+    classifier.release.set()
+    for n in range(11):
+        await observe(service, clock, data, n)
+    await service.drain_classifications()
+    incoming = frame(service, clock, data, 11)
+    service.enqueue_frame(incoming)
+    assert service.snapshot()[0]['eligibilityReason'] == 'FRAME_PENDING'
+    detector.items = [Detection('bottle', .9, (27, 20, 57, 90))]
+    await service.process_frame(incoming)
+    assert not service.snapshot()[0]['potentialTarget']
+    assert any(e.type == 'alert.target_revoked' and e.payload['action'] == 'HOLD_BEFORE_PICKUP'
+               for e in service.events)
     await service.close()
 
 
@@ -206,7 +235,8 @@ async def test_identical_mapping_retry_is_idempotent_and_conflict_rejected(fixtu
     track = next(o['trackId'] for o in service.snapshot() if o['status'] != 'LOST')
     item = evidence(f, track, (.3, .3) if mode == 'moved' else (.2, .3))
     if mode == 'invalid':
-        item = item.model_copy(update={'valid': False, 'floor_point_m': None})
+        item = item.model_copy(update={'valid': False, 'floor_point_m': None,
+                                       'position_error_m': None, 'invalid_reason': 'out_of_area'})
     await service.apply_mapping(item)
     state = next(o for o in service.objects.values() if o.track_id == track)
     before = (state.metric_count, state.revision, len(service.events))
@@ -216,3 +246,22 @@ async def test_identical_mapping_retry_is_idempotent_and_conflict_rejected(fixtu
     with pytest.raises(ValueError):
         await service.apply_mapping(conflict)
     await service.close()
+
+
+def test_invalid_mapping_reason_and_ascii_ids_are_rejected():
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        MappingEvidence(camera_id='phone-1', session_id='session1', geometry_version='g1',
+            frame_id=1, track_id='track1', map_id='map1', map_version='v1', calibration_id='cal1',
+            calibration_valid=False, captured_at=1, received_at=1, valid=False,
+            floor_point_m=None, position_error_m=None, invalid_reason=None)
+    with pytest.raises(ValidationError):
+        MappingEvidence(camera_id='phone-1', session_id='session1', geometry_version='g1',
+            frame_id=1, track_id='track1', map_id='floor 1', map_version='v1', calibration_id='cal1',
+            calibration_valid=True, captured_at=1, received_at=1, valid=True,
+            floor_point_m=(.2, .3), position_error_m=.01, invalid_reason=None)
+    accepted = MappingEvidence(camera_id='phone-1', session_id='session1', geometry_version='g1',
+        frame_id=1, track_id='track1', map_id='map1', map_version='v1', calibration_id='cal1',
+        calibration_valid=False, captured_at=1, received_at=1, valid=False,
+        floor_point_m=None, position_error_m=None, invalid_reason='missing_contact')
+    assert accepted.invalid_reason == 'missing_contact'

@@ -96,31 +96,20 @@ UNAVAILABLE. No runtime secrets are supplied by this handoff.
 
 ## Next work, in order
 
-1. Read the board, inspect the actual branch/tests, and compare recent peer
-   requests against this checkpoint. Post a useful CLAIM only for your owned work.
-2. Finalize typed object/alert/removal/snapshot/confirmation schemas and complete
-   fixtures in contracts/**. The generic event schema still allows any payload;
-   typed frame.detections and MappingEvidence already exist. Define event/alert
-   deduplication, producerBootId reset, per-object entityVersion, evidence
-   revision, complete snapshot scope/missing objects, watermark and gap recovery.
-   Frontend/backend accept the proposed split but await a canonical commit.
-3. Verify eligibility under continuous ingress, delayed mapping/classification
-   and normal repeated frames. Conservative suppression may cause target
-   notification churn while every new frame is pending; distinguish eligibility
-   availability from a new target episode without permitting stale dispatch.
-   Review snapshot evaluation side effects and complete-state version ordering.
-4. Align mapping prose/schema with Tezqx's latest review: callbacks are ordered
-   **per track**; distinct tracks in one frame are independent. Exact replay is
-   idempotent; lower/conflicting frame results fail. Invalid valid:false needs
-   non-empty invalidReason (currently schema/model can accept null). Agree ASCII
-   constraints for track/map/calibration IDs; do not silently break real IDs.
-5. Freeze backend/robot simulator contracts with owners. They agree the atomic
-   per-command hold/pickup proposal, but endpoints, restart persistence, deadlines,
-   rearm and canonical fixtures are unresolved. Do not claim the bridge exists.
-6. Complete TLS phone setup (mkcert planned), real camera/rover tests, live Grok
-   test after key access, recorded clips, baseline/latency measurements and
-   integration checks against peer services. Keep limitations explicit.
-7. Update the draft PR and board with exact commit/checks; only Alan merges.
+1. Owners review the canonical draft on this branch. It is not merged.
+2. Typed object/alert/snapshot schemas, recovery fixtures, mapping invalid
+   reasons, and ASCII ID rejection are recorded. Same-revision frame-pending
+   suppression does not emit a second target alert; a real loss still revokes.
+3. Backend implements `contracts/backend-stream-v1.md` (cookie session, opaque
+   cursor, `snapshot_required` with no id). Robot implements simulator slice 1
+   from `contracts/robot-simulator-v1.md` only. Manual control stays future.
+4. Supabase inventory is blocked until Alan completes OAuth for the read-only
+   `supabase-hackathon` MCP. `zekihxh` still owns migrations and must not apply
+   them before that inventory. No `vision/cctv_monitor.py`; phone capture stays
+   on the authenticated vision path.
+5. TLS phone setup, real cameras, live Grok, recorded clips, and peer
+   integration remain unverified. Do not treat fixture tests as that evidence.
+6. Update the draft PR and board with exact commit/checks; only Alan merges.
 
 ## Latest coordination decisions and open requests
 

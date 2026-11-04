@@ -21,6 +21,19 @@ def camera_token(token, camera_id):
     return hmac.new(token.encode(), ("camera:" + camera_id).encode(), hashlib.sha256).hexdigest()
 
 
+def _diagnostic_snapshot(service, objects):
+    """Complete retained-object cut. sequence is the inclusive watermark after evaluation."""
+    return {
+        "schemaVersion": "vision.v1",
+        "producerBootId": service.boot_id,
+        "bootId": service.boot_id,
+        "sequence": service.sequence,
+        "scope": "ACTIVE_OBJECTS",
+        "complete": True,
+        "objects": objects,
+    }
+
+
 def create_app(settings=None, detector=None, classifier=None, run_workers=True):
     settings = settings or Settings.from_env()
     service = VisionService(settings, detector=detector, classifier=classifier)
@@ -195,9 +208,7 @@ def create_app(settings=None, detector=None, classifier=None, run_workers=True):
 
     @app.get("/api/objects", dependencies=[Depends(authorize)])
     async def objects():
-        snapshot = service.snapshot()
-        return {"schemaVersion": "vision.v1", "sequence": service.sequence,
-                "bootId": service.boot_id, "objects": snapshot}
+        return _diagnostic_snapshot(service, service.snapshot())
 
     @app.post("/api/mapping-evidence", dependencies=[Depends(authorize)])
     async def mapping(evidence: MappingEvidence):
@@ -233,8 +244,7 @@ def create_app(settings=None, detector=None, classifier=None, run_workers=True):
         # Snapshot and subscription occur without an await on the event loop.
         objects = service.snapshot()
         cut = service.sequence
-        snapshot = {"schemaVersion": "vision.v1", "bootId": service.boot_id,
-                    "sequence": cut, "objects": objects}
+        snapshot = _diagnostic_snapshot(service, objects)
         queue = asyncio.Queue(maxsize=128)
         service.subscribers.add(queue)
         async def stream():

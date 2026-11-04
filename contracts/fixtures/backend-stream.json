@@ -1,0 +1,27 @@
+{
+  "schemaVersion": "backend.v1",
+  "fixtureClass": "LABELLED_CONTRACT_FIXTURE",
+  "liveService": false,
+  "snapshot": {
+    "schemaVersion": "backend.v1",
+    "backendBootId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "cursor": "opaque-cursor-1",
+    "objects": [],
+    "missions": [],
+    "robots": [],
+    "alerts": []
+  },
+  "durableEvent": {
+    "id": "opaque-cursor-2",
+    "type": "object.updated",
+    "backendBootId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "entity": "object",
+    "backendRevision": 4,
+    "visionEventId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:9"
+  },
+  "snapshotRequired": {
+    "event": "snapshot_required",
+    "id": null,
+    "reason": "REPLAY_UNAVAILABLE"
+  }
+}

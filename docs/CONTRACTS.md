@@ -8,14 +8,24 @@ documented APIs or individually authorized project access; secret/service-role
 keys remain backend-only. The human selected the existing **AlanDD13's Project**
 (`buojgmoumyzqxmerckjm`, `eu-west-1`) on 2026-11-04. Backend must inspect its
 existing schema and preserve unrelated data before adding hackathon tables.
-Project selection does not grant access: individual teammate/agent permissions,
-runtime credentials and migration access still need verification by the backend
-owner. Never put credentials in Git, board comments or frontend code.
-The vision producer's versioned interface is now specified in
-[`contracts/vision-v1.md`](../contracts/vision-v1.md), with JSON schemas and
-fixtures. Consumer acknowledgement is pending; this does not freeze unrelated
-mission/robot-control endpoints. Use that document for cameras, static-target
-gates, classifications and immediate dashboard events.
+Project selection does not grant access. On 2026-11-04 the read-only Supabase
+MCP server `supabase-hackathon` is configured for this project and was not
+connected in the lead Cursor session, so no schema or table inventory was
+produced. Alan still needs to complete that server's OAuth before the lead can
+answer with catalog metadata. Until an inventory shows the name is free,
+`zekihxh` must not create `rover_backend` or apply migrations. The migration
+role and the runtime role stay separate, both owned by `zekihxh`. Frontend,
+mapping, and robot use backend APIs and get no database role and no service key.
+Never put credentials in Git, board comments, or frontend code.
+The vision producer's versioned interface is specified in
+[`contracts/vision-v1.md`](../contracts/vision-v1.md). Backend durable
+snapshot/SSE/session rules are in
+[`contracts/backend-stream-v1.md`](../contracts/backend-stream-v1.md).
+Robot simulator slice 1 is in
+[`contracts/robot-simulator-v1.md`](../contracts/robot-simulator-v1.md).
+Manual control is future work in
+[`contracts/manual-control-v1.md`](../contracts/manual-control-v1.md) and is
+not slice 1. These are canonical drafts on the vision branch, not merged APIs.
 This records the [FigJam proposal](https://www.figma.com/board/bmW81xDifPQz5Icv98D8Hd/Big-AI?node-id=25-1003).
 
 ## Demo and module boundaries

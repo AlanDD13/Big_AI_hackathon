@@ -19,10 +19,22 @@ Peer URLs and PEER_TOKEN are operator configuration, never request-supplied URLs
 Phone camera pages use HTTPS on port 8443; local-only development can use HTTP
 on 127.0.0.1. Phone capture cannot use LAN plain HTTP. Phones need not share an
 Apple account. Each phone must keep the page open and camera stationary.
+`vision/cctv_monitor.py` is not part of this contract. A one-shot OpenCV
+capture that returns base64 and writes a debug JPEG does not create a session,
+geometry version, or frame id, and mapping must not open that camera. The
+supported fixed-camera paths remain the phone page and an operator-configured
+`LocalCapture` device index or video file.
 
 ## Frames, clocks and identity
 
-IDs are nonempty ASCII letters/digits/underscore/hyphen, at most 128 characters.
+IDs are nonempty ASCII letters, digits, underscore, or hyphen, at most 128
+characters (`^[A-Za-z0-9_-]{1,128}$`). This includes `trackId`, `mapId`,
+`mapVersion`, and `calibrationId`. A value outside that set is a 422. Vision
+does not trim, substitute, or drop characters. `objectId` is the composite
+`cameraId:sessionId:trackId` and therefore contains exactly two colons.
+`producerBootId` is 32 lowercase hex characters from `uuid4().hex`. `eventId`
+is `{producerBootId}:{sequence}` and is unique across boots. An alert retry
+reuses the same `eventId` and the same `entityVersion`.
 Frame IDs are nonnegative integers, strictly increasing within a camera session;
 the first is 0. Restarting a stream creates a new session. Changing orientation,
 resolution, zoom/crop or mounting creates a new geometry version and invalidates
@@ -66,11 +78,16 @@ See `vision-mapping.schema.json` and `fixtures/mapping-evidence.json`.
 
 Required keys: cameraId, sessionId, geometryVersion, frameId, trackId, capturedAt,
 receivedAt, mapId, mapVersion, calibrationId, calibrationValid, valid, invalidReason.
-Use invalidReason:null for valid observations. A valid result also
+Use invalidReason null for valid observations. When valid is false, invalidReason
+is required and must be one of `uncalibrated`, `missing_contact`,
+`frame_unavailable`, `stale`, `out_of_area`, `rover_confirmation_only`, or
+`unknown`. Empty or missing reasons are rejected. A valid result also
 needs floorPointM:[x,y] and positionErrorM >= 0. An invalid result uses
-floorPointM:null and may use positionErrorM:null. Never replace unknown position
+floorPointM null and positionErrorM null. Never replace unknown position
 with [0,0]. `capturedAt` must echo the original frame exactly. Map origin/axes
-are fixed by Tezqx's map definition; point coordinates are metres.
+are fixed by Tezqx's map definition; point coordinates are metres. The same
+body is the P5-to-P3 metric observation. `contracts/fixtures/mapping-evidence.json`
+is the valid example and `mapping-evidence-invalid.json` is the invalid example.
 
 Unknown/expired/incompatible references return 409 and cannot create targets;
 malformed fields return 422. Ordering is per camera/session/geometry/track:
@@ -93,10 +110,11 @@ are excluded separately; standing still alone never makes them eligible.
 
 ## Vision to backend and dashboard
 
-All event envelopes contain schemaVersion:"vision.v1", eventId (unique within
-and across process boots), sequence, type, timestamp and payload. See
-`vision-event.schema.json`. Ingest must deduplicate eventId and join by objectId;
-classification/mapping may arrive after the initial observation.
+All event envelopes contain schemaVersion:"vision.v1", producerBootId, eventId
+(unique within and across process boots), sequence, type, timestamp and payload.
+Object and alert events use `vision-event.schema.json`. `frame.detections` uses
+`vision-detections.schema.json`. Ingest must deduplicate eventId and join by
+objectId; classification/mapping may arrive after the initial observation.
 
 | Vision event | Backend destination | Required dashboard behavior |
 | --- | --- | --- |
@@ -104,19 +122,57 @@ classification/mapping may arrive after the initial observation.
 | object.classified | POST /api/classifications | Update category, description, confidence and provider |
 | object.updated, alert.* | POST /api/vision-events | Update validity, revoke eligibility, deduplicate alerts |
 
-Latest WIP additions (typed object schemas and recovery fixtures still pending):
-producerBootId scopes producer restarts; entityVersion increases with each
-complete object publication; revision is the eligibility/evidence epoch.
-eligibilityReason is null when eligible and describes a failed gate otherwise.
-Target-revoked and removal events carry complete object state plus reason;
-revocation adds action:HOLD_BEFORE_PICKUP. Retry the same envelope/eventId.
-Consumers must reconcile boot changes/gaps before restoring eligibility.
+Canonical producer rules (typed schema `vision-event.schema.json`, snapshot
+schema `vision-snapshot.schema.json`, fixtures `fixtures/vision-recovery.json`):
+
+- `revision` is the evidence epoch. It increases when that episode's metric
+  evidence is reset. It does not increase for an ordinary frame or for
+  `FRAME_PENDING`.
+- `entityVersion` starts at 1 for each object on a producer boot and increases
+  by 1 on every complete object publication, including alerts and removals.
+  It is ordered only inside the same `producerBootId`. A new boot starts again
+  at 1. Do not compare it with the previous boot.
+- `potentialTarget` on the latest accepted publication is dispatch availability
+  for this producer. It is not permission to drive or pick up. Backend mission
+  gates remain mandatory.
+- A newer frame that is not processed yet publishes `object.updated` with
+  `potentialTarget: false` and `eligibilityReason: FRAME_PENDING` at the same
+  revision. That is not `alert.target_revoked`. When that same revision becomes
+  available again, vision publishes the object with `potentialTarget: true` and
+  does not emit a second `alert.potential_target`.
+- `alert.potential_target` fires once per revision when the episode first
+  becomes eligible. `alert.target_revoked` fires when that open episode is
+  actually lost, including a loss that happens while a frame is pending.
+  Revocation carries the complete object, `reason`, and
+  `action: HOLD_BEFORE_PICKUP`. Retry keeps the same `eventId`.
+- The alert payload's `entityVersion` is the version created for that
+  publication. A retry does not allocate another one.
+- `GET /api/objects` and the first SSE `snapshot` are a complete
+  `ACTIVE_OBJECTS` cut for objects still retained in this process, including
+  retained `LOST` rows. `bootId` and `producerBootId` are the same value.
+  `sequence` is the inclusive watermark and includes events emitted while
+  building the cut. An object id absent from a complete snapshot for that boot
+  is no longer retained; backend clears its vision eligibility. Vision does
+  not emit a partial snapshot.
+- Sequence numbers restart at 1 each boot. A hole inside a boot means: stop
+  applying later events, take a new complete snapshot, and continue only with
+  events whose sequence is greater than that watermark. Do not fill the hole.
+- After a consumer has accepted a newer `producerBootId`, a delayed event from
+  an older boot is discarded. It cannot restore `potentialTarget`.
+- Backend durable cursor and `backendRevision` are independent. See
+  `backend-stream-v1.md`. The vision SSE `resync_required` event is a queue
+  overflow on the diagnostic stream, not backend `snapshot_required`.
+
+Nested classification keys are `subject_kind`, `carrying`, `category`,
+`confidence`, `description`, and `reason`, matching the classifier payload.
+`classificationProvider` is `fixture` or `grok`. Fixture output is labelled
+and is not live model evidence.
 
 Object payload includes objectId and all camera/track/frame IDs, bboxPx,
 detectorLabel, detectorScore [0,1], motionState, pixelStationarySeconds,
 metricStationarySeconds, classificationStatus, classification,
-classificationProvider, mapping, potentialTarget, revision, frameRef and
-lastSeenAt. Detector score is not a calibrated probability. Grok confidence is
+classificationProvider, mapping, potentialTarget, revision, entityVersion,
+producerBootId, eligibilityReason, frameRef and lastSeenAt. Detector score is not a calibrated probability. Grok confidence is
 LOW/MEDIUM/HIGH, a separate model assessment; do not average the two.
 
 Classification statuses: PENDING, COMPLETED, UNAVAILABLE. Classification fields:

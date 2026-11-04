@@ -1,0 +1,71 @@
+{
+  "schemaVersion": "robot.simulator.v1",
+  "fixtureClass": "LABELLED_CONTRACT_FIXTURE",
+  "hardwareValidated": false,
+  "bridgeImplemented": false,
+  "binding": {
+    "commandId": "cmd-1",
+    "missionId": "mission-1",
+    "objectId": "phone-1:session1:track1",
+    "targetRevision": 3,
+    "confirmationEvidenceId": "evidence-1",
+    "expiresAt": 1793797203.0
+  },
+  "cases": [
+    {
+      "id": "hold_before_pickup",
+      "steps": [
+        {"method": "POST", "path": "/commands/cmd-1/hold", "body": {"commandId": "cmd-1", "missionId": "mission-1", "reason": "OPERATOR_HOLD"}, "status": 200, "stage": "HELD"},
+        {"method": "POST", "path": "/commands/pickup", "bodyRef": "binding", "status": 409, "error": "HELD", "stage": "HELD"}
+      ]
+    },
+    {
+      "id": "pickup_before_hold",
+      "steps": [
+        {"method": "POST", "path": "/commands/pickup", "bodyRef": "binding", "status": 200, "stage": "PICKING"},
+        {"method": "POST", "path": "/commands/cmd-1/hold", "body": {"commandId": "cmd-1", "missionId": "mission-1", "reason": "LATE_HOLD"}, "status": 409, "error": "ALREADY_PICKING", "stage": "PICKING"}
+      ]
+    },
+    {
+      "id": "priority_stop_during_picking",
+      "steps": [
+        {"method": "POST", "path": "/commands/pickup", "bodyRef": "binding", "status": 200, "stage": "PICKING"},
+        {"method": "POST", "path": "/commands/cmd-1/stop", "body": {"commandId": "cmd-1", "missionId": "mission-1", "reason": "OPERATOR_STOP"}, "status": 200, "stage": "STOPPED"}
+      ]
+    },
+    {
+      "id": "expired_authorization",
+      "steps": [
+        {"method": "POST", "path": "/commands/pickup", "bodyRef": "binding", "now": 1793797204.0, "status": 409, "error": "EXPIRED", "acted": false}
+      ]
+    },
+    {
+      "id": "conflicting_authorization",
+      "steps": [
+        {"method": "POST", "path": "/commands/pickup", "bodyRef": "binding", "status": 200, "stage": "PICKING"},
+        {"method": "POST", "path": "/commands/pickup", "body": {"commandId": "cmd-1", "missionId": "mission-1", "objectId": "phone-1:session1:other", "targetRevision": 9, "confirmationEvidenceId": "evidence-2", "expiresAt": 1793797203.0}, "status": 409, "error": "CONFLICT", "acted": false}
+      ]
+    },
+    {
+      "id": "duplicate_authorization",
+      "steps": [
+        {"method": "POST", "path": "/commands/pickup", "bodyRef": "binding", "status": 200, "stage": "PICKING", "statusRevision": 2},
+        {"method": "POST", "path": "/commands/pickup", "bodyRef": "binding", "status": 200, "stage": "PICKING", "statusRevision": 2, "acted": false}
+      ]
+    },
+    {
+      "id": "lost_stop_acknowledgment",
+      "steps": [
+        {"method": "POST", "path": "/commands/cmd-1/stop", "body": {"commandId": "cmd-1", "missionId": "mission-1", "reason": "OPERATOR_STOP"}, "transport": "LOST"},
+        {"method": "GET", "path": "/commands/cmd-1", "status": 200, "stage": "STOPPED", "slotRetainedUntilReconciled": true}
+      ]
+    },
+    {
+      "id": "rearm_does_not_resume",
+      "steps": [
+        {"method": "POST", "path": "/commands/cmd-1/stop", "body": {"commandId": "cmd-1", "missionId": "mission-1", "reason": "OPERATOR_STOP"}, "status": 200, "stage": "STOPPED"},
+        {"method": "POST", "path": "/commands/cmd-1/rearm", "body": {"commandId": "cmd-1", "missionId": "mission-1"}, "status": 200, "stage": "STOPPED", "rearmed": true, "motion": false}
+      ]
+    }
+  ]
+}

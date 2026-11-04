@@ -103,6 +103,7 @@
         "trackId": {
           "maxLength": 128,
           "minLength": 1,
+          "pattern": "^[A-Za-z0-9_-]+$",
           "title": "Trackid",
           "type": "string"
         },
@@ -214,6 +215,11 @@
       "title": "Schemaversion",
       "type": "string"
     },
+    "producerBootId": {
+      "pattern": "^[a-f0-9]{32}$",
+      "title": "Producerbootid",
+      "type": "string"
+    },
     "eventId": {
       "title": "Eventid",
       "type": "string"
@@ -236,6 +242,8 @@
     }
   },
   "required": [
+    "schemaVersion",
+    "producerBootId",
     "eventId",
     "sequence",
     "type",

@@ -1,0 +1,33 @@
+{
+  "schemaVersion": "manual.v1",
+  "status": "FUTURE_NOT_SLICE_1",
+  "platform": "rmepcore",
+  "sdkTimeoutIsHostTimer": true,
+  "fixtureClass": "LABELLED_CONTRACT_FIXTURE",
+  "hardwareValidated": false,
+  "implementRoutes": false,
+  "lease": {
+    "leaseId": "lease-1",
+    "roverId": "rover-1",
+    "generation": 1,
+    "expiresAt": 1793797200.2
+  },
+  "velocityIntent": {
+    "leaseId": "lease-1",
+    "generation": 1,
+    "sequence": 4,
+    "expiresAt": 1793797200.2,
+    "xMps": 0.1,
+    "yMps": 0.0,
+    "yawDegS": 0.0,
+    "frame": "BODY"
+  },
+  "overheadRequest": {
+    "leaseId": "lease-1",
+    "cameraId": "overhead-1",
+    "sessionId": "session1",
+    "geometryVersion": "geometry1",
+    "frameId": 20,
+    "pixel": [320, 240]
+  }
+}

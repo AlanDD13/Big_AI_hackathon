@@ -11,10 +11,12 @@ from vision.publisher import Publisher
 from vision.settings import Settings
 
 TOKEN = 'test-token-123456789'
+BOOT = 'a' * 32
 
 
 def event(sequence=1):
-    return Event(event_id=f'boot:{sequence}', sequence=sequence, type='object.updated', timestamp=1, payload={})
+    return Event(producer_boot_id=BOOT, event_id=f'{BOOT}:{sequence}', sequence=sequence,
+                 type='object.updated', timestamp=1, payload={})
 
 
 def test_peer_requires_explicit_separate_token():
@@ -92,7 +94,10 @@ def test_snapshot_watermark_includes_events_emitted_during_evaluation():
     with TestClient(app) as api:
         response = api.get('/api/objects', headers={'Authorization': f'Bearer {TOKEN}'})
         assert response.status_code == 200
-        assert response.json()['sequence'] == service.sequence == 1
+        body = response.json()
+        assert body['sequence'] == service.sequence == 1
+        assert body['producerBootId'] == body['bootId'] == service.boot_id
+        assert body['scope'] == 'ACTIVE_OBJECTS' and body['complete'] is True
     route = next(r for r in app.routes if getattr(r, 'path', None) == '/api/events')
     class Request:
         async def is_disconnected(self): return False

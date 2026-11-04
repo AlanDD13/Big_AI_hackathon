@@ -15,17 +15,15 @@ rover hardware/bridge, live Grok (key pending), and peer backend/mapping ingesti
 
 Known work before dispatch-ready review:
 
-- Newer same-epoch frames now suppress eligibility and in-flight inference can
-  progress; verify continuous-camera throughput and avoid repeat notification
-  churn without weakening freshness gates.
-- Add event-specific object/alert schemas and transition/reconnect fixtures for
-  frontend/backend; consumer interface reviews are still open.
-- Mapping retries are now idempotent; align callback schemas/prose with per-track
-  ordering and require non-empty invalid reasons. Producer boot/entity versions
-  still need canonical shared types and recovery fixtures.
-- JSON/upload/SSE bounds, snapshot cuts, sticky delivery-gap health and separate
-  outbound peer credentials are implemented; peer reconciliation needs integration.
-- Add documented TLS setup, integration demo/baseline and hardware acceptance.
+- Typed object, alert, snapshot, and recovery fixtures are on this branch.
+  Same-revision frame-pending suppression no longer emits a second target alert.
+  A real loss during that suppression still revokes.
+- Mapping evidence now rejects a missing invalid reason and IDs outside the
+  shared ASCII set. The bridge and backend routes in the new contracts are not
+  implemented here.
+- Peer reconciliation still needs the backend and mapping services.
+- TLS phone setup, live Grok, and hardware acceptance are not done.
+- Supabase catalog inventory is blocked on lead OAuth for the read-only MCP.
 
 Do not merge or dispatch the rover based only on passing current tests. The
 human lead reviews/merges; backend remains authoritative for approved missions.

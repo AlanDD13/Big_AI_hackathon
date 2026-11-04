@@ -30,24 +30,28 @@
     "trackId": {
       "maxLength": 128,
       "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
       "title": "Trackid",
       "type": "string"
     },
     "mapId": {
       "maxLength": 128,
       "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
       "title": "Mapid",
       "type": "string"
     },
     "mapVersion": {
       "maxLength": 128,
       "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
       "title": "Mapversion",
       "type": "string"
     },
     "calibrationId": {
       "maxLength": 128,
       "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
       "title": "Calibrationid",
       "type": "string"
     },
@@ -107,7 +111,15 @@
     "invalidReason": {
       "anyOf": [
         {
-          "maxLength": 200,
+          "enum": [
+            "uncalibrated",
+            "missing_contact",
+            "frame_unavailable",
+            "stale",
+            "out_of_area",
+            "rover_confirmation_only",
+            "unknown"
+          ],
           "type": "string"
         },
         {
@@ -159,6 +171,9 @@
           "positionErrorM": {
             "type": "number",
             "minimum": 0
+          },
+          "invalidReason": {
+            "type": "null"
           }
         }
       },
@@ -166,8 +181,24 @@
         "properties": {
           "floorPointM": {
             "type": "null"
+          },
+          "positionErrorM": {
+            "type": "null"
+          },
+          "invalidReason": {
+            "type": "string",
+            "enum": [
+              "uncalibrated",
+              "missing_contact",
+              "frame_unavailable",
+              "stale",
+              "out_of_area",
+              "rover_confirmation_only",
+              "unknown"
+            ]
           }
-        }
+        },
+        "required": ["invalidReason"]
       }
     }
   ]
