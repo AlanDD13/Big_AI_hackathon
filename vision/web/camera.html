@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Camera source</title></head>
+<body><main><h1>Camera source</h1><p>Use HTTPS, place the phone in landscape and keep it fixed. Capture time uses the phone clock; synchronize clocks before mapping.</p>
+<label>Camera ID <input id="camera-id" autocomplete="off"></label>
+<label>Access token <input id="token" type="password" autocomplete="off"></label>
+<button id="start" type="button">Start</button><button id="stop" type="button" disabled>Stop</button>
+<p id="status" role="status">Stopped</p><video id="preview" autoplay playsinline muted></video>
+</main><script src="camera.js" defer></script></body></html>

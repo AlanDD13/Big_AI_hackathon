@@ -1,0 +1,432 @@
+"""Perception orchestration. All eligibility is evidence based and revocable."""
+from __future__ import annotations
+
+import asyncio
+from collections import deque, OrderedDict
+from dataclasses import dataclass, field
+from io import BytesIO
+import math
+import time
+import uuid
+
+from PIL import Image, ImageDraw
+
+from vision.cameras import FrameStore
+from vision.classification import GrokClassifier
+from vision.models import Event, MappingEvidence
+from vision.perception import Tracker, YoloDetector
+from vision.settings import Settings
+
+
+@dataclass
+class ObjectState:
+    object_id: str
+    camera_id: str
+    session_id: str
+    geometry_version: str
+    track_id: str
+    kind: str
+    frame_id: int
+    captured_at: float
+    last_seen: float
+    box: tuple
+    label: str
+    score: float
+    pixel_static_s: float = 0
+    motion_state: str = "OBSERVING"
+    status: str = "OBSERVING"
+    excluded_reason: str | None = None
+    revision: int = 0
+    classification: dict | None = None
+    classification_status: str = "PENDING"
+    classification_attempt: int = -1
+    classification_provider: str | None = None
+    mapping: dict | None = None
+    metric_anchor: tuple | None = None
+    metric_start: float | None = None
+    metric_last: float | None = None
+    metric_count: int = 0
+    metric_static_s: float = 0
+    metric_last_frame: int = -1
+    potential_target: bool = False
+    evidence_crop: bytes | None = None
+
+
+class VisionService:
+    def __init__(self, settings: Settings, detector=None, classifier=None):
+        self.settings = settings
+        self.now = settings.clock or time.time
+        self.frames = FrameStore(max_cameras=max(1, len(settings.cameras)), clock=self.now)
+        self.detector = detector or YoloDetector(settings.model, settings.device)
+        if classifier is None:
+            import os
+            classifier = GrokClassifier(os.getenv("XAI_API_KEY"), os.getenv("GROK_VISION_MODEL", "grok-4.7"))
+        self.classifier = classifier
+        self.tracker = Tracker(stationary_seconds=settings.stationary_seconds,
+                               max_gap_seconds=settings.stale_seconds)
+        self.objects: dict[str, ObjectState] = {}
+        self.events: deque[Event] = deque(maxlen=512)
+        self.subscribers: set[asyncio.Queue] = set()
+        self.classification_tasks: set[asyncio.Task] = set()
+        self.pending_frames = {}
+        self.wake = asyncio.Event()
+        self.sequence = 0
+        self.boot_id = uuid.uuid4().hex
+        self.detector_error: str | None = None
+        self.publisher = None
+        self.closed = False
+        self._processed = {}
+        self.confirmations = {}
+        self.observations = OrderedDict()
+        self.active_confirmations = 0
+        self.camera_online = {}
+
+    def emit(self, event_type, payload):
+        self.sequence += 1
+        event = Event(event_id=f"{self.boot_id}:{self.sequence}", sequence=self.sequence,
+                      type=event_type, timestamp=self.now(), payload=payload)
+        self.events.append(event)
+        for queue in tuple(self.subscribers):
+            if queue.full():
+                while not queue.empty():
+                    queue.get_nowait()
+                queue.put_nowait(None)  # A slow consumer must refresh its snapshot.
+            else:
+                queue.put_nowait(event)
+        if self.publisher:
+            self.publisher.enqueue(event)
+        return event
+
+    def snapshot(self):
+        return [self.object_payload(state) for state in self.objects.values()]
+
+    def object_payload(self, state):
+        return {
+            "objectId": state.object_id, "cameraId": state.camera_id,
+            "sessionId": state.session_id, "geometryVersion": state.geometry_version,
+            "trackId": state.track_id, "frameId": state.frame_id,
+            "capturedAt": state.captured_at, "lastSeenAt": state.last_seen,
+            "cameraKind": state.kind, "bboxPx": list(state.box),
+            "detectorLabel": state.label, "detectorScore": state.score,
+            "motionState": state.motion_state, "pixelStationarySeconds": state.pixel_static_s,
+            "metricStationarySeconds": state.metric_static_s,
+            "status": state.status, "exclusionReason": state.excluded_reason,
+            "classificationStatus": state.classification_status,
+            "classification": state.classification,
+            "classificationProvider": state.classification_provider,
+            "mapping": state.mapping, "potentialTarget": state.potential_target,
+            "revision": state.revision,
+            "frameRef": f"/api/frames/{state.camera_id}/{state.session_id}/{state.frame_id}",
+        }
+
+    def enqueue_frame(self, frame):
+        if not self.camera_online.get(frame.camera_id):
+            self.camera_online[frame.camera_id] = True
+            self.emit("camera.connected", {"cameraId": frame.camera_id})
+        for state in self.objects.values():
+            if state.camera_id == frame.camera_id and (state.session_id, state.geometry_version) != (frame.session_id, frame.geometry_version) and state.status != "LOST":
+                self.invalidate(state, "CAMERA_EPOCH_CHANGED")
+                state.status = "LOST"
+                self.emit("object.updated", self.object_payload(state))
+        self.pending_frames[frame.camera_id] = frame
+        self.wake.set()
+
+    async def worker(self):
+        while not self.closed:
+            if not self.pending_frames:
+                self.wake.clear()
+                await self.wake.wait()
+                continue
+            camera_id = next(iter(self.pending_frames))
+            frame = self.pending_frames.pop(camera_id)
+            try:
+                await self.process_frame(frame)
+            except Exception:
+                self.detector_error = "Detector unavailable; check installation and model/device configuration"
+                self.tracker.reset_camera(camera_id)
+                for state in self.objects.values():
+                    if state.camera_id == camera_id:
+                        self.invalidate(state, "DETECTOR_UNAVAILABLE")
+                self.emit("alert.detector_unavailable", {"cameraId": camera_id, "reason": self.detector_error})
+            await asyncio.sleep(0)
+
+    def _same_epoch(self, frame, exact_frame=False):
+        latest = self.frames.latest(frame.camera_id)
+        return (latest and (latest.session_id, latest.geometry_version) == (frame.session_id, frame.geometry_version)
+                and (not exact_frame or latest.frame_id == frame.frame_id))
+
+    async def process_frame(self, frame):
+        if self.now() - frame.received_at > self.settings.stale_seconds or not self._same_epoch(frame, exact_frame=True):
+            return
+        context = (frame.session_id, frame.geometry_version, frame.frame_id)
+        if self._processed.get(frame.camera_id) == context:
+            return
+        detections = await asyncio.to_thread(self.detector.detect, frame.jpeg)
+        if self.now() - frame.received_at > self.settings.stale_seconds or not self._same_epoch(frame, exact_frame=True):
+            return
+        # Any malformed box invalidates that frame rather than accidentally hiding a person.
+        if any(len(d.bbox) != 4 or not all(math.isfinite(v) for v in d.bbox)
+               or d.bbox[0] < 0 or d.bbox[1] < 0 or d.bbox[2] > frame.width
+               or d.bbox[3] > frame.height for d in detections):
+            raise ValueError("Detector returned out-of-frame coordinates")
+        updates = self.tracker.observe(frame.camera_id, frame.session_id, frame.geometry_version,
+                                       frame.frame_id, frame.received_at, detections, frame.kind)
+        self._processed[frame.camera_id] = context
+        self.detector_error = None
+        current = set()
+        tracks = []
+        for update in updates:
+            key = f"{frame.camera_id}:{frame.session_id}:{update.track_id}"
+            current.add(key)
+            state = self.objects.get(key)
+            if state is None:
+                self._make_room()
+                state = ObjectState(key, frame.camera_id, frame.session_id, frame.geometry_version,
+                                    update.track_id, frame.kind, frame.frame_id, frame.captured_at,
+                                    frame.received_at, update.detection.bbox,
+                                    update.detection.label, update.detection.score)
+                self.objects[key] = state
+            if update.motion_state in {"MOVING", "EXCLUDED", "UNKNOWN"}:
+                self.invalidate(state, update.excluded_reason or update.motion_state)
+            state.frame_id, state.captured_at, state.last_seen = frame.frame_id, frame.captured_at, frame.received_at
+            state.box, state.label, state.score = update.detection.bbox, update.detection.label, update.detection.score
+            state.pixel_static_s, state.motion_state = update.stationary_for_s, update.motion_state
+            state.excluded_reason = update.excluded_reason
+            state.status = "EXCLUDED" if update.excluded_reason else "OBSERVING"
+            observation_key = (frame.camera_id, frame.session_id, frame.geometry_version, frame.frame_id, state.track_id)
+            self.observations[observation_key] = state.revision
+            while len(self.observations) > 8192:
+                self.observations.popitem(last=False)
+            self._evaluate(state)
+            payload = self.object_payload(state)
+            self.emit("object.observed", payload)
+            tracks.append({"trackId": state.track_id, "objectId": key,
+                           "detectorLabel": state.label, "detectorScore": state.score,
+                           "bboxPx": list(state.box), "contactPointPx": update.detection.contact_point,
+                           "motionState": state.motion_state, "pixelStationarySeconds": state.pixel_static_s,
+                           "exclusionReason": state.excluded_reason})
+            if (state.kind == "FIXED" and state.motion_state == "STATIONARY" and
+                    not state.excluded_reason and state.classification_attempt != state.revision and
+                    len(self.classification_tasks) < self.settings.max_pending_classifications):
+                state.classification_attempt = state.revision
+                state.classification_status = "PENDING"
+                task = asyncio.create_task(self._classify(state.object_id, state.revision, frame))
+                self.classification_tasks.add(task)
+                task.add_done_callback(self.classification_tasks.discard)
+        for key, state in list(self.objects.items()):
+            if state.camera_id == frame.camera_id and key not in current and state.status != "LOST":
+                self.invalidate(state, "TRACK_LOST")
+                state.status, state.motion_state = "LOST", "UNKNOWN"
+                self.emit("object.updated", self.object_payload(state))
+        self.emit("frame.detections", {
+            "cameraId": frame.camera_id, "sessionId": frame.session_id,
+            "geometryVersion": frame.geometry_version, "frameId": frame.frame_id,
+            "cameraKind": frame.kind, "capturedAt": frame.captured_at,
+            "receivedAt": frame.received_at, "timestampBasis": frame.timestamp_basis,
+            "width": frame.width, "height": frame.height, "tracks": tracks,
+            "frameRef": f"/api/frames/{frame.camera_id}/{frame.session_id}/{frame.frame_id}",
+        })
+
+    def _make_room(self):
+        if len(self.objects) >= self.settings.max_objects:
+            oldest = min(self.objects.values(), key=lambda s: s.last_seen)
+            self.invalidate(oldest, "RETENTION_LIMIT")
+            del self.objects[oldest.object_id]
+            self.emit("object.removed", {"objectId": oldest.object_id, "reason": "RETENTION_LIMIT"})
+
+    def invalidate(self, state, reason):
+        was_target = state.potential_target
+        state.potential_target = False
+        state.metric_anchor = state.metric_start = state.metric_last = None
+        state.metric_count, state.metric_static_s, state.metric_last_frame = 0, 0, -1
+        state.revision += 1
+        state.classification = None
+        state.classification_status = "PENDING"
+        state.mapping = None
+        if was_target:
+            self.emit("alert.target_revoked", {"objectId": state.object_id, "reason": reason,
+                       "revision": state.revision, "action": "HOLD_BEFORE_PICKUP"})
+
+    def _evaluate(self, state):
+        result = state.classification
+        latest = self.frames.latest(state.camera_id)
+        current = latest and (latest.session_id, latest.geometry_version, latest.frame_id) == (state.session_id, state.geometry_version, state.frame_id)
+        eligible = bool(
+            current and
+            state.kind == "FIXED" and state.motion_state == "STATIONARY" and
+            not state.excluded_reason and self.now() - state.last_seen <= self.settings.stale_seconds and
+            state.metric_static_s >= self.settings.stationary_seconds and state.metric_count >= 10 and
+            state.metric_last is not None and self.now() - state.metric_last <= self.settings.stale_seconds and
+            result and result["subject_kind"] == "INANIMATE" and result["carrying"] == "NO" and
+            result["category"] in {"TRASH", "POTENTIALLY_LOST_PROPERTY"} and result["confidence"] != "LOW"
+        )
+        was_target = state.potential_target
+        state.potential_target = eligible
+        if state.excluded_reason:
+            state.status = "EXCLUDED"
+        elif eligible:
+            state.status = "POTENTIAL_TARGET"
+        elif state.motion_state == "STATIONARY":
+            state.status = "STATIC_PENDING_REVIEW"
+        if eligible and not was_target:
+            self.emit("alert.potential_target", self.object_payload(state))
+        elif was_target and not eligible:
+            self.emit("alert.target_revoked", {"objectId": state.object_id,
+                      "reason": "ELIGIBILITY_CHANGED", "action": "HOLD_BEFORE_PICKUP"})
+
+    @staticmethod
+    def _images(frame, box):
+        with Image.open(BytesIO(frame.jpeg)) as original:
+            image = original.convert("RGB")
+            x1, y1, x2, y2 = box
+            crop = image.crop((max(0, int(x1)), max(0, int(y1)), min(image.width, math.ceil(x2)), min(image.height, math.ceil(y2))))
+            context = image.copy()
+            ImageDraw.Draw(context).rectangle(box, outline="red", width=3)
+            output = []
+            for item in (crop, context):
+                item.thumbnail((960, 960))
+                stream = BytesIO(); item.save(stream, "JPEG", quality=85); output.append(stream.getvalue())
+            return output
+
+    async def _classify(self, object_id, revision, frame):
+        state = self.objects.get(object_id)
+        if not state or state.revision != revision:
+            return
+        crop, context = self._images(frame, state.box)
+        try:
+            result = await self.classifier.classify(crop, context)
+            status = "COMPLETED"
+        except Exception:
+            result, status = None, "UNAVAILABLE"
+        state = self.objects.get(object_id)
+        if (not state or state.revision != revision or state.status == "LOST" or
+                self.now() - state.last_seen > self.settings.stale_seconds):
+            return
+        latest = self.frames.latest(state.camera_id)
+        if not latest or (latest.session_id, latest.geometry_version) != (state.session_id, state.geometry_version):
+            return
+        state.classification = result.model_dump(mode="json") if result else None
+        state.classification_status = status
+        state.classification_provider = self.classifier.provider
+        state.evidence_crop = crop
+        self._evaluate(state)
+        self.emit("object.classified", self.object_payload(state))
+
+    async def apply_mapping(self, evidence: MappingEvidence):
+        key = f"{evidence.camera_id}:{evidence.session_id}:{evidence.track_id}"
+        state = self.objects.get(key)
+        frame = self.frames.get(evidence.camera_id, evidence.session_id, evidence.frame_id)
+        if not state or state.status == "LOST" or not frame:
+            raise ValueError("Unknown or expired observation")
+        observation_key = (evidence.camera_id, evidence.session_id, evidence.geometry_version,
+                           evidence.frame_id, evidence.track_id)
+        if self.observations.get(observation_key) != state.revision:
+            raise ValueError("Track was not observed in this frame or its evidence was revoked")
+        if (state.kind != "FIXED" or state.geometry_version != evidence.geometry_version or
+                frame.geometry_version != evidence.geometry_version or
+                evidence.captured_at != frame.captured_at or
+                evidence.received_at != frame.received_at or
+                self.now() - frame.received_at > self.settings.stale_seconds or
+                evidence.frame_id <= state.metric_last_frame):
+            raise ValueError("Stale or incompatible mapping evidence")
+        valid = (evidence.valid and evidence.calibration_valid and evidence.position_error_m is not None
+                 and evidence.position_error_m <= self.settings.max_position_error_m)
+        previous = state.mapping
+        map_changed = previous and any(previous[k] != getattr(evidence, attr) for k, attr in
+            [("mapId", "map_id"), ("mapVersion", "map_version"), ("calibrationId", "calibration_id")])
+        if not valid:
+            self.invalidate(state, "INVALID_MAPPING")
+            self._evaluate(state)
+            self.emit("object.updated", self.object_payload(state))
+            return self.object_payload(state)
+        point = evidence.floor_point_m
+        moved = state.metric_anchor is not None and math.dist(point, state.metric_anchor) > self.settings.max_movement_m
+        gap = state.metric_last is not None and frame.received_at - state.metric_last > self.settings.stale_seconds
+        if moved or gap or map_changed:
+            self.invalidate(state, "TARGET_MOVED" if moved else "MAPPING_DISCONTINUITY")
+        if state.metric_anchor is None:
+            state.metric_anchor, state.metric_start = point, frame.received_at
+        state.metric_count += 1
+        state.metric_last, state.metric_last_frame = frame.received_at, evidence.frame_id
+        state.metric_static_s = frame.received_at - state.metric_start
+        state.mapping = evidence.model_dump(by_alias=True, mode="json")
+        self._evaluate(state)
+        self.emit("object.updated", self.object_payload(state))
+        return self.object_payload(state)
+
+    async def sweep(self):
+        now = self.now()
+        for camera_id, online in list(self.camera_online.items()):
+            latest = self.frames.latest(camera_id)
+            if online and (latest is None or now - latest.received_at > self.settings.stale_seconds):
+                self.camera_online[camera_id] = False
+                self.emit("alert.camera_unavailable", {"cameraId": camera_id, "reason": "NO_FRESH_FRAMES"})
+        for state in list(self.objects.values()):
+            if now - state.last_seen > self.settings.stale_seconds and state.status != "LOST":
+                self.invalidate(state, "STALE_OBSERVATION")
+                state.status, state.motion_state = "LOST", "UNKNOWN"
+                self.emit("object.updated", self.object_payload(state))
+            elif state.potential_target and (state.metric_last is None or now - state.metric_last > self.settings.stale_seconds):
+                self.invalidate(state, "STALE_MAPPING")
+                self._evaluate(state)
+                self.emit("object.updated", self.object_payload(state))
+
+    async def sweeper(self):
+        while not self.closed:
+            await self.sweep()
+            await asyncio.sleep(.25)
+
+    async def drain_classifications(self):
+        if self.classification_tasks:
+            await asyncio.gather(*tuple(self.classification_tasks))
+
+    async def confirm_target(self, request):
+        if self.active_confirmations >= 2:
+            raise RuntimeError("Confirmation capacity reached")
+        self.active_confirmations += 1
+        try:
+            return await self._confirm_target(request)
+        finally:
+            self.active_confirmations -= 1
+
+    async def _confirm_target(self, request):
+        state = self.objects.get(request.object_id)
+        if not state or not state.potential_target or not state.evidence_crop:
+            raise ValueError("Target is not currently eligible")
+        frame = self.frames.latest(request.rover_camera_id)
+        if not frame or frame.kind != "ROVER" or self.now() - frame.received_at > self.settings.stale_seconds:
+            raise ValueError("Fresh rover frame unavailable")
+        revision = state.revision
+        candidates = [{"track_id": obj.track_id, "bbox": obj.box} for obj in self.objects.values()
+                      if obj.camera_id == frame.camera_id and obj.session_id == frame.session_id and
+                      obj.frame_id == frame.frame_id and not obj.excluded_reason and obj.status != "LOST"]
+        if not candidates:
+            return {"state": "NOT_VISIBLE", "candidateTrackId": None, "reason": "No current candidate", "missionId": request.mission_id}
+        try:
+            result = await self.classifier.confirm(state.evidence_crop, frame.jpeg, candidates)
+        except Exception:
+            return {"state": "UNCERTAIN", "candidateTrackId": None, "reason": "Classification unavailable", "missionId": request.mission_id}
+        latest = self.frames.latest(request.rover_camera_id)
+        match = next((obj for obj in self.objects.values()
+                      if obj.camera_id == frame.camera_id and obj.session_id == frame.session_id
+                      and obj.track_id == result.candidate_track_id), None)
+        if (state.revision != revision or not state.potential_target or not latest or
+                (latest.session_id, latest.geometry_version) != (frame.session_id, frame.geometry_version) or
+                self.now() - latest.received_at > self.settings.stale_seconds or
+                (result.state.value == "CONFIRMED" and (not match or match.excluded_reason or
+                 match.status == "LOST" or self.now() - match.last_seen > self.settings.stale_seconds))):
+            return {"state": "UNCERTAIN", "candidateTrackId": None, "reason": "Evidence expired during confirmation", "missionId": request.mission_id}
+        return {"state": result.state.value, "candidateTrackId": result.candidate_track_id,
+                "reason": result.reason, "missionId": request.mission_id,
+                "cameraId": frame.camera_id, "referenceFrameId": frame.frame_id,
+                "frameId": match.frame_id if match else latest.frame_id,
+                "bboxPx": list(match.box) if match else None,
+                "provider": self.classifier.provider}
+
+    async def close(self):
+        self.closed = True
+        self.wake.set()
+        for task in tuple(self.classification_tasks):
+            task.cancel()
+        if self.classification_tasks:
+            await asyncio.gather(*tuple(self.classification_tasks), return_exceptions=True)

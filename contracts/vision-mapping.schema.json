@@ -2,20 +2,23 @@
   "additionalProperties": false,
   "properties": {
     "cameraId": {
-      "maxLength": 64,
+      "maxLength": 128,
       "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
       "title": "Cameraid",
       "type": "string"
     },
     "sessionId": {
-      "maxLength": 64,
+      "maxLength": 128,
       "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
       "title": "Sessionid",
       "type": "string"
     },
     "geometryVersion": {
-      "maxLength": 64,
+      "maxLength": 128,
       "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
       "title": "Geometryversion",
       "type": "string"
     },
@@ -31,19 +34,19 @@
       "type": "string"
     },
     "mapId": {
-      "maxLength": 64,
+      "maxLength": 128,
       "minLength": 1,
       "title": "Mapid",
       "type": "string"
     },
     "mapVersion": {
-      "maxLength": 64,
+      "maxLength": 128,
       "minLength": 1,
       "title": "Mapversion",
       "type": "string"
     },
     "calibrationId": {
-      "maxLength": 64,
+      "maxLength": 128,
       "minLength": 1,
       "title": "Calibrationid",
       "type": "string"
@@ -55,6 +58,11 @@
     "capturedAt": {
       "minimum": 0,
       "title": "Capturedat",
+      "type": "number"
+    },
+    "receivedAt": {
+      "minimum": 0,
+      "title": "Receivedat",
       "type": "number"
     },
     "floorPointM": {
@@ -95,6 +103,18 @@
     "valid": {
       "title": "Valid",
       "type": "boolean"
+    },
+    "invalidReason": {
+      "anyOf": [
+        {
+          "maxLength": 200,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Invalidreason"
     }
   },
   "required": [
@@ -108,8 +128,47 @@
     "calibrationId",
     "calibrationValid",
     "capturedAt",
-    "valid"
+    "receivedAt",
+    "valid",
+    "invalidReason"
   ],
   "title": "MappingEvidence",
-  "type": "object"
+  "type": "object",
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "valid": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "calibrationValid": {
+            "const": true
+          },
+          "floorPointM": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {
+              "type": "number"
+            }
+          },
+          "positionErrorM": {
+            "type": "number",
+            "minimum": 0
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "floorPointM": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
 }

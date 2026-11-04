@@ -1,0 +1,12 @@
+.venv/
+.local/
+.pytest_cache/
+*.egg-info/
+*.pt
+*.ts
+*.mp4
+*.mov
+*.sqlite*
+*.key
+certificates/
+__pycache__/

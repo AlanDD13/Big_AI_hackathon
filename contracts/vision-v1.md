@@ -65,7 +65,8 @@ send one result per referenced track/frame to vision for the eligibility gate.
 See `vision-mapping.schema.json` and `fixtures/mapping-evidence.json`.
 
 Required keys: cameraId, sessionId, geometryVersion, frameId, trackId, capturedAt,
-mapId, mapVersion, calibrationId, calibrationValid, valid. A valid result also
+receivedAt, mapId, mapVersion, calibrationId, calibrationValid, valid, invalidReason.
+Use invalidReason:null for valid observations. A valid result also
 needs floorPointM:[x,y] and positionErrorM >= 0. An invalid result uses
 floorPointM:null and may use positionErrorM:null. Never replace unknown position
 with [0,0]. `capturedAt` must echo the original frame exactly. Map origin/axes
@@ -75,9 +76,13 @@ Unknown/expired/incompatible references return 409 and cannot create targets;
 malformed fields return 422. Repeated/non-increasing mapping frame IDs are
 rejected. Map/calibration/version changes reset that track's metric window.
 
-Stationary: >=10 observations spanning >=5 seconds; maximum intersample gap
+Stationary: BOTH >=10 observations AND span >=5 seconds (11 samples at exactly
+2 FPS); maximum intersample gap
 1.0 second, maximum observation age 1.0 second; each uncertainty <=0.025 m;
-every point stays within 0.05 m of the initial anchor. The proposed 200 ms gap
+every point stays within 0.05 m of the first valid episode point. Keep this anchor
+fixed until reset; do not slide it forward. The age gate applies only to the
+newest sample at evaluation, not historical samples in the five-second episode.
+The proposed 200 ms gap
 cannot work with 3 FPS capture/2 FPS inference, so v1 uses 1 second. Invalid,
 stale, out-of-area, gapped or changed-identity/calibration samples reset evidence.
 Pixels are a preliminary filter only. People/animals/carried/uncertain subjects

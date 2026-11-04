@@ -14,5 +14,7 @@
     0.3
   ],
   "positionErrorM": 0.01,
-  "valid": true
+  "valid": true,
+  "receivedAt": 1793797200.5,
+  "invalidReason": null
 }
