@@ -25,6 +25,11 @@ class Settings:
     rover_camera_id: str = "rover-1"
     clock: object | None = None
 
+    def __post_init__(self):
+        if any((self.mapping_url, self.backend_url, self.rover_bridge_url)):
+            if not self.peer_token or self.peer_token == self.token:
+                raise ValueError("Outbound peers require a separate PEER_TOKEN")
+
     @classmethod
     def from_env(cls):
         token = os.getenv("VISION_TOKEN", "")

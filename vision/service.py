@@ -37,6 +37,8 @@ class ObjectState:
     status: str = "OBSERVING"
     excluded_reason: str | None = None
     revision: int = 0
+    entity_version: int = 0
+    eligibility_reason: str | None = "NOT_ELIGIBLE"
     classification: dict | None = None
     classification_status: str = "PENDING"
     classification_attempt: int = -1
@@ -78,6 +80,7 @@ class VisionService:
         self._processed = {}
         self.confirmations = {}
         self.observations = OrderedDict()
+        self.mapping_receipts = OrderedDict()
         self.active_confirmations = 0
         self.camera_online = {}
 
@@ -98,6 +101,8 @@ class VisionService:
         return event
 
     def snapshot(self):
+        for state in self.objects.values():
+            self._evaluate(state)
         return [self.object_payload(state) for state in self.objects.values()]
 
     def object_payload(self, state):
@@ -115,9 +120,16 @@ class VisionService:
             "classification": state.classification,
             "classificationProvider": state.classification_provider,
             "mapping": state.mapping, "potentialTarget": state.potential_target,
-            "revision": state.revision,
+            "revision": state.revision, "entityVersion": max(1, state.entity_version),
+            "producerBootId": self.boot_id, "eligibilityReason": state.eligibility_reason,
             "frameRef": f"/api/frames/{state.camera_id}/{state.session_id}/{state.frame_id}",
         }
+
+    def _emit_object(self, event_type, state, **extra):
+        state.entity_version += 1
+        payload = self.object_payload(state)
+        payload.update(extra)
+        return self.emit(event_type, payload)
 
     def enqueue_frame(self, frame):
         if not self.camera_online.get(frame.camera_id):
@@ -127,7 +139,9 @@ class VisionService:
             if state.camera_id == frame.camera_id and (state.session_id, state.geometry_version) != (frame.session_id, frame.geometry_version) and state.status != "LOST":
                 self.invalidate(state, "CAMERA_EPOCH_CHANGED")
                 state.status = "LOST"
-                self.emit("object.updated", self.object_payload(state))
+                self._emit_object("object.updated", state)
+            elif state.camera_id == frame.camera_id and state.status != "LOST":
+                self._evaluate(state)
         self.pending_frames[frame.camera_id] = frame
         self.wake.set()
 
@@ -156,13 +170,14 @@ class VisionService:
                 and (not exact_frame or latest.frame_id == frame.frame_id))
 
     async def process_frame(self, frame):
-        if self.now() - frame.received_at > self.settings.stale_seconds or not self._same_epoch(frame, exact_frame=True):
+        if self.now() - frame.received_at > self.settings.stale_seconds or not self._same_epoch(frame):
             return
         context = (frame.session_id, frame.geometry_version, frame.frame_id)
-        if self._processed.get(frame.camera_id) == context:
+        processed = self._processed.get(frame.camera_id)
+        if processed and processed[:2] == context[:2] and context[2] <= processed[2]:
             return
         detections = await asyncio.to_thread(self.detector.detect, frame.jpeg)
-        if self.now() - frame.received_at > self.settings.stale_seconds or not self._same_epoch(frame, exact_frame=True):
+        if self.now() - frame.received_at > self.settings.stale_seconds or not self._same_epoch(frame):
             return
         # Any malformed box invalidates that frame rather than accidentally hiding a person.
         if any(len(d.bbox) != 4 or not all(math.isfinite(v) for v in d.bbox)
@@ -198,8 +213,7 @@ class VisionService:
             while len(self.observations) > 8192:
                 self.observations.popitem(last=False)
             self._evaluate(state)
-            payload = self.object_payload(state)
-            self.emit("object.observed", payload)
+            self._emit_object("object.observed", state)
             tracks.append({"trackId": state.track_id, "objectId": key,
                            "detectorLabel": state.label, "detectorScore": state.score,
                            "bboxPx": list(state.box), "contactPointPx": update.detection.contact_point,
@@ -217,7 +231,7 @@ class VisionService:
             if state.camera_id == frame.camera_id and key not in current and state.status != "LOST":
                 self.invalidate(state, "TRACK_LOST")
                 state.status, state.motion_state = "LOST", "UNKNOWN"
-                self.emit("object.updated", self.object_payload(state))
+                self._emit_object("object.updated", state)
         self.emit("frame.detections", {
             "cameraId": frame.camera_id, "sessionId": frame.session_id,
             "geometryVersion": frame.geometry_version, "frameId": frame.frame_id,
@@ -232,7 +246,7 @@ class VisionService:
             oldest = min(self.objects.values(), key=lambda s: s.last_seen)
             self.invalidate(oldest, "RETENTION_LIMIT")
             del self.objects[oldest.object_id]
-            self.emit("object.removed", {"objectId": oldest.object_id, "reason": "RETENTION_LIMIT"})
+            self._emit_object("object.removed", oldest, reason="RETENTION_LIMIT")
 
     def invalidate(self, state, reason):
         was_target = state.potential_target
@@ -243,16 +257,18 @@ class VisionService:
         state.classification = None
         state.classification_status = "PENDING"
         state.mapping = None
+        state.eligibility_reason = reason
         if was_target:
-            self.emit("alert.target_revoked", {"objectId": state.object_id, "reason": reason,
-                       "revision": state.revision, "action": "HOLD_BEFORE_PICKUP"})
+            state.status = "STATIC_PENDING_REVIEW"
+            self._emit_object("alert.target_revoked", state, reason=reason,
+                              action="HOLD_BEFORE_PICKUP")
 
     def _evaluate(self, state):
         result = state.classification
         latest = self.frames.latest(state.camera_id)
         current = latest and (latest.session_id, latest.geometry_version, latest.frame_id) == (state.session_id, state.geometry_version, state.frame_id)
         eligible = bool(
-            current and
+            current and state.status != "LOST" and
             state.kind == "FIXED" and state.motion_state == "STATIONARY" and
             not state.excluded_reason and self.now() - state.last_seen <= self.settings.stale_seconds and
             state.metric_static_s >= self.settings.stationary_seconds and state.metric_count >= 10 and
@@ -262,17 +278,19 @@ class VisionService:
         )
         was_target = state.potential_target
         state.potential_target = eligible
-        if state.excluded_reason:
+        state.eligibility_reason = None if eligible else ("FRAME_PENDING" if latest and not current else "NOT_ELIGIBLE")
+        if state.status == "LOST":
+            pass
+        elif state.excluded_reason:
             state.status = "EXCLUDED"
         elif eligible:
             state.status = "POTENTIAL_TARGET"
         elif state.motion_state == "STATIONARY":
             state.status = "STATIC_PENDING_REVIEW"
         if eligible and not was_target:
-            self.emit("alert.potential_target", self.object_payload(state))
+            self._emit_object("alert.potential_target", state)
         elif was_target and not eligible:
-            self.emit("alert.target_revoked", {"objectId": state.object_id,
-                      "reason": "ELIGIBILITY_CHANGED", "action": "HOLD_BEFORE_PICKUP"})
+            self._emit_object("alert.target_revoked", state, reason="ELIGIBILITY_CHANGED", action="HOLD_BEFORE_PICKUP")
 
     @staticmethod
     def _images(frame, box):
@@ -310,7 +328,7 @@ class VisionService:
         state.classification_provider = self.classifier.provider
         state.evidence_crop = crop
         self._evaluate(state)
-        self.emit("object.classified", self.object_payload(state))
+        self._emit_object("object.classified", state)
 
     async def apply_mapping(self, evidence: MappingEvidence):
         key = f"{evidence.camera_id}:{evidence.session_id}:{evidence.track_id}"
@@ -320,6 +338,17 @@ class VisionService:
             raise ValueError("Unknown or expired observation")
         observation_key = (evidence.camera_id, evidence.session_id, evidence.geometry_version,
                            evidence.frame_id, evidence.track_id)
+        receipt = self.mapping_receipts.get(observation_key)
+        if receipt is not None:
+            previous_evidence, receipt_revision = receipt
+            latest = self.frames.latest(evidence.camera_id)
+            if previous_evidence != evidence.model_dump(mode="json"):
+                raise ValueError("Conflicting mapping retry")
+            if (receipt_revision != state.revision or not latest or
+                    (latest.session_id, latest.geometry_version) != (state.session_id, state.geometry_version)):
+                raise ValueError("Mapping retry belongs to revoked evidence")
+            self._evaluate(state)
+            return self.object_payload(state)
         if self.observations.get(observation_key) != state.revision:
             raise ValueError("Track was not observed in this frame or its evidence was revoked")
         if (state.kind != "FIXED" or state.geometry_version != evidence.geometry_version or
@@ -337,7 +366,8 @@ class VisionService:
         if not valid:
             self.invalidate(state, "INVALID_MAPPING")
             self._evaluate(state)
-            self.emit("object.updated", self.object_payload(state))
+            self._emit_object("object.updated", state)
+            self._remember_mapping(observation_key, evidence, state.revision)
             return self.object_payload(state)
         point = evidence.floor_point_m
         moved = state.metric_anchor is not None and math.dist(point, state.metric_anchor) > self.settings.max_movement_m
@@ -351,8 +381,14 @@ class VisionService:
         state.metric_static_s = frame.received_at - state.metric_start
         state.mapping = evidence.model_dump(by_alias=True, mode="json")
         self._evaluate(state)
-        self.emit("object.updated", self.object_payload(state))
+        self._emit_object("object.updated", state)
+        self._remember_mapping(observation_key, evidence, state.revision)
         return self.object_payload(state)
+
+    def _remember_mapping(self, key, evidence, revision):
+        self.mapping_receipts[key] = (evidence.model_dump(mode="json"), revision)
+        while len(self.mapping_receipts) > 8192:
+            self.mapping_receipts.popitem(last=False)
 
     async def sweep(self):
         now = self.now()
@@ -365,11 +401,11 @@ class VisionService:
             if now - state.last_seen > self.settings.stale_seconds and state.status != "LOST":
                 self.invalidate(state, "STALE_OBSERVATION")
                 state.status, state.motion_state = "LOST", "UNKNOWN"
-                self.emit("object.updated", self.object_payload(state))
+                self._emit_object("object.updated", state)
             elif state.potential_target and (state.metric_last is None or now - state.metric_last > self.settings.stale_seconds):
                 self.invalidate(state, "STALE_MAPPING")
                 self._evaluate(state)
-                self.emit("object.updated", self.object_payload(state))
+                self._emit_object("object.updated", state)
 
     async def sweeper(self):
         while not self.closed:
@@ -391,6 +427,8 @@ class VisionService:
 
     async def _confirm_target(self, request):
         state = self.objects.get(request.object_id)
+        if state:
+            self._evaluate(state)
         if not state or not state.potential_target or not state.evidence_crop:
             raise ValueError("Target is not currently eligible")
         frame = self.frames.latest(request.rover_camera_id)
@@ -406,6 +444,7 @@ class VisionService:
             result = await self.classifier.confirm(state.evidence_crop, frame.jpeg, candidates)
         except Exception:
             return {"state": "UNCERTAIN", "candidateTrackId": None, "reason": "Classification unavailable", "missionId": request.mission_id}
+        self._evaluate(state)
         latest = self.frames.latest(request.rover_camera_id)
         match = next((obj for obj in self.objects.values()
                       if obj.camera_id == frame.camera_id and obj.session_id == frame.session_id
@@ -414,7 +453,7 @@ class VisionService:
                 (latest.session_id, latest.geometry_version) != (frame.session_id, frame.geometry_version) or
                 self.now() - latest.received_at > self.settings.stale_seconds or
                 (result.state.value == "CONFIRMED" and (not match or match.excluded_reason or
-                 match.status == "LOST" or self.now() - match.last_seen > self.settings.stale_seconds))):
+                 match.status == "LOST" or match.frame_id != latest.frame_id or self.now() - match.last_seen > self.settings.stale_seconds))):
             return {"state": "UNCERTAIN", "candidateTrackId": None, "reason": "Evidence expired during confirmation", "missionId": request.mission_id}
         return {"state": result.state.value, "candidateTrackId": result.candidate_track_id,
                 "reason": result.reason, "missionId": request.mission_id,

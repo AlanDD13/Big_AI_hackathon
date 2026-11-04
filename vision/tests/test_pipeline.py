@@ -126,3 +126,25 @@ async def test_late_grok_result_cannot_reactivate_lost_track():
     ready.set(); await service.drain_classifications()
     assert all(not o["potentialTarget"] for o in service.snapshot())
     await service.close()
+
+
+@pytest.mark.asyncio
+async def test_revocation_publishes_complete_versioned_state():
+    service, _, clock = setup()
+    for count in range(12):
+        await observe(service, clock, count)
+    await service.drain_classifications()
+    before = service.snapshot()[0]
+    assert before["potentialTarget"]
+    await observe(service, clock, 12, point=(.27, .3))
+    revoked = next(e.payload for e in reversed(service.events) if e.type == "alert.target_revoked")
+    assert revoked["objectId"] == before["objectId"]
+    assert revoked["producerBootId"] == service.boot_id
+    assert revoked["entityVersion"] > before["entityVersion"]
+    assert revoked["revision"] > before["revision"]
+    assert not revoked["potentialTarget"]
+    assert revoked["status"] != "POTENTIAL_TARGET"
+    assert revoked["classification"] is None
+    assert revoked["reason"] == "TARGET_MOVED"
+    assert revoked["action"] == "HOLD_BEFORE_PICKUP"
+    await service.close()

@@ -40,19 +40,22 @@ class Publisher:
 
     async def deliver(self, event, client):
         base, path = self.destination(event)
-        headers = {"Authorization": f"Bearer {self.settings.peer_token or self.settings.token}"}
+        headers = {"Authorization": f"Bearer {self.settings.peer_token}"}
         for attempt in range(3):
             try:
-                response = await client.post(base.rstrip("/") + path,
-                    json=event.model_dump(by_alias=True, mode="json"), headers=headers,
-                    timeout=2, follow_redirects=False)
-                if 200 <= response.status_code < 300:
+                # Only the status is needed. Closing the stream avoids buffering
+                # an untrusted or accidentally huge peer response.
+                async with asyncio.timeout(2):
+                    async with client.stream("POST", base.rstrip("/") + path,
+                        json=event.model_dump(by_alias=True, mode="json"), headers=headers,
+                        timeout=2, follow_redirects=False) as response:
+                        status = response.status_code
+                if 200 <= status < 300:
                     self.delivered += 1
-                    self.last_error = None
                     return
-                if response.status_code < 500 and response.status_code != 429:
+                if status < 500 and status != 429:
                     break
-            except httpx.HTTPError:
+            except (httpx.HTTPError, TimeoutError):
                 pass
             if attempt < 2:
                 await asyncio.sleep(.2 * (2 ** attempt))

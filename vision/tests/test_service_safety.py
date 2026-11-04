@@ -148,3 +148,71 @@ async def test_missing_track_revokes_previously_eligible_target(fixture):
     assert any(e.type == 'alert.target_revoked' and e.payload['reason'] == 'TRACK_LOST'
                for e in service.events)
     await service.close()
+
+@pytest.mark.asyncio
+async def test_new_frame_revokes_eligibility_without_erasing_evidence(fixture):
+    service, _, classifier, clock, data = fixture
+    classifier.release.set()
+    for n in range(11):
+        await observe(service, clock, data, n)
+    await service.drain_classifications()
+    state = next(iter(service.objects.values()))
+    assert state.potential_target
+    original_revision = state.revision
+    incoming = frame(service, clock, data, 11)
+    service.enqueue_frame(incoming)
+    assert not service.snapshot()[0]['potentialTarget']
+    assert state.revision == original_revision
+    assert state.classification is not None and state.metric_count >= 10
+    await service.process_frame(incoming)
+    assert service.snapshot()[0]['potentialTarget']
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_faster_ingress_does_not_discard_fresh_inference(fixture):
+    import threading
+    service, _, _, clock, data = fixture
+    started, release = threading.Event(), threading.Event()
+    class SlowDetector:
+        def detect(self, image):
+            started.set()
+            release.wait(timeout=2)
+            return [Detection('bottle', .9, (20, 20, 50, 90))]
+    service.detector = SlowDetector()
+    first = frame(service, clock, data, 0)
+    task = asyncio.create_task(service.process_frame(first))
+    assert await asyncio.to_thread(started.wait, 1)
+    newer = frame(service, clock, data, 1)
+    service.enqueue_frame(newer)
+    release.set()
+    await task
+    assert service.snapshot()[0]['frameId'] == 0
+    assert not service.snapshot()[0]['potentialTarget']
+    await service.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['valid', 'invalid', 'moved', 'gap'])
+async def test_identical_mapping_retry_is_idempotent_and_conflict_rejected(fixture, mode):
+    service, _, _, clock, data = fixture
+    first = await observe(service, clock, data, 0)
+    n = 3 if mode == 'gap' else 1
+    if mode == 'gap':
+        for intermediate in (1, 2):
+            await service.process_frame(frame(service, clock, data, intermediate))
+    f = frame(service, clock, data, n)
+    await service.process_frame(f)
+    track = next(o['trackId'] for o in service.snapshot() if o['status'] != 'LOST')
+    item = evidence(f, track, (.3, .3) if mode == 'moved' else (.2, .3))
+    if mode == 'invalid':
+        item = item.model_copy(update={'valid': False, 'floor_point_m': None})
+    await service.apply_mapping(item)
+    state = next(o for o in service.objects.values() if o.track_id == track)
+    before = (state.metric_count, state.revision, len(service.events))
+    await service.apply_mapping(item)
+    assert (state.metric_count, state.revision, len(service.events)) == before
+    conflict = item.model_copy(update={'map_version': 'different'})
+    with pytest.raises(ValueError):
+        await service.apply_mapping(conflict)
+    await service.close()

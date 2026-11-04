@@ -50,10 +50,42 @@ def create_app(settings=None, detector=None, classifier=None, run_workers=True):
 
     app = FastAPI(title="Rover vision source service", version="0.1.0", lifespan=lifespan)
     app.state.service = service
+    # No queued waiters: admission counts include body reads and decoding.
+    active_uploads = 0
+    active_json = 0
+    camera_locks = {camera_id: asyncio.Lock() for camera_id in settings.cameras}
 
     @app.middleware("http")
     async def response_headers(request, call_next):
-        response = await call_next(request)
+        nonlocal active_json
+        if request.method == "POST" and request.url.path in {"/api/mapping-evidence", "/api/targets/confirm"}:
+            if active_json >= 16:
+                return JSONResponse({"detail": "Request capacity reached"}, status_code=503)
+            active_json += 1
+            try:
+                body = bytearray()
+                try:
+                    async with asyncio.timeout(5):
+                        async for chunk in request.stream():
+                            if len(body) + len(chunk) > 65536:
+                                return JSONResponse({"detail": "JSON body exceeds 64 KiB"}, status_code=413)
+                            body.extend(chunk)
+                except TimeoutError:
+                    return JSONResponse({"detail": "Request body timeout"}, status_code=408)
+                delivered = False
+                original_receive = request._receive
+                async def replay():
+                    nonlocal delivered
+                    if not delivered:
+                        delivered = True
+                        return {"type": "http.request", "body": bytes(body), "more_body": False}
+                    return await original_receive()
+                request._receive = replay
+                response = await call_next(request)
+            finally:
+                active_json -= 1
+        else:
+            response = await call_next(request)
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
@@ -102,27 +134,50 @@ def create_app(settings=None, detector=None, classifier=None, run_workers=True):
         check_token(authorization, camera_id)
         if camera_id not in settings.cameras:
             raise HTTPException(404, "Camera is not configured")
-        data = bytearray()
-        async for chunk in request.stream():
-            data.extend(chunk)
-            if len(data) > 4 * 1024 * 1024:
-                raise HTTPException(413, "JPEG exceeds 4 MiB")
+        nonlocal active_uploads
         if request.headers.get("content-type", "").split(";")[0] != "image/jpeg":
             raise HTTPException(415, "Use raw image/jpeg")
+        if active_uploads >= 4 or camera_locks[camera_id].locked():
+            raise HTTPException(503, "Upload capacity reached")
+        active_uploads += 1
         try:
-            kind = settings.cameras[camera_id]
-            if request.headers.get("x-camera-kind", kind) != kind:
-                raise ValueError("Camera kind differs from configuration")
-            frame_id = int(request.headers["x-frame-id"])
-            frame = service.frames.put(camera_id, request.headers["x-session-id"],
-                request.headers["x-geometry-version"], frame_id,
-                float(request.headers["x-captured-at"]), bytes(data), kind=kind,
-                timestamp_basis=request.headers.get("x-timestamp-basis", "SOURCE"))
-        except (KeyError, ValueError) as exc:
-            reason = str(exc)
-            code = 409 if "sequence" in reason.lower() or "session" in reason.lower() or "geometry" in reason.lower() else 422
-            raise HTTPException(code, "Invalid frame, metadata or sequence") from None
-        service.enqueue_frame(frame)
+            async with camera_locks[camera_id]:
+                data = bytearray()
+                try:
+                    async with asyncio.timeout(5):
+                        async for chunk in request.stream():
+                            if len(data) + len(chunk) > 4 * 1024 * 1024:
+                                raise HTTPException(413, "JPEG exceeds 4 MiB")
+                            data.extend(chunk)
+                except TimeoutError:
+                    raise HTTPException(408, "Upload body timeout") from None
+                try:
+                    kind = settings.cameras[camera_id]
+                    if request.headers.get("x-camera-kind", kind) != kind:
+                        raise ValueError("Camera kind differs from configuration")
+                    frame_id = int(request.headers["x-frame-id"])
+                    # Cancellation cannot release the per-camera lock while a decode
+                    # thread is still capable of committing to the frame store.
+                    task = asyncio.create_task(asyncio.to_thread(service.frames.put,
+                        camera_id, request.headers["x-session-id"],
+                        request.headers["x-geometry-version"], frame_id,
+                        float(request.headers["x-captured-at"]), bytes(data), kind=kind,
+                        timestamp_basis=request.headers.get("x-timestamp-basis", "SOURCE")))
+                    try:
+                        frame = await asyncio.shield(task)
+                    except asyncio.CancelledError:
+                        try:
+                            await task
+                        except Exception:
+                            pass
+                        raise
+                except (KeyError, ValueError) as exc:
+                    reason = str(exc)
+                    code = 409 if "sequence" in reason.lower() or "session" in reason.lower() or "geometry" in reason.lower() else 422
+                    raise HTTPException(code, "Invalid frame, metadata or sequence") from None
+                service.enqueue_frame(frame)
+        finally:
+            active_uploads -= 1
         return {"cameraId": camera_id, "sessionId": frame.session_id,
                 "frameId": frame.frame_id, "receivedAt": frame.received_at,
                 "width": frame.width, "height": frame.height}
@@ -140,8 +195,9 @@ def create_app(settings=None, detector=None, classifier=None, run_workers=True):
 
     @app.get("/api/objects", dependencies=[Depends(authorize)])
     async def objects():
+        snapshot = service.snapshot()
         return {"schemaVersion": "vision.v1", "sequence": service.sequence,
-                "bootId": service.boot_id, "objects": service.snapshot()}
+                "bootId": service.boot_id, "objects": snapshot}
 
     @app.post("/api/mapping-evidence", dependencies=[Depends(authorize)])
     async def mapping(evidence: MappingEvidence):
@@ -172,13 +228,19 @@ def create_app(settings=None, detector=None, classifier=None, run_workers=True):
 
     @app.get("/api/events", dependencies=[Depends(authorize)])
     async def events(request: Request):
+        if len(service.subscribers) >= 32:
+            raise HTTPException(503, "Event subscriber capacity reached")
+        # Snapshot and subscription occur without an await on the event loop.
+        objects = service.snapshot()
+        cut = service.sequence
+        snapshot = {"schemaVersion": "vision.v1", "bootId": service.boot_id,
+                    "sequence": cut, "objects": objects}
         queue = asyncio.Queue(maxsize=128)
         service.subscribers.add(queue)
         async def stream():
             try:
                 # A snapshot is mandatory on every reconnect; missed transitions are not silently skipped.
-                yield "event: snapshot\ndata: " + json.dumps({"bootId": service.boot_id,
-                    "sequence": service.sequence, "objects": service.snapshot()}) + "\n\n"
+                yield "event: snapshot\ndata: " + json.dumps(snapshot) + "\n\n"
                 while not await request.is_disconnected():
                     try:
                         event = await asyncio.wait_for(queue.get(), timeout=10)
@@ -188,6 +250,8 @@ def create_app(settings=None, detector=None, classifier=None, run_workers=True):
                     if event is None:
                         yield "event: resync_required\ndata: {}\n\n"
                         break
+                    if event.sequence <= cut:
+                        continue
                     yield f"id: {event.event_id}\nevent: {event.type}\ndata: {event.model_dump_json(by_alias=True)}\n\n"
             finally:
                 service.subscribers.discard(queue)

@@ -47,4 +47,8 @@ vision/.venv/bin/python -m vision --camera-token phone-1
 VISION_LOCAL_SOURCES is a JSON object mapping configured fixed camera IDs to
 OpenCV device indexes or video files, e.g. {"mac-1":0}. ROVER_BRIDGE_URL enables
 the configured bridge adapter. Only robot/** owns DJI; vision consumes its JPEGs.
-Peer URLs MAPPING_URL/BACKEND_URL and PEER_TOKEN are optional until integration.
+Peer URLs MAPPING_URL/BACKEND_URL are optional until integration. Configuring
+an outbound peer or rover bridge requires PEER_TOKEN distinct from VISION_TOKEN.
+
+Cursor continuation: [handoff](../docs/CURSOR_HANDOFF.md) and
+[project skills/rules](../.cursor/README.md).

@@ -73,8 +73,11 @@ with [0,0]. `capturedAt` must echo the original frame exactly. Map origin/axes
 are fixed by Tezqx's map definition; point coordinates are metres.
 
 Unknown/expired/incompatible references return 409 and cannot create targets;
-malformed fields return 422. Repeated/non-increasing mapping frame IDs are
-rejected. Map/calibration/version changes reset that track's metric window.
+malformed fields return 422. Ordering is per camera/session/geometry/track:
+different tracks in one frame are independent. Exact previously accepted
+mapping retries are idempotent while their frame/epoch remains retained;
+conflicting, older new observations or revoked-epoch results return 409.
+Map/calibration/version changes reset that track's metric window.
 
 Stationary: BOTH >=10 observations AND span >=5 seconds (11 samples at exactly
 2 FPS); maximum intersample gap
@@ -100,6 +103,14 @@ classification/mapping may arrive after the initial observation.
 | object.observed | POST /api/detections | Show immediately as Observing; do not wait for Grok/map |
 | object.classified | POST /api/classifications | Update category, description, confidence and provider |
 | object.updated, alert.* | POST /api/vision-events | Update validity, revoke eligibility, deduplicate alerts |
+
+Latest WIP additions (typed object schemas and recovery fixtures still pending):
+producerBootId scopes producer restarts; entityVersion increases with each
+complete object publication; revision is the eligibility/evidence epoch.
+eligibilityReason is null when eligible and describes a failed gate otherwise.
+Target-revoked and removal events carry complete object state plus reason;
+revocation adds action:HOLD_BEFORE_PICKUP. Retry the same envelope/eventId.
+Consumers must reconcile boot changes/gaps before restoring eligibility.
 
 Object payload includes objectId and all camera/track/frame IDs, bboxPx,
 detectorLabel, detectorScore [0,1], motionState, pixelStationarySeconds,

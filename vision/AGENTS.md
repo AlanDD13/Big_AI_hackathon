@@ -28,7 +28,7 @@ Before commits/task boundaries, obtain its latest summary and read this
 checkout's unread messages as required by the root rules.
 
 Own only vision/** and the lead-authorized shared contract/docs changes.
-Backend SQLite, dashboard UI, mapping transforms and DJI connection stay with
+Backend Supabase schema/storage, dashboard UI, mapping transforms and DJI connection stay with
 their assigned owners unless they explicitly grant a handoff.
 
 Always preserve the five-second stationary gate, living/carried exclusions,
