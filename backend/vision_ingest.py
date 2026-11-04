@@ -91,6 +91,7 @@ VISION_EVENTS = frozenset({
     "alert.camera_unavailable",
     "camera.connected",
 })
+ACCEPTED = DETECTIONS | CLASSIFICATIONS | VISION_EVENTS
 _OBJECT_TYPES = DETECTIONS | frozenset({
     "object.classified",
     "object.updated",

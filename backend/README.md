@@ -49,7 +49,9 @@ accepts `object.classified` and stores category, description, confidence
 (`LOW`, `MEDIUM`, or `HIGH`), and `classificationProvider` (`fixture` or
 `grok`) separately from `detectorScore`. `POST /api/vision-events` accepts
 `object.updated` and `alert.*`. Event ids are deduplicated, so a replay does
-not append another SSE event. A missing `visualPickupAdvisory` is no
+not append another SSE event. When `BACKEND_DATABASE_URL` is set, the same event
+is stored in `rover_backend` and reloaded on startup. A missing
+`visualPickupAdvisory` is no
 assessment and is never graspable. When an advisory is present,
 `pickupVerified` stays false. `dispatchEligible` stays false even if
 `potentialTarget` is true. These routes do not open a mission or call the robot.
