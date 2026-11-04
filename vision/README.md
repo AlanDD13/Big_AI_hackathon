@@ -44,6 +44,15 @@ per requested test; do not poll or automatically retry this billed endpoint.
 task count. The default remains `true` for the normal pipeline. This flag does
 not disable explicit peer classification/confirmation requests.
 
+The `/camera` page has a **Grok identification + pickup estimate** switch.
+After Start, it reads the server-confirmed state for that camera. ON enables
+the existing stationary-object assessment (two provider calls per new eligible
+episode); OFF prevents new automatic calls and cancels pending automatic tasks
+for that camera. Requests already received by the provider may still be billed.
+Completed assessments are reused for the same episode. Explicit stateless peer
+requests are independent of this switch. Runtime overrides reset to the environment
+default when the service restarts. Pickup estimates never verify a physical grab.
+
 The /camera page is an operational camera-source page, not the main dashboard.
 For independent phones, use LAN HTTPS with --cert and --key; plain LAN HTTP is
 rejected by the CLI. Configure camera IDs with VISION_CAMERAS, for example

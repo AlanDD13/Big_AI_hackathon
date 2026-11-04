@@ -7,6 +7,28 @@ const status = document.querySelector('#status');
 const preview = document.querySelector('#preview');
 const lens = document.querySelector('#lens');
 const cameraDetails = document.querySelector('#camera-details');
+const grokToggle = document.querySelector('#grok-toggle');
+const grokStatus = document.querySelector('#grok-status');
+let grokCamera = null, confirmedGrok = false;
+async function syncGrok(enabled) {
+  if (!grokCamera) return;
+  grokToggle.disabled = true;
+  try {
+    const headers = {'Authorization': `Bearer ${grokCamera.secret}`};
+    const options = {method: enabled === undefined ? 'GET' : 'PUT', credentials: 'omit', headers};
+    if (enabled !== undefined) { headers['Content-Type'] = 'application/json'; options.body = JSON.stringify({enabled}); }
+    const response = await fetch(`/api/cameras/${encodeURIComponent(grokCamera.id)}/grok`, options);
+    if (!response.ok) throw new Error(`Switch request failed (${response.status})`);
+    const state = await response.json();
+    confirmedGrok = state.enabled; grokToggle.checked = state.enabled;
+    grokStatus.textContent = state.enabled ? 'ON — identification + pickup estimate after stable detection; two API calls per object episode.' :
+      'OFF — no automatic Grok calls from this camera; local detection continues.';
+  } catch (error) {
+    grokToggle.checked = confirmedGrok;
+    grokStatus.textContent = `${error.message}. Server state unconfirmed; retry the switch or restart capture.`;
+  } finally { grokToggle.disabled = false; }
+}
+grokToggle.addEventListener('change', () => syncGrok(grokToggle.checked));
 const isUltraWide = label => /ultra[\s-]*wide|0[.,]5\s*[x×]/i.test(label);
 const canvas = document.createElement('canvas');
 let stream = null, running = false, generation = 0, timer = null, abort = null, upload = null;
@@ -30,6 +52,9 @@ start.addEventListener('click', async () => {
   start.disabled = true; lens.disabled = true;
   const current = ++generation;
   try {
+    grokCamera = {id, secret};
+    await syncGrok();
+    if (generation !== current) return;
     const selected = lens.value;
     const video = {width: {ideal: 99999}, height: {ideal: 99999}, frameRate: {ideal: 15, max: 30},
       ...(selected ? {deviceId: {exact: selected}} : {facingMode: {ideal: 'environment'}})};

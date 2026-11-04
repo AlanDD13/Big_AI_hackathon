@@ -6,7 +6,7 @@ const path = require('node:path');
 
 function page({ultra = false, zoom = false, largeJpeg = false} = {}) {
   const elements = {};
-  for (const id of ['camera-id', 'token', 'start', 'stop', 'status', 'preview', 'lens', 'camera-details']) {
+  for (const id of ['camera-id', 'token', 'start', 'stop', 'status', 'preview', 'lens', 'camera-details', 'grok-toggle', 'grok-status']) {
     elements[id] = {value: '', disabled: false, textContent: '', listeners: {},
       addEventListener(type, handler) { this.listeners[type] = handler; },
       replaceChildren(...options) { this.options = options; }};
@@ -16,7 +16,8 @@ function page({ultra = false, zoom = false, largeJpeg = false} = {}) {
   elements.preview.videoWidth = 3840;
   elements.preview.videoHeight = 2160;
   elements.preview.play = async () => {};
-  const calls = [], uploads = [], applied = [], qualities = [], tracks = [];
+  const calls = [], uploads = [], applied = [], qualities = [], tracks = [], controls = [];
+  let grokEnabled = false;
   const devices = [{kind: 'videoinput', deviceId: 'rear', label: 'Back Camera'}];
   if (ultra) devices.push({kind: 'videoinput', deviceId: 'ultra', label: 'Back Ultra Wide Camera'});
   const canvas = {width: 0, height: 0, getContext: () => ({drawImage() {}}),
@@ -49,10 +50,17 @@ function page({ultra = false, zoom = false, largeJpeg = false} = {}) {
     crypto: {randomUUID: () => 'test-session'}, URLSearchParams, AbortController,
     Option: function(text, value) { this.text = text; this.value = value; },
     performance: {now: () => 0}, setTimeout: () => 1, clearTimeout() {},
-    fetch: async (url, options) => { uploads.push({url, ...options}); return {ok: true}; }
+    fetch: async (url, options) => {
+      if (url.endsWith('/grok')) {
+        controls.push({url, ...options});
+        if (options.method === 'PUT') grokEnabled = JSON.parse(options.body).enabled;
+        return {ok: true, json: async () => ({enabled: grokEnabled})};
+      }
+      uploads.push({url, ...options}); return {ok: true};
+    }
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../web/camera.js'), 'utf8'), context);
-  return {elements, canvas, calls, uploads, applied, qualities, tracks,
+  return {elements, canvas, calls, uploads, applied, qualities, tracks, controls,
     async start() {
       // Camera script initializes credential fields from the URL fragment.
       elements['camera-id'].value = 'phone-2'; elements.token.value = 'scoped-camera-token';
@@ -114,4 +122,19 @@ test('does not upload frames exceeding the existing 16MP server limit', async ()
   assert.equal(p.uploads.length, 0);
   assert.match(p.elements.status.textContent, /16MP/);
   assert.ok(p.tracks.every(track => track.stopped));
+});
+
+test('Grok switch shows server-confirmed OFF and sends explicit ON/OFF changes', async () => {
+  const p = page();
+  await p.start();
+  assert.equal(p.elements['grok-toggle'].checked, false);
+  assert.match(p.elements['grok-status'].textContent, /OFF/);
+  p.elements['grok-toggle'].checked = true;
+  await p.elements['grok-toggle'].listeners.change();
+  assert.equal(p.elements['grok-toggle'].checked, true);
+  assert.match(p.elements['grok-status'].textContent, /ON/);
+  p.elements['grok-toggle'].checked = false;
+  await p.elements['grok-toggle'].listeners.change();
+  assert.match(p.elements['grok-status'].textContent, /OFF/);
+  assert.deepEqual(p.controls.filter(c => c.method === 'PUT').map(c => JSON.parse(c.body).enabled), [true, false]);
 });
