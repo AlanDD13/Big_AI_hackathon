@@ -82,8 +82,12 @@ across boots.
 
 Vision `producerBootId`, `entityVersion`, and `revision` are stored inputs.
 The UI orders by `backendRevision` inside the current `backendBootId`.
-`potentialTarget` is not dispatch permission. Backend mission gates remain
-mandatory. A producer snapshot is not a command.
+`potentialTarget` on the normalized object is vision's fixed-camera stationarity
+and semantics gate only; it is not dispatch permission. Each normalized object
+also carries `dispatchEligible` (`boolean`), which reflects backend mission
+policy eligibility (`false` while mission policy, rover availability, or
+confirmation is pending, even when `potentialTarget: true`). Backend mission
+gates remain mandatory. A producer snapshot is not a command.
 
 Deduplicate notifications by the retained vision `eventId` (`visionEventId`) and
 `alertId`. Redelivery of the same `eventId` updates nothing and does not raise a

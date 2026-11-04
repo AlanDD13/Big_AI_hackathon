@@ -47,9 +47,13 @@ hardware validation before physical bench testing.
 - One active authenticated manual lease per rover (`roverId`), identified by
   `(leaseId, leaseGeneration)`.
 - A manual lease is **mutually exclusive** with any autonomous mission/command
-  in `NAVIGATING`, `ALIGNING`, `PICKING`, `HELD`, or `UNKNOWN`, and with
-  `STOPPED` (while stop is latched) or stale/unknown rover telemetry:
-  - Active autonomous command -> `409 AUTONOMOUS_ACTIVE`
+  in `NAVIGATING`, `ALIGNING`, `PICKING`, `HELD`, or `UNKNOWN` (and on P3
+  `backend/`, any mission in `dispatching`, `running`, `holding`, or `unknown`),
+  and with `STOPPED` (while stop is latched) or stale/unknown rover telemetry:
+  - Active autonomous mission/command (`dispatching` / `running` / `holding` /
+    `unknown` on P3, or `NAVIGATING` / `ALIGNING` / `PICKING` / `HELD` /
+    `UNKNOWN` on P4) -> `409 AUTONOMOUS_ACTIVE` when rejecting
+    `POST /api/manual/lease` or `POST /api/manual/drive`
   - Lease already held by another generation/session -> `409 LEASE_HELD`
   - Rover latched in `STOPPED` -> `409 STOP_LOCKED`
   - Rover link/telemetry stale or unavailable -> `503 TELEMETRY_STALE`

@@ -60,6 +60,7 @@
           "invalidReason": null
         },
         "potentialTarget": true,
+        "dispatchEligible": false,
         "eligibilityReason": null,
         "evidenceUrl": "/api/evidence/ev-0001"
       }
@@ -146,6 +147,7 @@
         "invalidReason": null
       },
       "potentialTarget": true,
+      "dispatchEligible": false,
       "eligibilityReason": null,
       "evidenceUrl": "/api/evidence/ev-0002"
     }

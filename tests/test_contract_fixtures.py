@@ -54,6 +54,8 @@ class ContractFixtureTest(unittest.TestCase):
             "phone-1:session1:cccccccccccccccccccccccccccccccc",
         )
         self.assertEqual(fixture["durableEvent"]["body"]["backendRevision"], 4)
+        self.assertIs(fixture["snapshot"]["objects"][0]["dispatchEligible"], False)
+        self.assertIs(fixture["durableEvent"]["body"]["dispatchEligible"], False)
         self.assertEqual(
             fixture["durableAlertEvent"]["body"]["alertId"],
             "alert-0001",
