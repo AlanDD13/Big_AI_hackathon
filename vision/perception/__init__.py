@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from io import BytesIO
 import math
 import os
+import json
+from pathlib import Path
 import uuid
 
 
@@ -36,7 +38,23 @@ class TrackUpdate:
 _LIVING = {'person', 'people', 'human', 'man', 'woman', 'child', 'baby', 'boy', 'girl',
            'dog', 'cat', 'bird', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra',
            'giraffe', 'animal', 'pet', 'rabbit', 'mouse', 'rat', 'deer', 'monkey',
-           'goat', 'pig', 'chicken', 'duck', 'fish', 'turtle', 'insect'}
+           'goat', 'pig', 'chicken', 'duck', 'fish', 'turtle', 'insect', 'hand', 'hands'}
+
+# A targeted vocabulary is more useful than the prompt-free long tail for this
+# floor demo. Safety classes stay present even when users supply custom prompts.
+PAPER_CLASSES = ('crumpled paper', 'paper ball', 'sheet of paper', 'tissue',
+                 'plastic bottle', 'can', 'cup', 'cardboard box')
+SAFETY_CLASSES = ('person', 'hand', 'animal', 'dog', 'cat', 'bird')
+
+
+def detection_classes(classes=None):
+    if classes is None:
+        value = os.getenv('VISION_DETECTION_CLASSES', '')
+        classes = json.loads(value) if value else []
+    if not isinstance(classes, (list, tuple)) or len(classes) > 64 or any(
+            not isinstance(c, str) or not c.strip() or len(c) > 80 for c in classes):
+        raise ValueError('VISION_DETECTION_CLASSES must be a JSON list of at most 64 short labels')
+    return tuple(dict.fromkeys(c.strip() for c in (*classes, *SAFETY_CLASSES))) if classes else ()
 
 
 def _living(label):
@@ -182,7 +200,8 @@ def _background(label):
     return bool(set(label.lower().replace('-', ' ').replace('_', ' ').split()) & _BACKGROUND)
 
 
-def curate(detections, width, height, min_confidence, min_area_frac, max_area_frac, max_objects):
+def curate(detections, width, height, min_confidence, min_area_frac, max_area_frac, max_objects,
+           label_thresholds=None):
     """Thin out candidate objects. Living detections are never dropped, because they
     exclude overlapping objects and must stay visible to the safety filter."""
     kept, objects = [], []
@@ -192,7 +211,8 @@ def curate(detections, width, height, min_confidence, min_area_frac, max_area_fr
             kept.append(d)
             continue
         frac = (d.bbox[2] - d.bbox[0]) * (d.bbox[3] - d.bbox[1]) / area
-        if (d.score >= min_confidence and min_area_frac <= frac <= max_area_frac
+        threshold = (label_thresholds or {}).get(d.label, min_confidence)
+        if (d.score >= threshold and min_area_frac <= frac <= max_area_frac
                 and not _background(d.label)):
             objects.append(d)
     objects.sort(key=lambda d: d.score, reverse=True)
@@ -207,32 +227,78 @@ def curate(detections, width, height, min_confidence, min_area_frac, max_area_fr
 
 class YoloDetector:
     def __init__(self, model='yoloe-26s-seg-pf.pt', device='mps', confidence=.25,
-                 min_confidence=None, min_area_frac=None, max_area_frac=None, max_objects=None):
+                 min_confidence=None, min_area_frac=None, max_area_frac=None, max_objects=None,
+                 classes=None, profile=None, image_size=None):
+        self.profile = profile or os.getenv('VISION_DETECTOR_PROFILE', 'default')
+        if self.profile not in {'default', 'paper'}:
+            raise ValueError('VISION_DETECTOR_PROFILE must be default or paper')
+        paper = self.profile == 'paper'
+        if paper and classes is None and not os.getenv('VISION_DETECTION_CLASSES'):
+            classes = PAPER_CLASSES
+        self.classes = detection_classes(classes)
+        if paper and str(model).endswith('-pf.pt'):
+            candidate = Path(model).with_name('yoloe-26s-paper.pt')
+            model = str(candidate) if candidate.exists() else str(Path(model).with_name('yoloe-26s-seg.pt'))
+        if self.classes and str(model).endswith('-pf.pt'):
+            raise ValueError('Text prompts need a *-seg.pt model, not prompt-free *-seg-pf.pt')
         self.model_name = model
         self.device = resolve_device(device)
         self.confidence = confidence
-        self.min_confidence = _env_float('VISION_MIN_CONFIDENCE', .45) if min_confidence is None else min_confidence
-        self.min_area_frac = _env_float('VISION_MIN_AREA_FRAC', .002) if min_area_frac is None else min_area_frac
+        self.min_confidence = _env_float('VISION_MIN_CONFIDENCE', .25 if paper else .45) if min_confidence is None else min_confidence
+        self.min_area_frac = _env_float('VISION_MIN_AREA_FRAC', .0003 if paper else .002) if min_area_frac is None else min_area_frac
         self.max_area_frac = _env_float('VISION_MAX_AREA_FRAC', .4) if max_area_frac is None else max_area_frac
         self.max_objects = int(_env_float('VISION_MAX_OBJECTS', 6)) if max_objects is None else max_objects
+        self.image_size = image_size or int(os.getenv('VISION_IMAGE_SIZE', '960' if paper else '640'))
+        if not 256 <= self.image_size <= 1536:
+            raise ValueError('VISION_IMAGE_SIZE must be between 256 and 1536')
+        self.paper_tiles = paper and os.getenv('VISION_PAPER_TILES', '1') == '1'
+        # These are low-confidence proposals for Grok review, never target
+        # approval. All non-paper thresholds and semantic/metric gates remain.
+        self.label_thresholds = ({label: .10 for label in PAPER_CLASSES[:4]} if paper else {})
         self._model = None
 
     def detect(self, jpeg: bytes) -> list[Detection]:
         from PIL import Image
         if self._model is None:
             from ultralytics import YOLOE
-            self._model = YOLOE(self.model_name)
+            model = YOLOE(self.model_name)
+            if self.classes and tuple(model.names.values()) != self.classes:
+                model.set_classes(list(self.classes))
+            self._model = model
         with Image.open(BytesIO(jpeg)) as image:
             image = image.convert('RGB')
             size = image.size
-            results = self._model.predict(source=image, device=self.device, conf=self.confidence, verbose=False)
+            detections = self._predict_image(image)
+            if self.paper_tiles:
+                # Four overlapping views improve small-object proposals while
+                # keeping the full-frame person/animal detections for exclusion.
+                # Only paper proposals are accepted from the zoomed views.
+                width, height = size
+                tile_w, tile_h = math.ceil(width * .6), math.ceil(height * .6)
+                for x in (0, width - tile_w):
+                    for y in (0, height - tile_h):
+                        tile = image.crop((x, y, x + tile_w, y + tile_h))
+                        detections.extend(self._predict_image(tile, x, y, paper_only=True))
+        return curate(detections, size[0], size[1], self.min_confidence, self.min_area_frac,
+                      self.max_area_frac, self.max_objects, self.label_thresholds)
+
+    def _predict_image(self, image, offset_x=0, offset_y=0, paper_only=False):
+        threshold = min(self.confidence, .10) if self.label_thresholds else self.confidence
+        results = self._model.predict(source=image, device=self.device, conf=threshold,
+                                      imgsz=self.image_size, verbose=False)
         detections = []
         for result in results:
             for box in result.boxes:
-                coords = tuple(float(v) for v in box.xyxy[0].tolist())
                 label = result.names[int(box.cls[0])]
+                if paper_only and label not in self.label_thresholds:
+                    continue
+                raw = tuple(float(v) for v in box.xyxy[0].tolist())
+                if not (0 <= raw[0] < raw[2] <= image.width and
+                        0 <= raw[1] < raw[3] <= image.height):
+                    continue
+                coords = (raw[0] + offset_x, raw[1] + offset_y,
+                          raw[2] + offset_x, raw[3] + offset_y)
                 d = Detection(label, float(box.conf[0]), coords, ((coords[0]+coords[2])/2, coords[3]))
                 if _valid(d):
                     detections.append(d)
-        return curate(detections, size[0], size[1], self.min_confidence, self.min_area_frac,
-                      self.max_area_frac, self.max_objects)
+        return detections

@@ -148,3 +148,29 @@ async def test_revocation_publishes_complete_versioned_state():
     assert revoked["reason"] == "TARGET_MOVED"
     assert revoked["action"] == "HOLD_BEFORE_PICKUP"
     await service.close()
+
+
+@pytest.mark.asyncio
+async def test_visual_pickup_is_advisory_and_revoked_with_object_evidence():
+    from vision.classification import VisualPickupResult
+    class Visual(FixtureClassifier):
+        async def assess_pickup(self, crop, context):
+            return VisualPickupResult(object_form='CRUMPLED', visual_suitability='POSSIBLE',
+                                      reason='Raised surface only; size and grip unverified')
+    provider = Visual(classifier()._classification)
+    service, _, clock = setup(provider)
+    for count in range(12):
+        await observe(service, clock, count, evidence=False)
+    await service.drain_classifications()
+    obj = service.snapshot()[0]
+    assert obj['visualPickupStatus'] == 'COMPLETED'
+    assert obj['visualPickupAdvisory']['object_form'] == 'CRUMPLED'
+    assert obj['visualPickupAdvisory']['advisory'] is True
+    assert obj['visualPickupAdvisory']['pickupVerified'] is False
+    assert not obj['potentialTarget']  # a visual grasp hint cannot replace mapping
+    clock.value += 2
+    await service.sweep()
+    lost = service.snapshot()[0]
+    assert lost['visualPickupAdvisory'] is None
+    assert not lost['potentialTarget']
+    await service.close()

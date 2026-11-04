@@ -30,7 +30,9 @@ def test_curate_limits_object_count():
 
 def test_graspability_verdicts():
     assert estimate_graspability((0, 0, 40, 40), None).verdict == 'UNKNOWN_SCALE'
-    assert estimate_graspability((0, 0, 40, 40), 1.0).verdict == 'LIKELY_GRASPABLE'
+    size_fit = estimate_graspability((0, 0, 40, 40), 1.0)
+    assert size_fit.verdict == 'SIZE_FITS'
+    assert not size_fit.pickup_verified
     assert estimate_graspability((0, 0, 200, 150), 1.0).verdict == 'TOO_LARGE'
     assert estimate_graspability((0, 0, 8, 8), 1.0).verdict == 'TOO_SMALL'
     assert estimate_graspability((0, 0, 40, 400), 1.0).verdict == 'TOO_LARGE'

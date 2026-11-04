@@ -121,6 +121,9 @@ def create_app(settings=None, detector=None, classifier=None, run_workers=True):
         return {"status": "degraded" if service.detector_error or publisher.last_error else "running",
                 "detectorError": service.detector_error,
                 "classificationProvider": service.classifier.provider,
+                "classificationTransport": getattr(service.classifier, "transport", "xai"),
+                "detectorProfile": getattr(service.detector, "profile", "default"),
+                "detectorModel": getattr(service.detector, "model_name", None),
                 "liveClassificationConfigured": bool(getattr(service.classifier, "_key", None)),
                 "delivery": {"delivered": publisher.delivered, "failed": publisher.failed,
                              "queued": publisher.queue.qsize(), "lastError": publisher.last_error}}
@@ -139,7 +142,11 @@ def create_app(settings=None, detector=None, classifier=None, run_workers=True):
     async def cameras():
         actual = {item["camera_id"]: item for item in service.frames.list_cameras()}
         return {"cameras": [{"cameraId": key, "cameraKind": kind,
-                             "active": key in actual, "stream": actual.get(key)}
+                             "active": key in actual, "stream": actual.get(key),
+                             "processed": ({"sessionId": service._processed[key][0],
+                                            "geometryVersion": service._processed[key][1],
+                                            "frameId": service._processed[key][2]}
+                                           if key in service._processed else None)}
                             for key, kind in settings.cameras.items()]}
 
     @app.post("/api/cameras/{camera_id}/frames", status_code=202)
@@ -239,6 +246,74 @@ def create_app(settings=None, detector=None, classifier=None, run_workers=True):
             raise HTTPException(429, "Confirmation capacity reached") from None
 
     detect_lock = asyncio.Lock()
+    active_assessments = 0
+
+    @app.post("/api/classify-object")
+    async def classify_object(request: Request, authorization: str | None = Header(default=None)):
+        """Stateless peer assessment, never a track update or pickup authorization."""
+        nonlocal active_assessments
+        supplied = authorization.removeprefix("Bearer ") if authorization and authorization.startswith("Bearer ") else ""
+        allowed = [t for t in (settings.peer_token, settings.token) if t]
+        if not supplied or not any(secrets.compare_digest(supplied, token) for token in allowed):
+            raise HTTPException(401, "Valid server-to-server bearer token required")
+        if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
+            raise HTTPException(415, "Use application/json")
+        if active_assessments >= 2:
+            raise HTTPException(503, "Classification capacity reached")
+        active_assessments += 1
+        try:
+            raw = bytearray()
+            try:
+                async with asyncio.timeout(5):
+                    async for chunk in request.stream():
+                        if len(raw) + len(chunk) > 8 * 1024 * 1024:
+                            raise HTTPException(413, "Assessment JSON exceeds 8 MiB")
+                        raw.extend(chunk)
+            except TimeoutError:
+                raise HTTPException(408, "Request body timeout") from None
+            import base64
+            from vision.classification import _images
+            try:
+                body = json.loads(raw)
+                if not isinstance(body, dict) or set(body) - {'cropImageBase64', 'contextImageBase64', 'requestId', 'includePickup'}:
+                    raise ValueError('Invalid fields')
+                crop_b64 = body['cropImageBase64']
+                context_b64 = body.get('contextImageBase64') or crop_b64
+                if not isinstance(crop_b64, str) or not isinstance(context_b64, str):
+                    raise ValueError('Image strings required')
+                crop = base64.b64decode(crop_b64, validate=True)
+                context = base64.b64decode(context_b64, validate=True)
+                request_id = body.get('requestId')
+                include_pickup = body.get('includePickup', False)
+                if type(include_pickup) is not bool:
+                    raise ValueError('includePickup must be boolean')
+                if request_id is not None and (not isinstance(request_id, str) or not 1 <= len(request_id) <= 128):
+                    raise ValueError('Invalid requestId')
+                await asyncio.to_thread(_images, crop, context)
+            except (ValueError, KeyError, TypeError, UnicodeError):
+                raise HTTPException(422, "Invalid JPEG/PNG images, fields or requestId") from None
+            from vision.inspect_image import inspect_image
+            if include_pickup:
+                result = await inspect_image(crop, service.classifier, context)
+            else:
+                try:
+                    classification = await service.classifier.classify(crop, context)
+                    value = {'status': 'COMPLETED', 'result': classification.model_dump(mode='json')}
+                except Exception:
+                    value = {'status': 'UNAVAILABLE', 'result': None}
+                result = {'provider': service.classifier.provider,
+                          'transport': getattr(service.classifier, 'transport', 'xai'),
+                          'model': getattr(service.classifier, '_model', None),
+                          'classification': value,
+                          'visualPickupAdvisory': {'status': 'NOT_REQUESTED', 'result': None},
+                          'pickupVerified': False, 'metricSizeKnown': False,
+                          'dispatchAuthorized': False}
+            result.update(requestId=request_id, assessmentId=secrets.token_hex(16), advisory=True)
+            success = (result['classification']['status'] == 'COMPLETED' and
+                       (not include_pickup or result['visualPickupAdvisory']['status'] == 'COMPLETED'))
+            return JSONResponse(result, status_code=200 if success else 503)
+        finally:
+            active_assessments -= 1
 
     @app.post("/api/detect-frame")
     async def detect_frame(request: Request, authorization: str | None = Header(default=None)):

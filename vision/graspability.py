@@ -22,13 +22,32 @@ MIN_GRASP_MM = 15.0
 MAX_LENGTH_MM = 300.0
 
 
+def robot_profile_from_env():
+    """Published EP Core capabilities, not a calibration of this particular unit.
+
+    https://www.dji.com/support/product/robomaster-ep-core
+    DJI gives ~100 mm grip distance, 5 N grip strength, 220/150 mm arm travel,
+    and 200-300 g lift capacity. Use the conservative end until P4 validates it.
+    """
+    opening, payload = limits_from_env()
+    return {'profileId': 'dji-ep-core-published-v1', 'robot': 'DJI RoboMaster EP Core',
+            'nominalGripperOpeningMm': opening, 'openingMarginMm': OPENING_MARGIN_MM,
+            'usableOpeningMm': max(0, opening - OPENING_MARGIN_MM), 'nominalGripForceN': 5,
+            'horizontalArmTravelMm': 220, 'verticalArmTravelMm': 150,
+            'conservativePayloadG': payload, 'unitCalibrated': False,
+            'source': 'https://www.dji.com/support/product/robomaster-ep-core',
+            'objectSizeMeasured': False, 'objectWeightMeasured': False,
+            'robotToObjectPoseKnown': False}
+
+
 @dataclass(frozen=True)
 class Graspability:
-    verdict: str  # LIKELY_GRASPABLE | TOO_LARGE | TOO_SMALL | UNKNOWN_SCALE
+    verdict: str  # SIZE_FITS | TOO_LARGE | TOO_SMALL | UNKNOWN_SCALE
     width_mm: float | None
     height_mm: float | None
     reason: str
     advisory: bool = True
+    pickup_verified: bool = False
 
 
 def scale_from_reference(real_mm: float, pixels: float) -> float:
@@ -39,8 +58,11 @@ def scale_from_reference(real_mm: float, pixels: float) -> float:
 
 
 def limits_from_env() -> tuple[float, float]:
-    return (float(os.getenv("GRIPPER_MAX_OPENING_MM", DEFAULT_MAX_OPENING_MM)),
-            float(os.getenv("GRIPPER_MAX_PAYLOAD_G", DEFAULT_MAX_PAYLOAD_G)))
+    limits = (float(os.getenv("GRIPPER_MAX_OPENING_MM", DEFAULT_MAX_OPENING_MM)),
+              float(os.getenv("GRIPPER_MAX_PAYLOAD_G", DEFAULT_MAX_PAYLOAD_G)))
+    if any(not math.isfinite(v) or v <= 0 for v in limits):
+        raise ValueError("Gripper limits must be positive, finite measurements")
+    return limits
 
 
 def estimate_graspability(bbox_px, mm_per_px: float | None,
@@ -52,7 +74,8 @@ def estimate_graspability(bbox_px, mm_per_px: float | None,
         valid = False
     if not valid:
         return Graspability("UNKNOWN_SCALE", None, None, "Invalid bounding box")
-    if mm_per_px is None or not math.isfinite(mm_per_px) or mm_per_px <= 0:
+    if (mm_per_px is None or not math.isfinite(mm_per_px) or mm_per_px <= 0 or
+            not math.isfinite(max_opening_mm) or max_opening_mm <= OPENING_MARGIN_MM):
         return Graspability("UNKNOWN_SCALE", None, None,
                             "No floor scale: set VISION_MM_PER_PX from a known reference object")
     width, height = (x2 - x1) * mm_per_px, (y2 - y1) * mm_per_px
@@ -62,5 +85,5 @@ def estimate_graspability(bbox_px, mm_per_px: float | None,
     if narrow > max_opening_mm - OPENING_MARGIN_MM or long_side > MAX_LENGTH_MM:
         return Graspability("TOO_LARGE", width, height,
                             f"{width:.0f}x{height:.0f} mm exceeds the {max_opening_mm:.0f} mm gripper opening or length limit")
-    return Graspability("LIKELY_GRASPABLE", width, height,
-                        f"{width:.0f}x{height:.0f} mm fits the gripper; depth and weight not estimated")
+    return Graspability("SIZE_FITS", width, height,
+                        f"{width:.0f}x{height:.0f} mm fits the size screen only; grip, thickness and weight are unverified")

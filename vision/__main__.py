@@ -1,5 +1,6 @@
 """Run from the repository root: python -m vision --help."""
 import argparse
+import os
 
 from vision.app import camera_token, create_app
 from vision.settings import Settings
@@ -11,8 +12,12 @@ def main():
     parser.add_argument("--port", type=int, default=8443)
     parser.add_argument("--cert")
     parser.add_argument("--key")
+    parser.add_argument("--detector-profile", choices=["default", "paper"],
+                        help="paper uses targeted text prompts and smaller floor-object proposals")
     parser.add_argument("--camera-token", metavar="CAMERA_ID", help="Print a scoped upload token for this configured camera")
     args = parser.parse_args()
+    if args.detector_profile:
+        os.environ["VISION_DETECTOR_PROFILE"] = args.detector_profile
     settings = Settings.from_env()
     if args.camera_token:
         if args.camera_token not in settings.cameras:

@@ -27,7 +27,10 @@ start.addEventListener('click', async () => {
   start.disabled = true;
   const current = ++generation;
   try {
-    const acquired = await navigator.mediaDevices.getUserMedia({video: {facingMode: {ideal: 'environment'}}, audio: false});
+    const acquired = await navigator.mediaDevices.getUserMedia({video: {
+      facingMode: {ideal: 'environment'}, width: {ideal: 1920}, height: {ideal: 1080},
+      frameRate: {ideal: 15, max: 30}
+    }, audio: false});
     if (generation !== current) { acquired.getTracks().forEach(track => track.stop()); return; }
     stream = acquired; preview.srcObject = stream;
     stream.getVideoTracks()[0].addEventListener('ended', () => { if (generation === current) halt('Camera stopped.'); });
@@ -46,10 +49,10 @@ start.addEventListener('click', async () => {
         const size = `${w}x${h}:${screen.orientation?.angle ?? window.orientation ?? 0}`;
         if (previous && previous !== size) geometry++;
         previous = size;
-        canvas.width = Math.min(960, w); canvas.height = Math.max(1, Math.round(h * canvas.width / w));
+        canvas.width = Math.min(1920, w); canvas.height = Math.max(1, Math.round(h * canvas.width / w));
         canvas.getContext('2d').drawImage(preview, 0, 0, canvas.width, canvas.height);
         const captured = Date.now() / 1000;
-        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.7));
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.9));
         if (!running || generation !== current) return;
         if (!blob) throw new Error('Unable to encode camera frame.');
         if (upload) { try { await upload; } catch (_) {} }

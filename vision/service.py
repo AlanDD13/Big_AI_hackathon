@@ -12,7 +12,7 @@ import uuid
 from PIL import Image, ImageDraw
 
 from vision.cameras import FrameStore
-from vision.classification import GrokClassifier
+from vision.classification import build_classifier_from_env
 from vision.models import Event, MappingEvidence
 from vision.perception import Tracker, YoloDetector
 from vision.settings import Settings
@@ -43,6 +43,8 @@ class ObjectState:
     classification_status: str = "PENDING"
     classification_attempt: int = -1
     classification_provider: str | None = None
+    visual_pickup: dict | None = None
+    visual_pickup_status: str = "PENDING"
     mapping: dict | None = None
     metric_anchor: tuple | None = None
     metric_start: float | None = None
@@ -64,8 +66,7 @@ class VisionService:
         self.frames = FrameStore(max_cameras=max(1, len(settings.cameras)), clock=self.now)
         self.detector = detector or YoloDetector(settings.model, settings.device)
         if classifier is None:
-            import os
-            classifier = GrokClassifier(os.getenv("XAI_API_KEY"), os.getenv("GROK_VISION_MODEL", "grok-4.7"))
+            classifier = build_classifier_from_env()
         self.classifier = classifier
         self.tracker = Tracker(stationary_seconds=settings.stationary_seconds,
                                max_gap_seconds=settings.stale_seconds)
@@ -122,6 +123,8 @@ class VisionService:
             "classificationStatus": state.classification_status,
             "classification": state.classification,
             "classificationProvider": state.classification_provider,
+            "visualPickupAdvisory": state.visual_pickup,
+            "visualPickupStatus": state.visual_pickup_status,
             "mapping": state.mapping, "potentialTarget": state.potential_target,
             "revision": state.revision, "entityVersion": max(1, state.entity_version),
             "producerBootId": self.boot_id, "eligibilityReason": state.eligibility_reason,
@@ -263,6 +266,8 @@ class VisionService:
         state.revision += 1
         state.classification = None
         state.classification_status = "PENDING"
+        state.visual_pickup = None
+        state.visual_pickup_status = "PENDING"
         state.mapping = None
         state.eligibility_reason = reason
         if alert_open:
@@ -325,11 +330,19 @@ class VisionService:
         if not state or state.revision != revision:
             return
         crop, context = self._images(frame, state.box)
-        try:
-            result = await self.classifier.classify(crop, context)
-            status = "COMPLETED"
-        except Exception:
-            result, status = None, "UNAVAILABLE"
+        async def pickup_advisory():
+            method = getattr(self.classifier, "assess_pickup", None)
+            # Keep a more salient neighbouring can out of a paper grasp check.
+            # Full context is still used by classify for living/carrying checks;
+            # pose, approach clearance and size remain independently unverified.
+            return await method(crop, crop) if method else None
+        result, advisory = await asyncio.gather(self.classifier.classify(crop, context),
+                                               pickup_advisory(), return_exceptions=True)
+        if isinstance(result, Exception):
+            result = None
+        if isinstance(advisory, Exception):
+            advisory = None
+        status = "COMPLETED" if result is not None else "UNAVAILABLE"
         state = self.objects.get(object_id)
         if (not state or state.revision != revision or state.status == "LOST" or
                 self.now() - state.last_seen > self.settings.stale_seconds):
@@ -340,6 +353,10 @@ class VisionService:
         state.classification = result.model_dump(mode="json") if result else None
         state.classification_status = status
         state.classification_provider = self.classifier.provider
+        state.visual_pickup_status = "COMPLETED" if advisory is not None else "UNAVAILABLE"
+        state.visual_pickup = ({**advisory.model_dump(mode="json"), "advisory": True,
+                                "pickupVerified": False, "sourceFrameId": frame.frame_id}
+                               if advisory is not None else None)
         state.evidence_crop = crop
         self._evaluate(state)
         self._emit_object("object.classified", state)

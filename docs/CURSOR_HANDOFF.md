@@ -1,181 +1,174 @@
 # Continue Alan's work in Cursor
 
-Saved on 2026-11-04 because Alan is approaching the Codex weekly limit.
-This document is a checkpoint, not evidence that pending integration is done.
+Updated 2026-11-04, 18:36 Europe/Rome. This replaces the earlier handoff.
+Check live Git/board state before acting; other agents are working concurrently.
 
-Open `/Users/alandd/Desktop/Pavia_grok_hackathon` in Cursor. Start a **new Agent
-chat** so project rules/skills are discovered. Paste:
+## Start here
 
-> Use /hackathon-vision. Read docs/CURSOR_HANDOFF.md, root AGENTS.md,
-> vision/AGENTS.md and vision/CHECKPOINT.md, inspect the current Git state,
-> then read the message board. Continue Alan's existing vision implementation
-> on this branch. Before creating any subagent, check the board. Use the
-> dedicated board-coordinator in a separate clone while coding continues;
-> give coding agents disjoint files. Finish the typed contracts/fixtures and
-> integration gaps listed in the handoff, run relevant tests, and commit/push
-> checkpoints to the existing draft PR. Coordinate with the four owners through
-> the board. Do not merge, edit their exclusive paths, or claim hardware/live
-> Grok validation without running it.
+Open `/Users/alandd/Desktop/Pavia_grok_hackathon` in a new Cursor Agent chat.
+Paste:
 
-## Repository and people
+> Read docs/CURSOR_HANDOFF.md, root AGENTS.md, vision/AGENTS.md and
+> docs/CONTRACTS.md. Inspect Git status and the current remote PR heads before
+> editing. Preserve all local edits and untracked files. Resume Alan's existing
+> vision work and coordinate integration within ownership rules. The vision
+> branch already received main in remote commit efc3613; do not publish the
+> redundant temporary merge described below. Board handling is delegated to
+> Grok: do not restart a watcher/coordinator. Use the existing project skills
+> when relevant. Read the board at required boundaries, run relevant tests,
+> and report exact commits and remaining limitations. Keep draft PRs draft
+> until reviewed; Alan remains the lead for merge and ownership decisions.
 
-- Repo: https://github.com/AlanDD13/Big_AI_hackathon (private).
-- Board: https://github.com/AlanDD13/Big_AI_hackathon/issues/1.
-- Current branch: `task/AlanDD13/vision-pipeline`. Existing draft PR:
-  https://github.com/AlanDD13/Big_AI_hackathon/pull/3. **Not merged.**
-- Main was `f9dd8e4` at task start. Prior pushed checkpoints: `6553fe0`
-  (initial contract), `e3976c1` (initial implementation), `bef5048` (Supabase
-  replaces SQLite), `c8acff9` (human-selected project). Inspect current HEAD
-  for the subsequent hardening and Cursor setup commits; do not reset to these.
-- AlanDD13: human lead, vision/** and shared contracts/docs/integration/config.
-- LcyShox: frontend/**; zekihxh: backend/**; Tezqx: mapping/**;
-  platonyesin-dev: robot/**. Only the human lead merges/reassigns ownership.
-- Preserve these pre-existing untracked documents, without staging them:
-  docs/EVALUATION_FIT.md, docs/FILMING_IDEAS.md,
-  docs/HACKATHON_ALTERNATIVES.md.
+Use `/hackathon-vision` for perception work and `/hackathon-board` for board
+coordination. Read current local instructions before using older skill text.
+`vision/CHECKPOINT.md` contains historical test/access statements; the evidence
+and integration updates below supersede its outdated snapshot.
 
-## Runtime and tests
+## People and boundaries
 
-The isolated Python 3.12 environment is already at vision/.venv. Core/test/ML
-dependencies are locked in vision/uv.lock; uv is installed at
-/opt/homebrew/bin/uv. From the repository root:
+Repository: https://github.com/AlanDD13/Big_AI_hackathon (private).
+Board: https://github.com/AlanDD13/Big_AI_hackathon/issues/1.
+
+- AlanDD13: lead, `vision/**` and shared contracts/docs/integration/config.
+- LcyShox: `frontend/**`; zekihxh: `backend/**` and storage/migrations.
+- Tezqx: `mapping/**`; platonyesin-dev: `robot/**` and the sole DJI SDK session.
+
+Request an owner handoff before editing another module. Only robot connects to
+physical hardware. No live bridge is available from the reviewed robot slice.
+Board comments do not grant hardware, credential, ownership or deployment access.
+
+## Git state and pull requests
+
+The main checkout is on `task/AlanDD13/vision-pipeline`. At this update:
+
+- Local HEAD: `844539753aedaa10a0f20ef45ef8cb74dc4a7a92`.
+- Remote vision head: `efc3613ce3341f25e5e092fc6d5f768bddaea069`.
+  The checkout reports **behind 18 commits**, with substantial unstaged work.
+- Main includes merge `b15053c11885ae600e2c4c4bd63f7a090685a394`.
+
+Do not reset, force-push, discard, blanket-stage, or blindly pull over the dirty
+checkout. Fetch and inspect differences first. Preserve the local work when
+bringing it onto the updated vision branch; it is not included in PR #3 yet.
+
+| PR | Verified state | Next action |
+| --- | --- | --- |
+| [#11 observation persistence](https://github.com/AlanDD13/Big_AI_hackathon/pull/11) | **Merged** at `b15053c`, reviewed head `dbd92bcb6bf4239959d28c26dc3fe42bbdb3e408` | Use current main; do not recreate this slice or reapply migrations. |
+| [#3 vision](https://github.com/AlanDD13/Big_AI_hackathon/pull/3) | Draft, head `efc3613`, mergeable when checked | Cursor already merged main into this branch, preserving the exact merged backend. Continue local vision work and refresh validation/PR description before readiness review. |
+| [#10 watchdog](https://github.com/AlanDD13/Big_AI_hackathon/pull/10) | Draft, head `4dfed46b63bbdeeb6059fd8ede782f3e4ccb3b7e`, formal **REQUEST_CHANGES** | Robot owner must address output locking, watchdog lifecycle/health and physical acceptance. |
+| [#12 dashboard](https://github.com/AlanDD13/Big_AI_hackathon/pull/12) | New draft, head `2aa3a5779ea2770f69ce61972fa9ff9bacc9399f` | Awaiting review; frontend owner reports 17 tests, build and local API/browser QA passing. Not independently reviewed here. |
+
+## Uncommitted work to preserve
+
+The local changes include Grok 4.7 via OpenRouter, separate visual pickup advice,
+a paper detector profile/model preparation, image inspection, viewer size
+calibration/overlays, camera-page changes, tests, additive draft contract fields,
+and the updated Grok board-delegation instructions. Inspect the actual diff;
+this is not a complete implementation audit.
+
+Key untracked implementation files include `vision/PAPER_TEST.md`,
+`vision/inspect_image.py`, `vision/prepare_paper_model.py`, and
+`vision/tests/test_inspect_image.py`, `test_openrouter_classification.py`,
+`test_paper_profile.py` (the latter two are also under `vision/tests/`).
+Preserve untracked `.agents/` and the pre-existing research notes
+`docs/EVALUATION_FIT.md`, `docs/FILMING_IDEAS.md`,
+`docs/HACKATHON_ALTERNATIVES.md`; do not add them incidentally to a vision commit.
+
+`vision/PAPER_TEST.md` reports two real Grok 4.7/OpenRouter calls on a tiny paper
+crop, with classification and separate shape advice. Those calls were not rerun
+for this handoff. The same report says detector proposal recall remains
+unverified: neither prompt-free nor paper-prompted inference reliably detected
+that crop. Test a full-resolution frame/recording with the whole object visible.
+
+The selected local transport is documented as `GROK_VISION_PROVIDER=openrouter`,
+`OPENROUTER_VISION_MODEL=x-ai/grok-4.7`. Keys stay in ignored environment files;
+never print or commit them. `vision.inspect_image` performs two billed calls per
+execution. Restart running services/viewers after source changes; they do not
+reload automatically. Do not assume any existing process is using this code.
+
+Size-fit and visual pickup advice do not establish jaw fit, payload, reach or
+successful pickup. Preserve stationarity, calibrated metric quality,
+living/carried exclusions, evidence-epoch checks and stale-result revocation.
+Backend/frontend must explicitly adopt additive advisory fields before live use.
+
+## Merge review evidence and temporary worktrees
+
+PR #11's original head lost `capturedAt` and specific invalid reasons during
+restart recovery; exact retries then returned 409. The owner fixed this in
+`dbd92bc` using full wire evidence, source metadata and replay aliases in existing
+JSONB. Independent recording-row probes confirmed both cases now retry with
+200 and that a storage failure returns generic 503 without advancing state.
+Independent backend validation: **23 passed, 11 database tests skipped**;
+compilation and diff checks passed. The owner reports all 34 tests and four SQL
+smoke tests passing on disposable PostgreSQL 18 (board comment `6637304076`).
+No shared database or robot was accessed by this merge-review session.
+
+PR #10: **34 offline tests passed**, but a recording-callback probe confirmed
+`stop()` remains blocked for over 400 ms while a nonzero output callback holds
+the controller lock. The review also requires exception-safe fallback/shutdown
+and observable watchdog health. Physical explicit-stop feedback disagreement
+remains unresolved; keep UNKNOWN fail-closed and do not relax thresholds.
+Formal review: https://github.com/AlanDD13/Big_AI_hackathon/pull/10#pullrequestreview-5772755102.
+
+Temporary review state, not the main working checkout:
+
+- `/private/tmp/pavia-merge-review-20261104`: isolated clone at `dbd92bc`,
+  origin/main fetched through `b15053c`; `reproduce_restart.py` is an untracked
+  offline review probe. Backend files match merged main.
+- `/private/tmp/pavia-vision-merge-review-20261104`: detached at `8445397`,
+  **merge still pending**, MERGE_HEAD=`b15053c`; nine staged backend files retain
+  exact main versions. No merge commit or push was made from this worktree.
+  Combined suite there: **151 passed, 11 skipped, 48 subtests passed**.
+  Cursor separately published the equivalent merge as `efc3613` while this chat
+  was interrupted. **Do not commit/push the obsolete temporary merge.**
+- `/private/tmp/pavia-watchdog-review-20261104`: detached `4dfed46`, offline
+  watchdog probe only. `/private/tmp/pavia-merge-review-venv` holds the pinned
+  backend test dependencies. Temporary directories may disappear.
+
+## Current integration requests
+
+- Backend persistence/session/snapshot/SSE is on main. Restart changes
+  backendBootId and invalidates in-memory cursors; clients take a new snapshot.
+  `dispatchEligible` remains false; mission dispatch is still library-only.
+- zekihxh started `task/zekihxh/mission-http` from `b15053c`, preparing storage
+  while the public wire awaits Alan's decision. Board request `6637338132`
+  asks for canonical POST /api/missions request/response, replay status, error
+  codes and queued-mission snapshot/SSE semantics. Frontend reply `6637374618`
+  requests full `mission.updated` bodies. No canonical decision was made here.
+- Frontend #12 has isolated Demo/Connected modes and read-only objects/alerts.
+  Its optional loopback Vite helper keeps the operator token server-side.
+  Mission/manual writes remain unavailable; team URL/token require local setup.
+- Tezqx requested an uncalibrated 4x4 demo grid over 2x2 metres, 0.5 m cells
+  (board `6637306081`, branch reported as `task/Tezqx/half-metre-grid`). A1 is
+  bottom-left; pixel (855,423) at 1920x1080 maps to C2. Verify its published
+  branch before using it. Demo labels are not MappingEvidence and must never
+  pass metric stationarity/dispatch gates. No vision change was made for it here.
+- Manual chassis contract is still on draft #3. Robot #10 is an internal core,
+  not a running HTTP service; do not call or advertise port 8004 as live.
+- Supabase project is `buojgmoumyzqxmerckjm`; `rover_backend` isolation and
+  migrations 001–007 are reported applied. Preserve unrelated `public` data.
+  Follow current `docs/CONTRACTS.md`; project selection/MCP config is not access.
+  Use a disposable DB for tests, never the shared Supabase database.
+
+## Coordination and checks
+
+Alan delegated board handling to Grok and stopped the lightweight coordinator.
+Do not restart one automatically. Keep one reader per checkout and still perform
+the required boundary reads; do not run a competing watcher or reset cursors.
+No agent, watcher, OAuth session or running service transfers with this file.
+
+From the main checkout, use the existing Python 3.12 environment:
+
+At this update, the **current dirty local vision suite passed 138 tests** using
+the first command below. This does not validate the uncommitted changes against
+the updated backend. No paid model calls were made by this test run.
 
 ```bash
 vision/.venv/bin/python -m pytest -q vision/tests
-python3 -m unittest discover -s tests -v
+# After integrating current main, run the combined suite:
+env -u BACKEND_TEST_DATABASE_URL -u BACKEND_DATABASE_URL vision/.venv/bin/python -m pytest -q
 git diff --check
 ```
 
-At the handoff, the vision suite passes **76 tests** and the board suite passes
-**12 tests**. No paid Grok API call was made.
-
-Recreate the environment if necessary with:
-`uv sync --project vision --extra test --extra ml`. This Mac used a writable
-cache at /private/tmp/pavia-uv-cache and managed Python at /private/tmp/pavia-python
-when sandbox defaults prevented installation. Do not assume those tmp paths
-persist on a different machine.
-
-YOLOE actually loaded and ran once on MPS using a synthetic white 640x480 image.
-Weights are ignored at vision/.local/yoloe-26s-seg-pf.pt (38.1 MB). Initial
-download/load/warm-up took about 16.7 seconds. This proves runtime loading,
-not accuracy or multi-camera throughput. Set VISION_MODEL to that path when
-running from repo root. No physical Mac/iPhone/rover camera has been verified.
-
-VISION_TOKEN is required (>=16 unpredictable characters). Outbound URLs now
-require PEER_TOKEN, distinct from VISION_TOKEN. See vision/settings.py for
-VISION_CAMERAS, VISION_LOCAL_SOURCES, MAPPING_URL, BACKEND_URL,
-ROVER_BRIDGE_URL, ROVER_CAMERA_ID, VISION_MODEL and VISION_DEVICE.
-Grok uses XAI_API_KEY and GROK_VISION_MODEL (default grok-4.7); absent key means
-UNAVAILABLE. No runtime secrets are supplied by this handoff.
-
-## Implemented vision checkpoint
-
-- Authenticated raw-JPEG ingest, fixed/rover camera registration, exact frame
-  retention, phone camera page, Mac/OpenCV and robot HTTP camera adapters.
-- Latest-frame bounded queue, YOLOE wrapper, conservative per-camera IoU
-  tracking, immediate object/detection events and pixel living/overlap exclusions.
-- Grok Responses API image classification and rover match confirmation with
-  structured outputs, explicit fixture provider, bounded concurrency/deadlines
-  and response validation. Provider metadata and confidence remain separate
-  from detector scores. Fixture outputs do not count as live evidence.
-- Metric evidence uses >=5 seconds AND >=10 observations, newest age/gap<=1 s,
-  each uncertainty<=0.025 m and <=0.05 m from the fixed first episode anchor.
-  Moving/stale/lost/changed-epoch evidence revokes eligibility; people/animals/
-  carried/uncertain subjects remain excluded even when still.
-- Newer unprocessed frames now suppress eligibility without resetting normal
-  metric/classification evidence; fresh older-in-flight inference may finish,
-  preventing inference starvation under faster ingress. Same-observation mapping
-  retries are bounded/idempotent; conflicting/revoked-epoch results are rejected.
-- Complete object publications now add producerBootId, entityVersion and
-  eligibilityReason. revision is the evidence epoch, not the UI update counter.
-  Target-revoked/removal payloads include complete state and reason; revoked
-  includes HOLD_BEFORE_PICKUP. These additions still need typed shared schemas.
-- Diagnostic REST/SSE, bounded request/upload/subscriber admission, atomic
-  snapshot cut, separate peer credential, streamed peer response disposal and
-  sticky delivery-gap health. Delivery remains bounded retry, not durable storage.
-
-## Next work, in order
-
-1. Owners review the canonical draft on this branch. It is not merged.
-2. Typed object/alert/snapshot schemas, recovery fixtures, mapping invalid
-   reasons, and ASCII ID rejection are recorded. Same-revision frame-pending
-   suppression does not emit a second target alert; a real loss still revokes.
-3. Backend implements `contracts/backend-stream-v1.md` (cookie session, opaque
-   cursor, `snapshot_required` with no id). Robot implements simulator slice 1
-   from `contracts/robot-simulator-v1.md` only. Manual control stays future.
-4. Supabase inventory is blocked until Alan completes OAuth for the read-only
-   `supabase-hackathon` MCP. `zekihxh` still owns migrations and must not apply
-   them before that inventory. No `vision/cctv_monitor.py`; phone capture stays
-   on the authenticated vision path.
-5. TLS phone setup, real cameras, live Grok, recorded clips, and peer
-   integration remain unverified. Do not treat fixture tests as that evidence.
-6. Update the draft PR and board with exact commit/checks; only Alan merges.
-
-## Latest coordination decisions and open requests
-
-The last dedicated Codex board agent used a separate clone at
-/private/tmp/pavia-vision-board-coordination. **It and the coding subagents
-have stopped.** A new Cursor parent may reuse that clone only after checking
-its state; otherwise create a separate clone with a separate board cursor.
-No watcher automatically transfers between chats. The main checkout still
-must run tools/board unread at commit/task boundaries.
-
-Supabase: Alan explicitly selected existing **AlanDD13's Project**, ref
-`buojgmoumyzqxmerckjm`, eu-west-1. Backend owns schema/migrations and must
-inventory/preserve unrelated existing data. The request is on the board;
-zekihxh acknowledged it. Backend's local private Postgres schema smoke test
-passed, but no shared database changes or access grants are verified.
-The latest request (#6633477304) asks for individual read-only catalog access
-OR a schema/table-only inventory, then a migration owner and separate scoped
-runtime identity. Frontend/mapping/robot use backend APIs and do not need
-admin keys or direct DB access. Agents do not share Alan's credentials.
-
-.cursor/mcp.json provides project-scoped **read-only** Supabase MCP. Sign in
-with your own account in Cursor Settings > Tools & MCP. OAuth is pending;
-the config is not proof of access. After connecting, use read-only catalog
-metadata to answer backend's inventory request. Backend still handles rollout.
-
-Frontend (#6633501068) and backend (#6633540811) accept evidence revision plus
-entityVersion/producerBootId, with backend-owned revisions/cursor. They require
-fixtures for same-epoch updates, revocation, new-boot reset, delayed old-boot
-delivery, sequence gaps and complete scoped resnapshot. Alert retries must
-retain event IDs; a new producer boot must not restore dispatchability.
-
-Mapping (#6633509247) reviewed e3976c1 and confirmed receivedAt/invalidReason,
-metric units and stationary gate. Remaining mismatches are listed above.
-Its P5-to-P3 body should match MappingEvidence; not yet on main.
-
-Backend/frontend propose same-origin authenticated snapshot/SSE with an opaque
-durable cursor. Initial after query; Last-Event-ID takes precedence on reconnect;
-durable SSE id; snapshot_required control event without id on unavailable replay.
-Session/auth mechanism remains a lead/owner decision. Vision's diagnostic stream
-is non-durable and uses snapshot/resync_required; do not confuse the two streams.
-
-Robot (#6633484321) and backend agree the simulator can serialize hold/stop vs
-pickup authorization, binding command/mission/object/evidence revision/
-confirmation/expiry. Hold winning prevents PICKING; duplicate authorization
-does not act twice; explicit stop has priority; lost acknowledgements require
-status reconciliation and retain the rover slot. Endpoint/persistence/deadline/
-rearm/camera decisions and fixtures still require shared contracts. Simulator
-agreement is not physical hardware validation.
-
-Last board read also found frontend's human-requested manual-control simulator
-draft (#6633587801), acknowledged by robot/backend (#6633595738/#6633600156).
-It includes per-rover joystick/keyboard and overhead click-to-move. This is future
-contract work: exclusive expiring control leases, sequenced velocity intents,
-blur/input-loss release, bridge watchdog/stop priority and no concurrent manual
-and autonomous motion. Overhead pixels must pass mapping calibration and route
-validation. Hardware/capability support, units, deadlines and endpoints remain
-unagreed; this request does not authorize adding live controls to vision.
-
-## Primary sources already consulted
-
-- https://docs.x.ai/developers/model-capabilities/images/understanding
-- https://docs.x.ai/developers/model-capabilities/text/structured-outputs
-- https://docs.x.ai/developers/rest-api-reference/inference/responses
-- https://docs.ultralytics.com/models/yoloe/
-- https://pavia.grokbot.it/ and https://pavia.grokbot.it/tracks
-
-Grok must be substantive. Earlier research recorded demo/jury deadline Nov 5,
-16:00 Europe/Rome, measurable baseline/data/limitations in README. Recheck live
-event rules before final submission; custom rover acceptance is unconfirmed.
+Do not attribute the temporary combined-suite result to the current dirty local
+code. Hardware, real camera throughput and physical pickup require separate
+acceptance evidence. No deployment was performed during merge management.

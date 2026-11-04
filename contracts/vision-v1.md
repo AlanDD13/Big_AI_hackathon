@@ -189,6 +189,22 @@ description, reason. Provider is grok or fixture. Fixture evidence is visibly
 labelled and is not live model evidence. Only completed inanimate, not-carried,
 medium/high-confidence trash/potentially-lost classifications pass semantics.
 
+Optional additive fields on complete objects: `visualPickupStatus` uses the same
+PENDING/COMPLETED/UNAVAILABLE states; `visualPickupAdvisory` is null or contains
+`object_form` (FLAT_SHEET/CRUMPLED/OTHER/UNCERTAIN), `visual_suitability`
+(POSSIBLE/UNSUITABLE/UNCERTAIN), `reason`, `sourceFrameId`, `advisory:true`,
+and `pickupVerified:false`. This is a separate Grok visual assessment, bound to
+the referenced evidence epoch and cleared when that evidence is invalidated.
+It estimates visible shape only; it does not measure physical dimensions,
+weight, reach, force, grasp success or dispatchability. It never opens a mission
+gate. Absent fields in older snapshots mean no assessment, never "graspable".
+Backend/frontend owners must explicitly adopt these fields before live ingestion.
+
+Grok transport can be direct xAI or OpenRouter. Both retain
+classificationProvider:grok; `/health` reports classificationTransport separately.
+OpenRouter uses `OPENROUTER_API_KEY`, `GROK_VISION_PROVIDER=openrouter` and
+`OPENROUTER_VISION_MODEL=x-ai/grok-4.7`; no fallback to another model family.
+
 Object states: OBSERVING, STATIC_PENDING_REVIEW, POTENTIAL_TARGET, EXCLUDED, LOST.
 `alert.potential_target` fires once on an eligibility transition; movement/loss/
 staleness emits `alert.target_revoked`. A later valid episode may alert again.

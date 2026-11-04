@@ -25,7 +25,10 @@ runtime login and never reaches browser or peer modules.
 Frontend, mapping, and robot use backend APIs and get no database role and no
 service key. Never put credentials in Git, board comments, or frontend code.
 The vision producer's versioned interface is specified in
-[`contracts/vision-v1.md`](../contracts/vision-v1.md). Backend durable
+[`contracts/vision-v1.md`](../contracts/vision-v1.md). Stateless peer
+classification for mapping is in
+[`contracts/vision-peer-classification-v1.md`](../contracts/vision-peer-classification-v1.md).
+Backend durable
 snapshot/SSE/session rules are in
 [`contracts/backend-stream-v1.md`](../contracts/backend-stream-v1.md).
 Robot simulator slice 1 is in

@@ -64,7 +64,9 @@ def get_default_detector(
     """Return a cached cross-platform YoloDetector (CUDA on Windows/Linux GPU, MPS on Mac, or CPU)."""
     resolved_model = resolve_local_model_path(model or os.getenv("VISION_MODEL", DEFAULT_YOLO_MODEL))
     resolved_device = resolve_device(device or os.getenv("VISION_DEVICE", "auto"))
-    key = (resolved_model, resolved_device, float(confidence))
+    key = (resolved_model, resolved_device, float(confidence),
+           os.getenv("VISION_DETECTOR_PROFILE", "default"),
+           os.getenv("VISION_DETECTION_CLASSES", ""), os.getenv("VISION_IMAGE_SIZE", ""))
     if key not in _DETECTOR_CACHE:
         _DETECTOR_CACHE[key] = YoloDetector(
             model=resolved_model,
@@ -79,6 +81,7 @@ def detect_frame_remote(
     remote_url: str,
     token: str,
     timeout: float = 10.0,
+    ca_cert: str | None = None,
 ) -> list[Detection]:
     """Send a JPEG frame to Alan's Mac vision server (/api/detect-frame) for MPS GPU YOLOE inference."""
     if not jpeg_bytes:
@@ -88,6 +91,9 @@ def detect_frame_remote(
     if not token or len(token.strip()) < 16:
         raise ValueError("Valid VISION_TOKEN or PEER_TOKEN (>=16 chars) is required for remote detection")
     import httpx
+    import ssl
+    cert = ca_cert or os.getenv('VISION_CA_CERT')
+    verify = ssl.create_default_context(cafile=cert) if cert else True
     endpoint = f"{remote_url.rstrip('/')}/api/detect-frame"
     response = httpx.post(
         endpoint,
@@ -97,6 +103,7 @@ def detect_frame_remote(
             "Content-Type": "image/jpeg",
         },
         timeout=timeout,
+        verify=verify,
     )
     response.raise_for_status()
     payload = response.json()
@@ -146,6 +153,34 @@ def detect_frame_objects(
     active_detector = detector or get_default_detector()
     detections = active_detector.detect(jpeg_bytes)
     return [d for d in detections if not _living(d.label)]
+
+
+def classify_object_remote(crop, context=None, remote_url=None, token=None, ca_cert=None):
+    """Grok assessment for a selected object. Cache per object, not every frame."""
+    import httpx
+    import ssl
+    target = (remote_url or os.getenv('VISION_REMOTE_URL', '')).rstrip('/')
+    secret = token or os.getenv('PEER_TOKEN', '')
+    if not target or not secret:
+        raise ValueError('Set VISION_REMOTE_URL and PEER_TOKEN for classification')
+    body = {'cropImageBase64': encode_frame_to_base64(crop)}
+    if context is not None:
+        body['contextImageBase64'] = encode_frame_to_base64(context)
+    cert = ca_cert or os.getenv('VISION_CA_CERT')
+    verify = ssl.create_default_context(cafile=cert) if cert else True
+    with httpx.Client(verify=verify, timeout=35, follow_redirects=False) as client:
+        with client.stream('POST', target + '/api/classify-object', json=body,
+                           headers={'Authorization': 'Bearer ' + secret}) as response:
+            response.raise_for_status()
+            data = bytearray()
+            for chunk in response.iter_bytes():
+                if len(data) + len(chunk) > 128 * 1024:
+                    raise ValueError('Oversized assessment response')
+                data.extend(chunk)
+    result = json.loads(data)
+    if not isinstance(result, dict) or result.get('dispatchAuthorized') is not False:
+        raise ValueError('Invalid assessment envelope')
+    return result
 
 
 def _is_valid_frame(frame: Any) -> bool:

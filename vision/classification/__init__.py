@@ -4,9 +4,11 @@ import asyncio
 import base64
 import io
 import json
+import os
+from collections.abc import Mapping
 import warnings
 from enum import Enum
-from typing import Any
+from typing import Any, Annotated, Literal
 
 import httpx
 from PIL import Image, UnidentifiedImageError
@@ -60,6 +62,53 @@ class ConfirmationResult(BaseModel):
     state: ConfirmationState
     candidate_track_id: str | None
     reason: str = Field(min_length=1, max_length=500)
+
+
+class ObjectForm(str, Enum):
+    FLAT_SHEET = 'FLAT_SHEET'
+    CRUMPLED = 'CRUMPLED'
+    OTHER = 'OTHER'
+    UNCERTAIN = 'UNCERTAIN'
+
+
+class VisualSuitability(str, Enum):
+    POSSIBLE = 'POSSIBLE'
+    UNSUITABLE = 'UNSUITABLE'
+    UNCERTAIN = 'UNCERTAIN'
+
+
+class VisualPickupResult(BaseModel):
+    """Robot-specific best-effort estimate; never physical grasp authorization."""
+    model_config = ConfigDict(extra='forbid')
+    object_form: ObjectForm
+    visual_suitability: VisualSuitability
+    reason: str = Field(min_length=1, max_length=500)
+    robot_grasp_estimate: Literal['LIKELY', 'UNLIKELY', 'UNKNOWN'] = 'UNKNOWN'
+    estimate_confidence: Confidence = Confidence.LOW
+    assumptions: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(default_factory=list, max_length=5)
+    required_checks: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(default_factory=list, max_length=5)
+
+
+class ObjectAssessment(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    classification: ClassificationResult
+    pickup: VisualPickupResult
+
+
+def _strict_schema(result_type):
+    schema = result_type.model_json_schema()
+    # Strict providers require every property, even values with Python defaults.
+    def require_properties(node):
+        if isinstance(node, dict):
+            if node.get('type') == 'object' and 'properties' in node:
+                node['required'] = list(node['properties'])
+            for value in node.values():
+                require_properties(value)
+        elif isinstance(node, list):
+            for value in node:
+                require_properties(value)
+    require_properties(schema)
+    return schema
 
 
 class ClassificationUnavailable(Exception):
@@ -135,6 +184,7 @@ def _check_confirmation(result: ConfirmationResult, candidates: list[dict]) -> C
 
 class GrokClassifier:
     provider = 'grok'
+    transport = 'xai'
 
     def __init__(self, api_key: str | None = None, model: str = 'grok-4.7',
                  base_url: str = 'https://api.x.ai/v1', timeout: float = 20,
@@ -153,8 +203,71 @@ class GrokClassifier:
             raise ClassificationUnavailable('Classification unavailable')
         images = _images(crop, context)
         instruction = ('First image is the subject crop; second is its surrounding context. '
-                       'Classify the crop conservatively, including whether it is being carried.')
+                       'Classify the crop conservatively, including whether it is being carried. '
+                       'Describe visible material, shape and condition (for example, crumpled '
+                       'versus flat paper). Do not assert physical scale, dimensions or weight '
+                       'from appearance alone. Use UNCERTAIN when the visual evidence is ambiguous.')
         return await self._request(instruction, images, ClassificationResult)
+
+    async def assess_pickup(self, crop: bytes, context: bytes) -> VisualPickupResult:
+        if not self._key:
+            raise ClassificationUnavailable('Classification unavailable')
+        images = _images(crop, context)
+        from vision.graspability import robot_profile_from_env
+        instruction = (
+            'First image is the subject crop; second is its surrounding context. '
+            'Assess ONLY the subject in the FIRST image, never a different larger object '
+            'visible in context. Context may repeat the crop; then approach clearance is unknown. '
+            'Provide a visual-only pickup advisory, separate from classification and motion decisions. '
+            'Describe the visible form as FLAT_SHEET, CRUMPLED, OTHER or UNCERTAIN. '
+            'POSSIBLE means only that visible shape suggests a possible grasp surface; '
+            'it is never confirmation that pickup will work. Flat sheets flush with the floor '
+            'may be visually UNSUITABLE for a simple gripper. Use UNCERTAIN when ambiguous. '
+            'People, animals and carried objects are UNSUITABLE. '
+            'Also give a best-effort robot_grasp_estimate LIKELY, UNLIKELY or UNKNOWN '
+            'using the supplied robot limits. LIKELY/UNLIKELY is an estimate, never authorization. '
+            'Use typical object knowledge when reasonable, but state every material assumption '
+            '(for example empty beverage can, approximate size, raised grasp surface). '
+            'Compare against usable jaw opening, conservative payload, grip and arm constraints. '
+            'Flat paper flush to the floor is generally unsuitable for a simple parallel gripper; '
+            'crumpled lightweight paper may offer a grasp surface. A can with unknown contents '
+            'needs an empty/weight check. Do not claim dimensions or weight are measured from '
+            'an uncalibrated photo, and arm travel does not prove current reachability. '
+            'Return estimate_confidence, assumptions and required_checks. Use UNKNOWN for '
+            'ambiguous/borderline cases. Keep required checks explicit for a conditional LIKELY. '
+            'Actual pickup requires independent physical and robot validation. '
+            'Robot parameters (trusted configuration): ' + json.dumps(robot_profile_from_env())
+        )
+        return await self._request(instruction, images, VisualPickupResult)
+
+    async def assess_object(self, crop: bytes, context: bytes) -> ObjectAssessment:
+        """One request binds identity and robot-specific estimate to one target."""
+        if not self._key:
+            raise ClassificationUnavailable('Classification unavailable')
+        from vision.graspability import robot_profile_from_env
+        instruction = (
+            'FIRST image is the only target crop; SECOND image is context, possibly with '
+            'other objects. Both classification and pickup MUST describe the SAME FIRST '
+            'image target. Never assess a larger neighbouring can instead of small paper. '
+            'Classify material/form (including crumpled versus flat paper), living subject '
+            'and carrying conservatively. Do not infer ownership. In pickup describe '
+            'object_form and visible suitability, then estimate whether this specific '
+            'EP Core could grasp it: LIKELY, UNLIKELY or UNKNOWN, with confidence, explicit '
+            'assumptions and required_checks. Compare usable jaw opening, conservative '
+            'payload, grip force and arm constraints from the trusted robot configuration. '
+            'Use typical object knowledge only as an explicit assumption, never a measured '
+            'dimension or weight. Crumpled loose lightweight paper may be LIKELY; a flat '
+            'sheet flush to the floor is generally UNLIKELY for this gripper. A can may '
+            'be too heavy if full: require an empty/weight check. People, animals and '
+            'carried objects are UNSUITABLE and UNLIKELY. Ambiguous or borderline cases '
+            'are UNKNOWN. Arm travel does not prove current reachability. There is no '
+            'measured object size/weight or robot pose here. These are estimates only, '
+            'never pickup authorization or verified success. Keep descriptions under 20 words, '
+            'each reason under 25 words, and at most 3 assumptions/checks of 12 words each. '
+            'Robot parameters: '
+            + json.dumps(robot_profile_from_env())
+        )
+        return await self._request(instruction, _images(crop, context), ObjectAssessment)
 
     async def confirm(self, reference: bytes, context: bytes, candidates: list[dict]) -> ConfirmationResult:
         if not self._key:
@@ -173,17 +286,8 @@ class GrokClassifier:
                 'input': [{'role': 'system', 'content': [{'type': 'input_text', 'text': _SYSTEM}]},
                           {'role': 'user', 'content': [{'type': 'input_text', 'text': instruction}, *images]}],
                 'text': {'format': {'type': 'json_schema', 'name': result_type.__name__,
-                                    'schema': result_type.model_json_schema(), 'strict': True}}}
-        try:
-            async with asyncio.timeout(self._timeout):
-                async with self._semaphore:
-                    if self._client is None:
-                        async with httpx.AsyncClient(follow_redirects=False) as client:
-                            raw = await self._read_response(client, body)
-                    else:
-                        raw = await self._read_response(self._client, body)
-        except (TimeoutError, httpx.HTTPError):
-            raise ClassificationUnavailable('Classification unavailable') from None
+                                    'schema': _strict_schema(result_type), 'strict': True}}}
+        raw = await self._send(body)
         try:
             payload = json.loads(raw)
             if not isinstance(payload, dict) or payload.get('status') != 'completed' or payload.get('error'):
@@ -211,6 +315,18 @@ class GrokClassifier:
         except (ValueError, TypeError, KeyError, AttributeError, RecursionError, ValidationError):
             raise ClassificationInvalidResponse('Invalid classification response') from None
 
+    async def _send(self, body: dict) -> bytes:
+        try:
+            async with asyncio.timeout(self._timeout):
+                async with self._semaphore:
+                    if self._client is None:
+                        async with httpx.AsyncClient(follow_redirects=False) as client:
+                            return await self._read_response(client, body)
+                    else:
+                        return await self._read_response(self._client, body)
+        except (TimeoutError, httpx.HTTPError):
+            raise ClassificationUnavailable('Classification unavailable') from None
+
     async def _read_response(self, client: httpx.AsyncClient, body: dict) -> bytes:
         # Stream the response: an upstream error must not allocate an unbounded body.
         limit = 1024 * 1024
@@ -233,10 +349,96 @@ class GrokClassifier:
             return bytes(content)
 
 
+class OpenRouterGrokClassifier(GrokClassifier):
+    """Grok vision over OpenRouter, sharing xAI's input and transport bounds."""
+    transport = 'openrouter'
+
+    def __init__(self, api_key: str | None = None, model: str = 'x-ai/grok-4.7',
+                 base_url: str = 'https://openrouter.ai/api/v1', timeout: float = 30,
+                 client: httpx.AsyncClient | None = None):
+        if not isinstance(model, str) or not model.startswith('x-ai/grok-') or any(c.isspace() for c in model):
+            raise ValueError('OpenRouter vision requires an explicit Grok model')
+        super().__init__(api_key, model, base_url, timeout, client)
+        self._timeout = min(timeout, 30)
+        self._url = base_url.rstrip('/') + '/chat/completions'
+
+    async def _request(self, instruction: str, images: list[dict], result_type: type[BaseModel]):
+        # Chat image parts and strict JSON schema follow OpenRouter's API reference:
+        # https://openrouter.ai/docs/api/api-reference/chat/create-a-chat-completion
+        # https://openrouter.ai/docs/guides/features/structured-outputs
+        body = {
+            'model': self._model, 'max_tokens': 1200, 'stream': False,
+            'provider': {'require_parameters': True},
+            # Grok 4.7 requires reasoning; exclude its internal text from output.
+            'reasoning': {'effort': 'low', 'exclude': True},
+            'messages': [
+                {'role': 'system', 'content': _SYSTEM},
+                {'role': 'user', 'content': [
+                    {'type': 'text', 'text': instruction},
+                    *[{'type': 'image_url', 'image_url': {'url': image['image_url']}}
+                      for image in images],
+                ]},
+            ],
+            'response_format': {'type': 'json_schema', 'json_schema': {
+                'name': result_type.__name__, 'strict': True,
+                'schema': _strict_schema(result_type),
+            }},
+        }
+        raw = await self._send(body)
+        try:
+            payload = json.loads(raw)
+            if not isinstance(payload, dict):
+                raise ClassificationInvalidResponse('Invalid classification response')
+            if payload.get('error'):
+                raise ClassificationUnavailable('Classification unavailable')
+            # A returned non-Grok model must never masquerade as Grok evidence.
+            model = payload.get('model')
+            if model is not None and (not isinstance(model, str) or not model.startswith('x-ai/grok-')):
+                raise ClassificationInvalidResponse('Invalid classification response')
+            choices = payload.get('choices')
+            if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
+                raise ClassificationInvalidResponse('Invalid classification response')
+            choice = choices[0]
+            if choice.get('error') or choice.get('finish_reason') != 'stop':
+                raise ClassificationUnavailable('Classification unavailable')
+            message = choice.get('message')
+            if not isinstance(message, dict) or message.get('role') != 'assistant':
+                raise ClassificationInvalidResponse('Invalid classification response')
+            if message.get('refusal'):
+                raise ClassificationUnavailable('Classification unavailable')
+            if message.get('tool_calls') or message.get('function_call'):
+                raise ClassificationInvalidResponse('Invalid classification response')
+            content = message.get('content')
+            if not isinstance(content, str):
+                raise ClassificationInvalidResponse('Invalid classification response')
+            return result_type.model_validate_json(content)
+        except (ClassificationUnavailable, ClassificationInvalidResponse):
+            raise
+        except (ValueError, TypeError, KeyError, AttributeError, RecursionError, ValidationError):
+            raise ClassificationInvalidResponse('Invalid classification response') from None
+
+
+def build_classifier_from_env(env: Mapping[str, str] | None = None) -> GrokClassifier:
+    """Select a transport without borrowing unrelated application model settings."""
+    values = os.environ if env is None else env
+    selected = values.get('GROK_VISION_PROVIDER', '').strip().lower()
+    if not selected:
+        selected = 'xai' if values.get('XAI_API_KEY') or not values.get('OPENROUTER_API_KEY') else 'openrouter'
+    if selected == 'openrouter':
+        legacy_model = values.get('GROK_VISION_MODEL', '')
+        model = values.get('OPENROUTER_VISION_MODEL') or (
+            legacy_model if legacy_model.startswith('x-ai/grok-') else 'x-ai/grok-4.7')
+        return OpenRouterGrokClassifier(values.get('OPENROUTER_API_KEY'), model)
+    if selected == 'xai':
+        return GrokClassifier(values.get('XAI_API_KEY'), values.get('GROK_VISION_MODEL') or 'grok-4.7')
+    raise ValueError('GROK_VISION_PROVIDER must be xai or openrouter')
+
+
 
 class FixtureClassifier:
     """An explicit deterministic test/demo provider; never a live observation."""
     provider = 'fixture'
+    transport = 'fixture'
 
     def __init__(self, classification: ClassificationResult | None = None,
                  confirmation: ConfirmationResult | None = None):
@@ -258,3 +460,7 @@ class FixtureClassifier:
     async def confirm(self, reference: bytes, context: bytes, candidates: list[dict]) -> ConfirmationResult:
         _images(reference, context)
         return _check_confirmation(self._confirmation, _candidates(candidates))
+
+
+    async def assess_pickup(self, crop: bytes, context: bytes) -> VisualPickupResult:
+        raise ClassificationUnavailable('Classification unavailable')

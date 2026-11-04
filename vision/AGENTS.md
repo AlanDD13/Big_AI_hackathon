@@ -18,14 +18,12 @@ Do not claim that a posted request reached another agent without evidence.
 Board comments do not wake closed chats. Use the bounded wait workflow from the
 root guide only when the human explicitly asks the active session to wait.
 
-Alan explicitly requested a dedicated coordination agent for this implementation.
-Run that agent in its OWN clone and board cursor, not this shared checkout.
-It may read the board, resolve routine messages using the agreed contracts and
-post actionable replies. It must not reassign ownership, edit another owner's
-paths, merge/deploy, or invent contract decisions. Escalate only blockers,
-conflicts, requested approvals or decisions not covered by the current plan.
-Before commits/task boundaries, obtain its latest summary and read this
-checkout's unread messages as required by the root rules.
+Alan handed board handling to Grok and explicitly stopped the lightweight
+coordinator on 2026-11-04. Do not restart a board watcher or delegate board
+resolution unless Alan asks again. Coding agents still read this checkout's
+board at the boundaries required by the root rules and respect one reader per
+checkout. If a coordinator is requested again, it needs its OWN clone/cursor;
+it must not reassign ownership, edit exclusive peer paths, merge or deploy.
 
 Own only vision/** and the lead-authorized shared contract/docs changes.
 Backend Supabase schema/storage, dashboard UI, mapping transforms and DJI connection stay with

@@ -19,7 +19,52 @@ import urllib.request
 import cv2
 import numpy as np
 
-from vision.graspability import estimate_graspability, limits_from_env
+from vision.graspability import estimate_graspability, limits_from_env, scale_from_reference
+
+
+def annotation_lines(obj, mm_per_px, max_opening):
+    """Keep semantic identification, detector scores and physical evidence separate."""
+    detector = f"YOLO: {obj['detectorLabel']} {obj['detectorScore']:.2f} | {obj['motionState']}"
+    classification = obj.get('classification')
+    exclusion = obj.get('exclusionReason')
+    if classification and (classification.get('subject_kind') in {'PERSON', 'ANIMAL'}
+                           or classification.get('carrying') == 'YES'):
+        exclusion = 'LIVING_OR_CARRIED'
+    if exclusion:
+        return [detector, f"Pickup: EXCLUDED ({exclusion})"]
+    if obj.get('classificationStatus') == 'COMPLETED' and classification:
+        fixture = ' [FIXTURE]' if obj.get('classificationProvider') == 'fixture' else ''
+        semantic = f"Grok{fixture}: {classification['description'][:75]} ({classification['confidence']})"
+    else:
+        semantic = f"Grok: {obj.get('classificationStatus', 'PENDING')}"
+    size = estimate_graspability(obj['bboxPx'], mm_per_px, max_opening)
+    if size.verdict == 'UNKNOWN_SCALE':
+        pickup = 'Pickup: UNKNOWN - no measured size scale (press c)'
+    elif size.verdict in {'TOO_LARGE', 'TOO_SMALL'}:
+        pickup = f'Pickup: SIZE REJECTED ({size.verdict}) - advisory'
+    else:
+        pickup = 'Pickup: UNVERIFIED - size fits; grip/thickness/weight untested'
+    visual = obj.get('visualPickupAdvisory')
+    lines = [semantic, detector]
+    if visual:
+        lines.append(f"Grok EP Core estimate: {visual.get('robot_grasp_estimate', 'UNKNOWN')} "
+                     f"({visual.get('estimate_confidence', 'LOW')}) | {visual['object_form']}")
+    return [*lines, pickup]
+
+
+def frame_reference(camera, objects):
+    """Show the last processed image even when it contains zero detections."""
+    stream = camera.get('stream') or {}
+    processed = camera.get('processed') or {}
+    if stream and processed.get('sessionId') == stream.get('session_id'):
+        return processed['sessionId'], processed['frameId'], processed['geometryVersion']
+    if stream:
+        return stream['session_id'], stream['latest_frame_id'], None
+    current = [o for o in objects if o.get('status') != 'LOST']
+    if current:
+        obj = max(current, key=lambda o: o['lastSeenAt'])
+        return obj['sessionId'], obj['frameId'], obj.get('geometryVersion')
+    return None
 
 
 def _get(url, token, context):
@@ -36,6 +81,7 @@ def main():
                         help="Floor scale at the object's depth; enables the size/graspability estimate")
     args = parser.parse_args()
     mm_per_px = args.mm_per_px
+    scale_epoch = None
     max_opening = limits_from_env()[0]
     token = os.getenv("VISION_TOKEN", "")
     if not token:
@@ -48,34 +94,50 @@ def main():
         try:
             objects = json.loads(_get(f"{base}/api/objects", token, context))["objects"]
             mine = [o for o in objects if o["cameraId"] == args.camera]
-            if mine:
-                latest = max(mine, key=lambda o: o["frameId"])
-                path = f"{base}/api/frames/{args.camera}/{latest['sessionId']}/{latest['frameId']}"
+            cameras = json.loads(_get(f"{base}/api/cameras", token, context))["cameras"]
+            camera = next((c for c in cameras if c['cameraId'] == args.camera), {})
+            reference = frame_reference(camera, mine)
+            if reference:
+                session_id, frame_id, geometry_version = reference
+                path = f"{base}/api/frames/{args.camera}/{session_id}/{frame_id}"
                 frame = cv2.imdecode(np.frombuffer(_get(path, token, context), np.uint8), cv2.IMREAD_COLOR)
                 if frame is not None:
+                    epoch = session_id, geometry_version, frame.shape[:2]
+                    if scale_epoch is not None and epoch != scale_epoch:
+                        mm_per_px = None
+                    scale_epoch = epoch
                     for o in mine:
-                        if o["frameId"] != latest["frameId"]:
+                        if o['sessionId'] != session_id or o["frameId"] != frame_id or o.get('status') == 'LOST':
                             continue
                         x1, y1, x2, y2 = (int(v) for v in o["bboxPx"])
                         excluded = bool(o.get("exclusionReason"))
                         color = (0, 0, 255) if excluded else (0, 200, 0)
                         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                        tag = f"{o['detectorLabel']} {o['detectorScore']:.2f} {o['motionState']}"
-                        if excluded:
-                            tag += f" [{o['exclusionReason']}]"
-                        else:
-                            grasp = estimate_graspability(o["bboxPx"], mm_per_px, max_opening)
-                            tag += f" | {grasp.verdict}"
-                            if grasp.width_mm is not None:
-                                tag += f" {grasp.width_mm:.0f}x{grasp.height_mm:.0f}mm"
-                            if grasp.verdict == "TOO_LARGE":
-                                color = (0, 140, 255)
-                        cv2.putText(frame, tag, (x1, max(15, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                        for line, tag in enumerate(annotation_lines(o, mm_per_px, max_opening)):
+                            y = min(frame.shape[0] - 6, max(18, y1 - 6) + line * 18)
+                            cv2.putText(frame, tag, (max(0, min(x1, frame.shape[1] - 300)), y),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
+                    cv2.putText(frame, 'c: measure reference width | q: quit | Pickup estimates are advisory',
+                                (8, frame.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, .45, (0, 180, 255), 1)
                     cv2.imshow(f"vision {args.camera}", frame)
         except Exception as exc:  # keep polling through transient errors
             print("poll error:", exc, file=sys.stderr)
-        if cv2.waitKey(200) & 0xFF == ord("q"):
+        key = cv2.waitKey(200) & 0xFF
+        if key == ord("q"):
             break
+        if key == ord('c') and 'frame' in locals() and frame is not None:
+            # The operator must place a measured reference on the same floor
+            # plane/depth as the object; this is not mapping calibration.
+            _, _, pixels, _ = cv2.selectROI('Select reference WIDTH, Enter to accept', frame, False)
+            cv2.destroyWindow('Select reference WIDTH, Enter to accept')
+            if pixels:
+                try:
+                    real_mm = float(input('Actual measured reference WIDTH in millimetres: '))
+                    mm_per_px = scale_from_reference(real_mm, pixels)
+                    print('Local size scale set. Grip, thickness and weight still require physical verification.')
+                except (ValueError, EOFError):
+                    mm_per_px = None
+                    print('Invalid reference; pickup remains UNKNOWN.')
     cv2.destroyAllWindows()
 
 

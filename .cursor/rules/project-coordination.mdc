@@ -10,7 +10,8 @@ merge PRs or take another teammate's paths.
 At task start read docs/CONTRACTS.md and run tools/board unread; on first joining
 also run tools/board read -n 50. Read the board before creating a subagent,
 before commits, after merges and at task boundaries. One reader per checkout.
-Use a separate clone for the dedicated board-coordinator subagent. Coding
+Board handling is currently delegated to Grok by Alan. Do not automatically
+launch the board-coordinator; if requested again, use its own clone. Coding
 subagents receive relevant board messages from their parent and own disjoint
 files. Board posts use the actual human's name and exact GitHub mentions.
 

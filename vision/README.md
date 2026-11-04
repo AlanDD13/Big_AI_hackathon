@@ -33,7 +33,7 @@ vision/.venv/bin/python -m vision --host 127.0.0.1 --port 8443
 Set VISION_MODEL to the local checkpoint path if it is already downloaded.
 The first inference may download weights; warm up before measuring performance.
 Grok uses XAI_API_KEY and optional GROK_VISION_MODEL (default grok-4.7). Without
-an API key classification is UNAVAILABLE, never simulated as a live result.
+an xAI or OpenRouter API key classification is UNAVAILABLE, never simulated as a live result.
 
 The /camera page is an operational camera-source page, not the main dashboard.
 For independent phones, use LAN HTTPS with --cert and --key; plain LAN HTTP is
@@ -52,3 +52,6 @@ an outbound peer or rover bridge requires PEER_TOKEN distinct from VISION_TOKEN.
 
 Cursor continuation: [handoff](../docs/CURSOR_HANDOFF.md) and
 [project skills/rules](../.cursor/README.md).
+
+Paper detection, Grok 4.7 over OpenRouter, live test results and the viewer's
+size calibration/pickup advisory are documented in [PAPER_TEST.md](PAPER_TEST.md).

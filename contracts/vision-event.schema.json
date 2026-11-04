@@ -98,6 +98,24 @@
         "classificationStatus": {"enum": ["PENDING", "COMPLETED", "UNAVAILABLE"]},
         "classification": {"anyOf": [{"$ref": "#/$defs/Classification"}, {"type": "null"}]},
         "classificationProvider": {"anyOf": [{"enum": ["grok", "fixture"]}, {"type": "null"}]},
+        "visualPickupStatus": {"enum": ["PENDING", "COMPLETED", "UNAVAILABLE"]},
+        "visualPickupAdvisory": {
+          "anyOf": [{"type": "null"}, {
+            "type": "object", "additionalProperties": false,
+            "required": ["object_form", "visual_suitability", "reason", "advisory", "pickupVerified", "sourceFrameId"],
+            "properties": {
+              "object_form": {"enum": ["FLAT_SHEET", "CRUMPLED", "OTHER", "UNCERTAIN"]},
+              "visual_suitability": {"enum": ["POSSIBLE", "UNSUITABLE", "UNCERTAIN"]},
+              "robot_grasp_estimate": {"enum": ["LIKELY", "UNLIKELY", "UNKNOWN"]},
+              "estimate_confidence": {"enum": ["LOW", "MEDIUM", "HIGH"]},
+              "assumptions": {"type": "array", "maxItems": 5, "items": {"type": "string", "minLength": 1, "maxLength": 200}},
+              "required_checks": {"type": "array", "maxItems": 5, "items": {"type": "string", "minLength": 1, "maxLength": 200}},
+              "reason": {"type": "string", "minLength": 1, "maxLength": 500},
+              "advisory": {"const": true}, "pickupVerified": {"const": false},
+              "sourceFrameId": {"type": "integer", "minimum": 0}
+            }
+          }]
+        },
         "mapping": {"anyOf": [{"$ref": "#/$defs/Mapping"}, {"type": "null"}]},
         "potentialTarget": {"type": "boolean"},
         "revision": {"type": "integer", "minimum": 0},
