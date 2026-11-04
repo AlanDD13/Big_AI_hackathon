@@ -1,0 +1,77 @@
+{
+  "description": "Draft P3 consumer fixtures for review. SSE cursor values are opaque examples.",
+  "mappingEvidence": {
+    "cameraId": "phone-1",
+    "sessionId": "session1",
+    "geometryVersion": "geometry1",
+    "frameId": 10,
+    "trackId": "example-track",
+    "capturedAt": 1793797200.5,
+    "mapId": "demo-floor",
+    "mapVersion": "1",
+    "calibrationId": "cal1",
+    "calibrationValid": true,
+    "floorPointM": [
+      0.2,
+      0.3
+    ],
+    "positionErrorM": 0.01,
+    "valid": true,
+    "receivedAt": 1793797200.5,
+    "invalidReason": null
+  },
+  "snapshot": {
+    "cursor": "stream-a-10",
+    "objects": [
+      {
+        "objectId": "demo-object",
+        "revision": 1,
+        "state": "OBSERVING",
+        "floorPointM": null,
+        "classificationStatus": "PENDING",
+        "potentialTarget": false,
+        "dispatchEligible": false,
+        "eligibilityReason": "pending_evidence"
+      }
+    ]
+  },
+  "replay": [
+    {
+      "id": "stream-a-11",
+      "event": "object.updated",
+      "data": {
+        "objectId": "demo-object",
+        "revision": 2,
+        "state": "POTENTIAL_TARGET",
+        "floorPointM": [
+          0.2,
+          0.3
+        ],
+        "classificationStatus": "COMPLETED",
+        "potentialTarget": true,
+        "dispatchEligible": false,
+        "eligibilityReason": "pickup_profile_pending"
+      }
+    },
+    {
+      "id": "stream-a-12",
+      "event": "object.updated",
+      "data": {
+        "objectId": "demo-object",
+        "revision": 3,
+        "state": "OBSERVING",
+        "floorPointM": null,
+        "classificationStatus": "COMPLETED",
+        "potentialTarget": false,
+        "dispatchEligible": false,
+        "eligibilityReason": "stale_observation"
+      }
+    }
+  ],
+  "expiredCursor": {
+    "event": "snapshot_required",
+    "data": {
+      "reason": "replay_unavailable"
+    }
+  }
+}
