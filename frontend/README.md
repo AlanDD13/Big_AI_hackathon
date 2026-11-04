@@ -29,6 +29,8 @@ moves a robot.
 Connected → Objects & alerts → Review vision fixtures previews observations,
 classification and visual pickup advice. It is explicitly labelled test data;
 see [VISION_REVIEW.md](VISION_REVIEW.md).
+Full-stack test results and the disposable integration runner are documented in
+[FULL_STACK_VALIDATION.md](FULL_STACK_VALIDATION.md).
 
 Requires Node.js 24+ and npm. From `frontend/`:
 
