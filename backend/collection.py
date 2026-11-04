@@ -35,6 +35,7 @@ class Route:
 class Admission:
     outcome: str
     mission_id: str | None = None
+    mission_state: str | None = None
 
 
 class CollectionStore(Protocol):
