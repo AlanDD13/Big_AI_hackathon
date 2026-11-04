@@ -30,6 +30,19 @@ The vision producer's versioned interface is specified in
 [`contracts/vision-v1.md`](../contracts/vision-v1.md). Stateless peer
 classification for mapping is in
 [`contracts/vision-peer-classification-v1.md`](../contracts/vision-peer-classification-v1.md).
+Camera test control (draft on PR #20): `GET/PUT /api/cameras/{cameraId}/grok`
+accepts that camera's scoped upload bearer or the vision master bearer, never
+another camera's scoped token or PEER_TOKEN. PUT requires exactly
+`{"enabled": true}` or `{"enabled": false}` (strict boolean); both return
+`{"cameraId":"phone-2","enabled":false,"includePickup":true,"pickupVerified":false}`
+with the actual camera ID and state. Errors: 401 invalid bearer, 404 unconfigured
+camera, 422 invalid body. ON runs existing stationary-track classification plus
+pickup advice; OFF prevents new automatic calls and cancels that camera's
+pending automatic tasks. Already-sent provider requests may be billed. Cached
+completed assessments remain; explicit stateless peer calls are independent.
+Overrides are in-memory and restart from VISION_AUTOMATIC_CLASSIFICATION.
+This control does not authorize movement or pickup. Health exposes per-camera
+automaticClassificationByCamera and aggregate automaticClassificationEnabled.
 Backend durable
 snapshot/SSE/session rules are in
 [`contracts/backend-stream-v1.md`](../contracts/backend-stream-v1.md).

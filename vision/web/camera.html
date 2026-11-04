@@ -15,6 +15,10 @@ select { width: 290px; }
 button { padding: 5px 16px; }
 #camera-details { font-weight: 600; }
 #status, .hint { font-size: 13px; }
+.grok-control { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+.grok-control label { flex-direction: row; align-items: center; font-size: 16px; font-weight: 600; }
+#grok-toggle { width: 26px; height: 26px; min-height: 26px; }
+#grok-status { font-size: 13px; }
 .preview-frame { flex: 1 1 0; min-height: 100px; display: flex; overflow: hidden; background: #101418; border-radius: 8px; }
 #preview { display: block; width: 100%; height: 100%; min-height: 0; object-fit: contain; }
 </style></head>
@@ -24,6 +28,10 @@ button { padding: 5px 16px; }
 <label>Access token <input id="token" type="password" autocomplete="off"></label>
 <label>Lens <select id="lens"><option value="">Auto — prefer 0.5× ultra-wide</option></select></label>
 <button id="start" type="button">Start</button><button id="stop" type="button" disabled>Stop</button>
+</div>
+<div class="grok-control">
+<label><input id="grok-toggle" type="checkbox" role="switch" disabled aria-describedby="grok-status">Grok identification + pickup estimate</label>
+<p id="grok-status" role="status">Start the camera to connect the switch. Pickup is an estimate, not a verified grab.</p>
 </div>
 <p id="camera-details" role="status">Lens not started. Auto prefers a rear ultra-wide lens when available.</p>
 <p id="status" role="status">Stopped</p>
