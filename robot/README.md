@@ -148,3 +148,32 @@ Measured on physical unit `3JKCK7W0030DJS` (firmware `01.01.1150`, STA/UDP):
 - `720p` (`1280x720`): `30.9 FPS` sustained capture (`95` frames in `3.0 s`),
   `0.53–0.68 ms` HTTP poll latency, `24.6 ms` frame age, `slot_0` forward TOF
   reading `2294–2305 mm`.
+
+## Command tracking and backend bridge (step 7)
+
+`robot/bridge.py` implements the closed P4 tool surface (`contracts/robot-simulator-v1.md`,
+`contracts/fixtures/robot-simulator.json`, `contracts/manual-control-v1.md`, and
+`contracts/fixtures/manual-control.json`) guarded by `SafetyController` and `Watchdog`:
+
+- Mission command routes (`Authorization: Bearer <PEER_TOKEN>`):
+  - `POST /commands/pickup`, `POST /commands/{commandId}/hold`,
+    `POST /commands/{commandId}/stop`, `POST /commands/{commandId}/rearm`,
+    `GET /commands/{commandId}`, `POST /stop`
+  - Tracks `bridgeBootId` (`404 UNKNOWN_COMMAND` after bridge restart without
+    re-creating or repeating prior commands) and idempotent `statusRevision`.
+- Manual control routes (`MANUAL_CHASSIS_SLICE_1`):
+  - `POST /manual/lease`, `POST /manual/drive`, `POST /manual/release`,
+    `POST /manual/rearm`, `GET /manual/status`
+  - Enforces mutual exclusion between autonomous commands (`409 AUTONOMOUS_ACTIVE`)
+    and manual leases (`409 MANUAL_LEASE_ACTIVE`), `<= 0.5 s` telemetry freshness
+    (`503 TELEMETRY_STALE` in `UNKNOWN`), `409 STOP_LOCKED` in latched `STOPPED`,
+    `409 NOT_STOPPED` on `rearm` until 3 stationary samples spanning `>= 200 ms`,
+    and body-frame velocity caps (`0.35 m/s`, `0.35 m/s`, `45 deg/s` -> `422 VALIDATION_ERROR`).
+
+```bash
+# Run all 50 offline unit tests (safety, telemetry, camera, bridge):
+robot/.venv/bin/python -m unittest discover -s robot/tests -v
+
+# Start simulator bridge (no hardware actuation):
+PEER_TOKEN=your_peer_token robot/.venv/bin/python robot/bridge.py --mode simulator --port 8004
+```
