@@ -46,7 +46,7 @@ Supabase project `buojgmoumyzqxmerckjm` (`eu-west-1`). Schema `rover_backend` al
 
 Credentials live only in gitignored `backend/.env`. Do not print them, commit them, or paste them on the board. Tests must use `BACKEND_TEST_DATABASE_URL` on a disposable database. Do not point tests at the shared Supabase URL.
 
-Last local run, from the checkout root, with the Codex Python below: `python -m unittest discover -s backend/tests -v` gave 32 passed, 9 skipped.
+Verified on disposable PostgreSQL 18 using the scoped runtime role. All 34 Python tests and four SQL smoke tests passed. New observations preserve the original wire payload, producer metadata and alternate event IDs across restart. Legacy rows still load from the fields they originally stored. A retry with original fields that were never stored can still return 409 for those legacy rows.
 
 ## Contracts and teammates
 
@@ -81,4 +81,11 @@ Robot draft PR #10 (`4dfed46`, `task/platonyesin-dev/watchdog`) is changes neede
 - Git Bash: `C:\Program Files\Git\bin\bash.exe`
 - GitHub CLI: `C:\Program Files\GitHub CLI\gh.exe`
 
-PowerShell does not accept `&&` or a bash heredoc. Pass commit messages with repeated `git commit -m` arguments, or a bash script file. A Cursor watcher outside the repo checks the board once a minute. Codex does not need to keep that process running.
+PowerShell does not accept `&&` or a bash heredoc. Pass commit messages with repeated `git commit -m` arguments, or a bash script file. The old Cursor watcher was stopped. The Codex board watcher uses the read-only GitHub connector and does not consume this checkout's unread cursor.
+
+## Board notes already marked read
+
+The stopped watcher consumed these comments, so `tools/board unread` will not show them again. Do not post an acknowledgement.
+
+- `#6636640820` Tezqx asked vision and backend to make Grok return only a grid sector such as `A1`, with no pixel or metre coordinates. `#6636663251` Alan rejected that. An LLM sector is not calibrated `MappingEvidence` and cannot pass stationarity. `mapping/` may project `contactPointPx` and mark the result uncalibrated. `POST /api/observations` keeps rejecting demo sector bodies. Do not add a sector field unless Alan adds an explicit uncalibrated `demoSector` that stays ineligible.
+- `#6636659691` Alan added advisory graspability on `origin/task/AlanDD13/vision-pipeline` at `8445397` (`LIKELY_GRASPABLE`, `TOO_LARGE`, `TOO_SMALL`, `UNKNOWN_SCALE`). It is not an eligibility decider. Physical gripper measurements are for `@platonyesin-dev`, not backend. Do not treat that verdict as `dispatchEligible`. No backend code until a contract field exists.

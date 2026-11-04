@@ -35,6 +35,62 @@ class PostgresEvidenceTests(unittest.TestCase):
         with self.database() as connection:
             return self.store.load(connection, object_id)
 
+    def test_http_restart_replays_wire_payload_and_retains_event_alias(self):
+        from fastapi.testclient import TestClient
+
+        from backend.app import create_app
+        from backend.postgres_projection import PostgresObservationLog
+
+        def client():
+            return TestClient(create_app(
+                operator_token="operator-test-token", peer_token="mapping-test-token",
+                cookie_secure=False, now=lambda: 101.0,
+                observation_log=PostgresObservationLog(self.database),
+            ))
+
+        body = {
+            "cameraId": self.context.camera_id, "sessionId": "session", "trackId": "track",
+            "geometryVersion": "geometry", "frameId": 1, "mapId": "map",
+            "mapVersion": "v1", "calibrationId": "cal", "calibrationValid": True,
+            "capturedAt": 99.0, "receivedAt": 100.0, "valid": False, "invalidReason": "stale",
+        }
+        headers = {
+            "Authorization": "Bearer mapping-test-token", "X-Vision-Event-Id": self.producer,
+            "X-Producer-Boot-Id": "producer-boot", "X-Entity-Version": "2", "X-Vision-Revision": "3",
+        }
+        alias_headers = {**headers, "X-Vision-Event-Id": f"{self.producer}-alias"}
+        with client() as before:
+            self.assertEqual(before.post("/api/observations", json=body, headers=headers).status_code, 200)
+            self.assertTrue(before.post("/api/observations", json=body, headers=alias_headers).json()["replayed"])
+        with client() as after:
+            self.assertEqual(after.post("/api/session", json={"token": "operator-test-token"}).status_code, 204)
+            projected = next(
+                item for item in after.get("/api/snapshot").json()["objects"]
+                if item["cameraId"] == self.context.camera_id
+            )
+            self.assertEqual(projected["capturedAt"], 99.0)
+            self.assertEqual(projected["mapping"]["invalidReason"], "stale")
+            self.assertEqual(projected["producerBootId"], "producer-boot")
+            self.assertEqual(projected["entityVersion"], 2)
+            self.assertEqual(projected["revision"], 3)
+            self.assertTrue(after.post("/api/observations", json=body, headers=headers).json()["replayed"])
+            conflicting = {**body, "frameId": 2, "receivedAt": 101.0}
+            self.assertEqual(
+                after.post("/api/observations", json=conflicting, headers=alias_headers).status_code, 409,
+            )
+
+    def test_projection_loads_legacy_mapping_observation(self):
+        from backend.postgres_projection import PostgresObservationLog
+
+        self.store.record_observation("mapping", self.producer, self.sample, frame_id=1)
+        body, source = next(
+            (body, source) for body, source in PostgresObservationLog(self.database).load()
+            if body["cameraId"] == self.context.camera_id
+        )
+        self.assertEqual(body["receivedAt"], self.sample.received_at)
+        self.assertEqual(body["capturedAt"], self.sample.received_at)
+        self.assertEqual(source, {"vision_event_id": self.producer})
+
     def test_canonical_identity_and_exact_event_retry(self):
         first = self.store.record_observation(self.producer, "event-1", self.sample, frame_id=1)
         self.assertEqual(str(UUID(first)), first)

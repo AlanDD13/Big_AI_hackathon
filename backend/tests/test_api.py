@@ -269,8 +269,8 @@ class RecordingLog:
     def __init__(self):
         self.saved = []
 
-    def save(self, evidence, event_id):
-        self.saved.append((evidence["frameId"], event_id))
+    def save(self, evidence, **source):
+        self.saved.append((evidence["frameId"], source["vision_event_id"]))
 
     def load(self):
         return []

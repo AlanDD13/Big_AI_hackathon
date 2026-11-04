@@ -13,6 +13,7 @@ import secrets
 from typing import Mapping
 
 from fastapi import FastAPI, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from backend.evidence import EvidenceConflict, InvalidEvidence, parse_evidence
@@ -58,8 +59,8 @@ def create_app(
     if state is None:
         state = BackendState(boot_id=boot_id, now=now, observation_log=observation_log)
         if observation_log is not None:
-            for evidence_body, event_id in observation_log.load():
-                state.record_observation(evidence_body, vision_event_id=event_id, persist=False)
+            for evidence_body, source in observation_log.load():
+                state.record_observation(evidence_body, persist=False, **source)
     app.state.backend = state
 
     def cookie_session(request: Request) -> str | None:
@@ -158,7 +159,8 @@ def create_app(
             return _error(400, "INVALID_BODY", "Observation body must be JSON")
         try:
             evidence_body = parse_evidence(payload)
-            result = app.state.backend.record_observation(
+            result = await run_in_threadpool(
+                app.state.backend.record_observation,
                 evidence_body,
                 vision_event_id=_optional_header(request.headers, "x-vision-event-id"),
                 producer_boot_id=_optional_header(request.headers, "x-producer-boot-id"),

@@ -15,7 +15,7 @@ from typing import Mapping
 from uuid import uuid4
 
 from backend.evidence import EvidenceConflict, object_id_for, sample_for
-from backend.postgres_projection import StorageUnavailable, event_id_for
+from backend.postgres_projection import ObservationSource
 from backend.stationarity import MetricSample, evaluate_stationarity
 
 
@@ -112,6 +112,12 @@ class BackendState:
             int(evidence["frameId"]),
         )
         track_key = frame_key[:4]
+        source: ObservationSource = {
+            "vision_event_id": vision_event_id,
+            "producer_boot_id": producer_boot_id,
+            "entity_version": entity_version,
+            "vision_revision": vision_revision,
+        }
         with self._lock:
             if vision_event_id is not None:
                 previous = self._vision_events.get(vision_event_id)
@@ -121,32 +127,32 @@ class BackendState:
                     return RecordResult(object_id, int(self._objects[object_id]["backendRevision"]), True)
 
             stored = self._frames.get(frame_key)
-            if stored is not None:
-                if stored != canonical:
-                    raise EvidenceConflict("Frame was reused with different evidence")
-                if vision_event_id is not None:
-                    self._vision_events[vision_event_id] = canonical
-                return RecordResult(object_id, int(self._objects[object_id]["backendRevision"]), True)
+            if stored is not None and stored != canonical:
+                raise EvidenceConflict("Frame was reused with different evidence")
 
-            latest = self._latest_frame.get(track_key)
-            if latest is not None and int(evidence["frameId"]) < latest:
-                raise EvidenceConflict("Frame is older than stored evidence for this track")
-
-            samples = self._samples.setdefault(object_id, [])
+            samples = self._samples.get(object_id)
             sample = sample_for(evidence)
-            if samples and sample.received_at < samples[-1].received_at:
-                raise EvidenceConflict("Observation receipt time is older than stored evidence")
-            if persist and self._observation_log is not None:
+            if stored is None:
+                latest = self._latest_frame.get(track_key)
+                if latest is not None and int(evidence["frameId"]) < latest:
+                    raise EvidenceConflict("Frame is older than stored evidence for this track")
+                if samples and sample.received_at < samples[-1].received_at:
+                    raise EvidenceConflict("Observation receipt time is older than stored evidence")
+            if persist and self._observation_log is not None and (stored is None or vision_event_id is not None):
                 try:
-                    self._observation_log.save(evidence, event_id_for(evidence, vision_event_id))
+                    self._observation_log.save(evidence, **source)
                 except ValueError as exc:
                     raise EvidenceConflict(str(exc)) from exc
-            samples.append(sample)
+
+            if vision_event_id is not None:
+                self._vision_events[vision_event_id] = canonical
+            if stored is not None:
+                return RecordResult(object_id, int(self._objects[object_id]["backendRevision"]), True)
+
+            self._samples.setdefault(object_id, []).append(sample)
             self._frames[frame_key] = canonical
             self._latest_frame[track_key] = int(evidence["frameId"])
             self._evidence[object_id] = dict(evidence)
-            if vision_event_id is not None:
-                self._vision_events[vision_event_id] = canonical
             self._publish_object_unlocked(
                 object_id,
                 vision_event_id=vision_event_id,
