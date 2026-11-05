@@ -7,7 +7,7 @@ Do not start a new feature. Mission HTTP, vision ingest, vision persistence, the
 Leave these branches alone unless a review comment asks for a backend change. If it does, commit on that same branch. Do not open a second pull request for the same fix.
 
 - PR #33 (`task/zekihxh/demo-sector`, `2040e8d`): display-only `demoSector`. Not an observation. `dispatchEligible` stays false.
-- PR #36 (`task/zekihxh/manual-gate-latency`, `88cb374`): per-drive exclusion check on one reused connection, and `409 INTENT_EXPIRED` when the tick dies during that check. The lease stays. The sequence cannot be replayed.
+- PR #36 (`task/zekihxh/manual-gate-latency`, `374b229`): per-drive exclusion check on one reused connection, and `409 INTENT_EXPIRED` when the tick dies during that check. The lease stays. The sequence cannot be replayed.
 - PR #35 (`task/zekihxh/board-tests`, `18fccd2`): Windows `tests/test_board.py` only.
 - PR #34 is Alan's 100 ms clock allowance. Do not edit `backend/manual_requests.py` or `robot/safety.py`.
 
