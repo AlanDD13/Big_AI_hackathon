@@ -1,20 +1,27 @@
-"""Turn a burst of sector labels into one rover waypoint.
+"""Turn a camera point or a burst of sector labels into one demo waypoint.
 
 Sector names are a row letter plus a column number, such as ``B2`` or ``A-1``.
-Each cell is 1 metre square. The returned point is the cell centre in metres
-from the map origin: column 1 is x = 0.5, row A is y = 0.5.
+The demo room is four columns by four rows of 0.5 metre cells covering the
+whole camera frame, 2.0 m by 2.0 m. Column 1 is the left strip. Row A is the
+top strip and row D is the bottom strip. The origin is the bottom centre of
+that frame, the rover home: B2 is (-0.25, 1.25).
 
-These metres are a local demo grid. Replace them when the measured floor map
-is agreed. An unknown sector or a burst with no strict majority fails instead
-of inventing a point.
+``pixel_to_sector`` only splits the frame into those equal cells. It does not
+measure the floor. These metres are an image-proportion estimate until a
+measured map is agreed. An unknown sector, a point outside the frame, or a
+burst with no strict majority fails instead of inventing a point.
 
-A camera burst is accepted only as already-labelled sector names. Contact
-pixels are not floor metres, and this result is not calibrated MappingEvidence.
+A camera burst is accepted only as already-labelled sector names. This result
+is not calibrated MappingEvidence.
 """
 
 from __future__ import annotations
 
-CELL_METRES = 1.0
+CELL_METRES = 0.5
+GRID_COLUMNS = 4
+GRID_ROWS = 4
+# Row A is the top strip of the image and row D is the bottom strip.
+GRID_CONVENTION = "ROW_A_TOP"
 
 
 def _canonical(sector_name: str) -> str:
@@ -124,11 +131,58 @@ def waypoint_from_burst(payload: dict) -> dict[str, object]:
 
 
 def sector_to_coordinates(sector_name: str) -> tuple[float, float]:
-    """Return the sector centre as ``(x, y)`` metres."""
+    """Return the estimated 0.5 m sector centre as ``(x, y)`` metres.
+
+    ``x`` is metres right of the frame's horizontal centre. ``y`` is metres
+    forward from the bottom edge, where the rover home sits. Row A is the far
+    strip at the top of the image. A sector outside the 4 by 4 demo room fails
+    instead of returning a point past the room.
+    """
     canonical = _canonical(sector_name)
-    column = int(canonical[1:]) - 1
-    row = ord(canonical[0]) - ord("A")
-    if row < 0:
-        raise ValueError(f"unrecognised sector: {sector_name!r}")
-    centre = 0.5 * CELL_METRES
-    return (column * CELL_METRES + centre, row * CELL_METRES + centre)
+    column = int(canonical[1:])
+    row_from_top = ord(canonical[0]) - ord("A")
+    if row_from_top < 0 or row_from_top >= GRID_ROWS or column > GRID_COLUMNS:
+        raise ValueError(f"sector outside the demo room: {canonical}")
+    centre = CELL_METRES / 2
+    room_width = GRID_COLUMNS * CELL_METRES
+    x = (column - 1) * CELL_METRES + centre - room_width / 2
+    row_from_bottom = GRID_ROWS - 1 - row_from_top
+    y = row_from_bottom * CELL_METRES + centre
+    point = (x, y)
+    if point == (0.0, 0.0):
+        raise ValueError("refusing (0, 0) waypoint")
+    return point
+
+
+def pixel_to_sector(cx: float, cy: float, img_width: int, img_height: int) -> str:
+    """Return the 0.5 m demo sector that contains a pixel point.
+
+    The frame is split into ``GRID_COLUMNS`` equal vertical strips and
+    ``GRID_ROWS`` equal horizontal strips. Left is column 1. Image y grows
+    downward, so the top strip is row A. A point on or outside the far edge
+    fails. The label is an uncalibrated demo sector, not a floor measurement.
+    """
+    if isinstance(cx, bool) or not isinstance(cx, (int, float)):
+        raise ValueError("cx must be a number")
+    if isinstance(cy, bool) or not isinstance(cy, (int, float)):
+        raise ValueError("cy must be a number")
+    if type(img_width) is not int or img_width < 1:
+        raise ValueError("img_width must be a positive integer")
+    if type(img_height) is not int or img_height < 1:
+        raise ValueError("img_height must be a positive integer")
+    if cx < 0 or cy < 0 or cx >= img_width or cy >= img_height:
+        raise ValueError("pixel is outside the frame")
+
+    column = _image_band(float(cx), img_width, GRID_COLUMNS) + 1
+    row_from_top = _image_band(float(cy), img_height, GRID_ROWS)
+    return f"{chr(ord('A') + row_from_top)}{column}"
+
+
+def _image_band(position: float, size: int, count: int) -> int:
+    """Return the 0-based strip index. The far edge is outside the frame."""
+    if position < 0 or position >= size:
+        raise ValueError("pixel is outside the frame")
+    index = int(position * count / size)
+    if index < 0 or index >= count:
+        raise ValueError("pixel is outside the frame")
+    return index

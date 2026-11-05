@@ -35,6 +35,32 @@ The first inference may download weights; warm up before measuring performance.
 Grok uses XAI_API_KEY and optional GROK_VISION_MODEL (default grok-4.7). Without
 an xAI or OpenRouter API key classification is UNAVAILABLE, never simulated as a live result.
 
+For identification testing, set `VISION_AUTOMATIC_CLASSIFICATION=false` before
+starting the server. Frames and local detection/tracking continue, but stationary
+objects trigger no automatic Grok calls or pickup assessments. Use an explicit
+`POST /api/classify-object` with `includePickup:false` for one identification call
+per requested test; do not poll or automatically retry this billed endpoint.
+`GET /health` reports `automaticClassificationEnabled` and the pending automatic
+task count. The default remains `true` for the normal pipeline. This flag does
+not disable explicit peer classification/confirmation requests.
+
+The `/camera` page has a **Grok identification + pickup estimate** switch.
+After Start, it reads the server-confirmed state for that camera. ON enables
+the existing stationary-object assessment (two provider calls per new eligible
+episode); OFF prevents new automatic calls and cancels pending automatic tasks
+for that camera. Requests already received by the provider may still be billed.
+Completed assessments are reused for the same episode. Explicit stateless peer
+requests are independent of this switch. Runtime overrides reset to the environment
+default when the service restarts. Pickup estimates never verify a physical grab.
+
+Both the iPad `/camera` preview and `python -m vision.live_view` now draw the
+4x4 demo grid from the mapping convention: A1 at top-left, D4 at bottom-right.
+The PC viewer also labels each detected bbox centre with its demo sector.
+The browser overlay is separate from the raw upload canvas. Full-frame cells
+are uncalibrated demo labels, not measured half-metre squares; the old phone
+floor mask is not reused for a changed iPad view. Restart an existing PC viewer
+after updating these files; reload the iPad page and press Start.
+
 The /camera page is an operational camera-source page, not the main dashboard.
 For independent phones, use LAN HTTPS with --cert and --key; plain LAN HTTP is
 rejected by the CLI. Configure camera IDs with VISION_CAMERAS, for example

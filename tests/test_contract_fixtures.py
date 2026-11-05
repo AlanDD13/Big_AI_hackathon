@@ -12,11 +12,11 @@ def load(name):
 
 
 def demo_sector(x, y, width, height):
-    if not (0 <= x < width and 0 <= y < height):
+    from mapping.grid_mapper import pixel_to_sector
+    try:
+        return pixel_to_sector(x, y, width, height)
+    except ValueError:
         return None
-    column = min(4, int(x / width * 4) + 1)
-    row_from_top = min(4, int(y / height * 4) + 1)
-    return "ABCD"[4 - row_from_top] + str(column)
 
 
 class ContractFixtureTest(unittest.TestCase):
@@ -151,9 +151,9 @@ class ContractFixtureTest(unittest.TestCase):
         self.assertIn("does not call the robot", text)
 
     def test_demo_grid_matches_the_half_metre_example(self):
-        self.assertEqual(demo_sector(855, 423, 1920, 1080), "C2")
-        self.assertEqual(demo_sector(0, 1079, 1920, 1080), "A1")
-        self.assertEqual(demo_sector(1919, 0, 1920, 1080), "D4")
+        self.assertEqual(demo_sector(855, 423, 1920, 1080), "B2")
+        self.assertEqual(demo_sector(0, 1079, 1920, 1080), "D1")
+        self.assertEqual(demo_sector(1919, 0, 1920, 1080), "A4")
         self.assertIsNone(demo_sector(1920, 423, 1920, 1080))
         text = (ROOT / "demo-grid-v1.md").read_text()
         self.assertIn("calibrated` is false", text)
