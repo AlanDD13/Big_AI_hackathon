@@ -14,6 +14,24 @@ Physical bench tests previously measured .2650s silence-to-zero dispatch and fre
 stationary confirmation. These are P4 evidence, not P1-to-P3-to-P4 acceptance.
 The separate direct Grok tool loop is NOT the manual bridge or its safety path.
 
+On 2026-11-05, a real HTTP .05m/s release test exposed normal braking being
+misclassified as UNEXPECTED_MOTION. Fix: clean release remains disarmed UNKNOWN
+while zero is repeatedly requested during the existing1.5s confirmation window.
+Nonquiet samples reset stationary evidence; persistent motion beyond that bound
+faults and eventually latches STOPPED. Invalid samples and motion from already
+STOPPED/idle states still fault immediately. Fault zero I/O executes outside the
+observation lock, preventing a worker-lock false WRITE_TIMEOUT. Stationary
+thresholds and the watchdog cutoff are unchanged.
+
+The operator-requested .15m/s HTTP retest passed both short forward legs:
+release returned UNKNOWN then IDLE with4 fresh stationary samples (about.57s
+from release request); unfenced global stop returned UNKNOWN then STOPPED with4
+samples, rejected early rearm and new lease while latched, and explicit rearm
+sent no nonzero output. Final shutdown confirmed3 stationary samples and closed
+SDK/server. The human explicitly confirmed both movements stopped and rover
+stationary. Local report: robot/.local/manual-http-bench/1793872227769003000.json.
+This is P4 HTTP physical acceptance only; no P1/P3 end-to-end pass is claimed.
+
 At inspection, frontend ManualControl is a local simulator; backend has no manual
 proxy routes. P1/P3 owners are requested on board6654563199. Their changes must
 land/integrate before end-to-end physical success can be claimed.

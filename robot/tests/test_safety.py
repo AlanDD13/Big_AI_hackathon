@@ -18,6 +18,42 @@ class Clock:
 
 
 class SafetyTests(unittest.TestCase):
+    def test_clean_release_allows_braking_but_blocks_rearm_and_new_drive(self):
+        self.drive()
+        self.c.release('user_release')
+        self.clock.advance(.08)
+        self.c.observe(.07,0,0)
+        status=self.c.status()
+        self.assertEqual(status['stage'],'UNKNOWN')
+        self.assertTrue(status['releasePending'])
+        self.assertFalse(status['armed'])
+        self.assertEqual(status['stationarySamples'],0)
+        with self.assertRaises(SafetyError):self.c.rearm()
+        with self.assertRaises(SafetyError):self.drive(sequence=2)
+        self.confirm()
+        self.assertEqual(self.c.status()['stage'],'IDLE')
+        self.assertEqual(self.outputs[-1],(0,0,0))
+
+    def test_release_motion_after_confirmation_deadline_latches_fault(self):
+        self.drive()
+        self.c.release('user_release')
+        self.clock.advance(self.c.limits.stop_confirmation_s+.01)
+        self.c.heartbeat()
+        self.c.observe(.05,0,0)
+        self.assertIsNone(self.c.status()['transportError'])
+        self.assertFalse(self.c.status()['releasePending'])
+        self.assertEqual(self.c.status()['reason'],'UNEXPECTED_MOTION')
+        self.confirm()
+        self.assertEqual(self.c.status()['stage'],'STOPPED')
+        self.assertFalse(self.c.status()['armed'])
+
+    def test_invalid_sample_zero_write_does_not_deadlock_worker_on_observe_lock(self):
+        self.c.observe(float('nan'),0,0)
+        self.assertEqual(self.c.status()['reason'],'INVALID_TELEMETRY')
+        self.assertIsNone(self.c.status()['transportError'])
+        self.assertFalse(self.c.status()['writeStuck'])
+        self.assertEqual(self.outputs[-1],(0,0,0))
+
     def setUp(self):
         self.clock = Clock()
         self.outputs = []
