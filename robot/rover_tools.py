@@ -32,8 +32,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 SERIAL = "3JKCK7W0030DJS"
 
-MAX_X_MPS = 0.10
-MAX_Z_DEGPS = 15.0
+MAX_X_MPS = 0.16
+MAX_Z_DEGPS = 20.0
 MIN_DRIVE_S, MAX_DRIVE_S = 0.2, 6.0
 SDK_TIMEOUT_S = 0.4          # host timer; requires a running process and SDK transport
 TICK_S = 0.08
@@ -47,11 +47,11 @@ HOME_ARM_Y = -35.0               # elevated starting position with wide forward 
 FLOOR_ARM_Y = -70.0              # floor level for gripper grasp
 CAMERA_MAX_AGE_S = 0.75
 TARGET_MAX_AGE_S = 0.5
-CORRIDOR_MIN_X, CORRIDOR_MAX_X = 290.0, 350.0
+CORRIDOR_MIN_X, CORRIDOR_MAX_X = 300.0, 340.0
 GRASP_BOTTOM_Y = 300.0
-CLOSE_BOTTOM_Y, CLOSE_X_MPS = 260.0, 0.06
+CLOSE_BOTTOM_Y, CLOSE_X_MPS = 285.0, 0.08
 CLAW_ENTRY_Y = 330.0
-GRASP_X_MPS, GRASP_DURATION_S = 0.08, 1.9
+GRASP_X_MPS, GRASP_DURATION_S = 0.065, 1.2
 
 
 @dataclass(frozen=True)
@@ -280,35 +280,31 @@ TOOLS = [
     {"type": "function", "function": {
         "name": "drive_chassis",
         "description": (
-            "Drive the chassis forward/backward and optionally sideways. "
-            "x_mps (-0.12..0.12): forward speed (>0) / backward (<0). "
-            "Use 0.12 m/s when approaching from a distance (bottom y < 220). "
-            "Use 0.08 m/s for mid-range (bottom y = 220..275). "
-            "Use 0.06 m/s for close approach (bottom y = 275..300). "
+            "Drive the chassis forward/backward at high speed. "
+            "x_mps (-0.16..0.16): use 0.15 m/s for fast distance approach (bottom y < 220), "
+            "0.12 m/s for mid-range (bottom y = 220..285), and 0.08 m/s for final close approach (bottom y >= 285). "
             "Once can bottom reaches y >= 300 (or isInGraspRange is True), STOP driving and call grasp_can()! "
             "y_mps: default 0.0. Keep 0.0 when approaching head-on! "
             "z_degps: default 0.0 to hold straight heading. "
-            "duration_s (0.2..4.0): For distant approach (y < 220), use 1.8..2.2s (~22-26 cm). For mid-range (y = 220..275), use 1.0s (~8 cm). For close range (y = 275..300), use 0.8s (~5 cm)."
+            "duration_s (0.2..4.0): use 2.0..2.2s for fast approach (~30-33 cm advance), 1.2..1.5s for mid-range (~15-18 cm), 0.9s for final approach (~7 cm). Advance swiftly toward the can!"
         ),
         "parameters": {"type": "object", "additionalProperties": False,
             "properties": {
-                "x_mps": {"type": "number", "description": "Forward speed in m/s (e.g. 0.12, 0.08, 0.06)"},
-                "y_mps": {"type": "number", "description": "Sideways strafe speed (+right, -left). Default 0.0. Keep 0.0 when approaching head-on."},
+                "x_mps": {"type": "number", "description": "Forward speed in m/s (e.g. 0.15, 0.12, 0.08)"},
+                "y_mps": {"type": "number", "description": "Sideways strafe speed (+right, -left). Default 0.0."},
                 "z_degps": {"type": "number", "description": "Rotation rate in deg/s (default 0.0 to hold heading)"},
-                "duration_s": {"type": "number", "description": "Duration in seconds (e.g. 0.8, 1.0, 1.8, 2.0)"}
+                "duration_s": {"type": "number", "description": "Duration in seconds (e.g. 0.9, 1.2, 1.5, 2.0)"}
             },
             "required": ["x_mps", "duration_s"]}}},
     {"type": "function", "function": {
         "name": "turn_degrees",
         "description": (
-            "Rotate the rover in place by degrees (-90..90, positive = turn right/clockwise, negative = turn left/counter-clockwise). "
-            "Use this ONLY when the can is heavily off-center near frame edges (x < 260 or x > 380). "
-            "Typical turns are +/-15° to +/-30°. "
-            "DO NOT USE FOR SMALL CORRECTIONS (< 10°)! The 12 cm wide gripper jaws already funnel the can. "
-            "If the can is in the center region (x in 260..380), DRIVE FORWARD directly with drive_chassis!"
+            "Rotate the rover in place to target squarely into the center line (-90..90 deg, positive = right/clockwise, negative = left/counter-clockwise). "
+            "Use canTracker['recommendedTurnDeg'] to target directly into the center line (x=320). "
+            "Turns with magnitude >= 3.0 deg are executed smoothly and accurately to center the can in the corridor."
         ),
         "parameters": {"type": "object", "additionalProperties": False,
-            "properties": {"degrees": {"type": "number", "description": "Degrees to rotate in place (positive=right, negative=left, minimum magnitude 12°)"}},
+            "properties": {"degrees": {"type": "number", "description": "Degrees to rotate in place (positive=right, negative=left)"}},
             "required": ["degrees"]}}},
     {"type": "function", "function": {
         "name": "move_arm",
@@ -487,15 +483,15 @@ class RoverTools:
         is_close = False
         if guard_tof and self._last_gripper_state != "close" and self.latest_tracker and self.latest_tracker.get("detected"):
             by = self.latest_tracker.get("bottomYPx", 0)
-            if by >= 260.0:
+            if by >= 285.0:
                 is_close = True
         elif guard_tof and self._last_gripper_state != "close" and self._use_tof and self.tof_mm is not None and self.tof_at \
-                and time.monotonic() - self.tof_at < 0.5 and 0 < self.tof_mm <= 250:
+                and time.monotonic() - self.tof_at < 0.5 and 0 < self.tof_mm <= 200:
             is_close = True
 
         if x > 0 and is_close:
-            x = min(x, 0.06)             # gentle 6.0 cm/s
-            duration = min(duration, 0.8) # max 0.8s (~4.8 cm per call)
+            x = min(x, 0.08)              # 8.0 cm/s
+            duration = min(duration, 1.0) # max 1.0s (~8 cm per call)
             # Ensure gripper is pre-opened wide so claws act as an open funnel and cannot ram the can
             if self._last_gripper_state != "open":
                 try:
@@ -548,8 +544,8 @@ class RoverTools:
 
     def turn(self, degrees, tolerance_deg=1.0, timeout_s=8.0):
         degrees = clamp(float(degrees), -90.0, 90.0)
-        # Deadband suppression: Suppress micro-turns (< 10 deg) that cause hunting and slow down execution
-        if abs(degrees) < 10.0:
+        # Deadband suppression: Suppress micro-jitter (< 3 deg)
+        if abs(degrees) < 3.0:
             return {
                 "requestedDeg": round(degrees, 1),
                 "yawStartDeg": round(self.yaw or 0.0, 2),
@@ -557,7 +553,7 @@ class RoverTools:
                 "turnedDeg": 0.0,
                 "reached": True,
                 "deadbandSuppressed": True,
-                "message": "Deadband active: target is already aligned within wide 12cm claw funnel. Micro-turn suppressed, drive forward toward the can!"
+                "message": "Target is aligned within +/-3 deg of center line."
             }
 
         with self._lock:
