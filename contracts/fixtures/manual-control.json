@@ -46,7 +46,9 @@
     "faultLatchedRejectionCode": "STOP_LOCKED",
     "cleanReleaseConfirmedStage": "IDLE",
     "cleanReleaseTimeoutStage": "UNKNOWN",
-    "rearmAllowedFrom": ["STOPPED"],
+    "rearmAllowedFrom": [
+      "STOPPED"
+    ],
     "rearmTargetStage": "IDLE",
     "rearmRestoresAuthorityOrMotion": false
   },
@@ -94,7 +96,8 @@
     "yMps": 0.0,
     "zDegps": 0.0,
     "yawDegS": 0.0,
-    "frame": "BODY"
+    "frame": "BODY",
+    "bridgeBootId": "cccccccccccccccccccccccccccccccc"
   },
   "driveResponse": {
     "roverId": "rover-1",
@@ -116,7 +119,8 @@
     "roverId": "rover-1",
     "leaseId": "lease-1",
     "leaseGeneration": 1,
-    "reason": "user_release"
+    "reason": "user_release",
+    "bridgeBootId": "cccccccccccccccccccccccccccccccc"
   },
   "releaseResponse": {
     "roverId": "rover-1",
@@ -125,7 +129,8 @@
     "zeroVelocityRequested": true,
     "stationaryConfirmed": false,
     "stationarySamples": 0,
-    "motion": false
+    "motion": false,
+    "bridgeBootId": "cccccccccccccccccccccccccccccccc"
   },
   "overheadRequest": {
     "leaseId": "lease-1",
@@ -133,6 +138,30 @@
     "sessionId": "session1",
     "geometryVersion": "geometry1",
     "frameId": 20,
-    "pixel": [320, 240]
+    "pixel": [
+      320,
+      240
+    ]
+  },
+  "manualBootFence": {
+    "capability": "bridgeBootId-v1",
+    "requiredOn": [
+      "drive",
+      "release",
+      "rearm"
+    ],
+    "field": "bridgeBootId",
+    "format": "lowercase32hex",
+    "mismatchStatus": 409,
+    "mismatchCode": "BRIDGE_BOOT_MISMATCH",
+    "missingOrInvalidStatus": 422,
+    "missingOrInvalidCode": "VALIDATION_ERROR",
+    "staleReleaseStatus": 409,
+    "staleReleaseCode": "LEASE_EXPIRED",
+    "globalStopRequiresBoot": false
+  },
+  "rearmRequest": {
+    "roverId": "rover-1",
+    "bridgeBootId": "cccccccccccccccccccccccccccccccc"
   }
 }
