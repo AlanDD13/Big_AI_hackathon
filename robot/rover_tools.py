@@ -32,8 +32,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 SERIAL = "3JKCK7W0030DJS"
 
-MAX_X_MPS = 0.22
-MAX_Z_DEGPS = 20.0
+MAX_X_MPS = 0.26
+MAX_Z_DEGPS = 30.0
 MIN_DRIVE_S, MAX_DRIVE_S = 0.2, 6.0
 SDK_TIMEOUT_S = 0.4          # host timer; requires a running process and SDK transport
 TICK_S = 0.08
@@ -88,12 +88,13 @@ class StableYOLOTracker:
         now = time.monotonic()
         if gripper_state == "close":
             return {
-                "detected": True,
-                "detectionFresh": True,
-                "canHeldInClaws": True,
+                "detected": False,
+                "detectionFresh": False,
+                "canHeldInClaws": None,
+                "holdingVerified": False,
                 "gripperState": "close",
                 "infraredDistanceMm": int(tof_mm) if tof_mm is not None else None,
-                "message": "CAN IN CLAWS: Transport forward with drive_chassis, lower arm to floor with move_arm(dy=-35), open gripper, then stop_robot!"
+                "message": "Gripper close was commanded; holding is unverified. Loaded transport is disabled. Stop or explicitly release under operator supervision."
             }
 
         model = self._ensure_model()
@@ -180,50 +181,50 @@ class StableYOLOTracker:
         dist_cam_cm = round(3250.0 / bh, 1)
         # Distance from extended claw jaw tips to the can (claw tips extend ~14 cm forward of camera)
         dist_jaws_cm = max(0.0, round(dist_cam_cm - 14.0, 1))
-        # Direct rapid approach: advance towards the claw entry (leaving 6.5 cm buffer where grasp_can takes over)
-        max_safe_advance_m = max(0.0, round((dist_jaws_cm - 6.5) / 100.0, 2))
+        # Direct rapid approach: advance towards the claw entry (leaving 3.5 cm buffer where grasp_can takes over)
+        max_safe_advance_m = max(0.0, round((dist_jaws_cm - 3.5) / 100.0, 2))
 
         offset_px = round(cx - 320.0, 1)
 
         # Distance vs close-range logic:
-        # At distance (dist_jaws > 12cm and by < 250), tighten corridor to +/- 20px so robot targets squarely onto center line.
-        # At close range (dist_jaws <= 12cm or by >= 250), 12 cm claws cover +/- 45px!
+        # At distance (dist_jaws > 8cm and by < 265), tighten corridor to +/- 20px so robot targets squarely onto center line.
+        # At close range (dist_jaws <= 8cm or by >= 265), 12 cm claws cover +/- 45px!
         # CRITICAL SAFETY: ZERO TURNING AT CLOSE RANGE to prevent claw fingers sweeping into can!
-        if by >= 250.0 or dist_jaws_cm <= 12.0:
+        if by >= 265.0 or dist_jaws_cm <= 8.0:
             in_corridor = (abs(offset_px) <= 45.0)
             rec_turn = 0.0  # ZERO TURNING AT CLOSE RANGE!
         else:
             in_corridor = (abs(offset_px) <= 20.0)
             rec_turn = round(offset_px * 0.14, 1) if not in_corridor else 0.0
 
-        # Direct Grasp zone: can is entering open claws (jaws dist <= 9.0cm or bottom y >= 255) and centered!
-        in_grasp = ((by >= 255.0 or dist_jaws_cm <= 9.0) and in_corridor)
+        # Direct Grasp zone: can is physically entering open claws (jaws dist <= 4.5cm or bottom y >= 285) and centered!
+        in_grasp = ((by >= 285.0 or dist_jaws_cm <= 4.5) and in_corridor)
         dist_to_claws = max(0, int(CLAW_ENTRY_Y - by))
 
         # Adaptive speed and advance calculation:
-        # Target stopping distance is 6.5 cm from the claws (where grasp_can safely takes over)
-        advance_cm = max(0.0, round(dist_jaws_cm - 6.5, 1))
+        # Target stopping distance is 3.5 cm from the claws (where grasp_can safely takes over)
+        advance_cm = max(0.0, round(dist_jaws_cm - 3.5, 1))
         if in_grasp:
             rec_drive = None
-            rec_action = f"IN_GRASP_RANGE (Jaws dist {dist_jaws_cm:.1f}cm): Call grasp_can() immediately!"
+            rec_action = f"IN_GRASP_RANGE (Jaws dist {dist_jaws_cm:.1f}cm, y={by:.0f}): Call grasp_can() immediately!"
         elif not in_corridor:
             rec_drive = None
             rec_action = f"TURN: Turn by {rec_turn:+.1f} deg to center the can."
         else:
-            # Distance-adaptive speed:
-            # - If already close (dist_jaws <= 16cm): gentle 0.10 m/s
-            # - If mid-range (16cm < dist_jaws <= 30cm): moderate 0.16 m/s
-            # - If far (dist_jaws > 30cm): rapid 0.22 m/s
-            if dist_jaws_cm > 30.0:
-                speed = 0.22
-            elif dist_jaws_cm > 16.0:
-                speed = 0.16
+            # Fast distance-adaptive speed (advance directly in ONE continuous motion):
+            # - If close (dist_jaws <= 10cm): gentle 0.14 m/s
+            # - If mid-range (10cm < dist_jaws <= 22cm): brisk 0.20 m/s
+            # - If far (dist_jaws > 22cm): rapid 0.25 m/s
+            if dist_jaws_cm > 22.0:
+                speed = 0.25
+            elif dist_jaws_cm > 10.0:
+                speed = 0.20
             else:
-                speed = 0.10
-            dur = round(clamp((advance_cm / 100.0) / speed, 0.25, 1.8), 2)
+                speed = 0.14
+            dur = round(clamp((advance_cm / 100.0) / speed, 0.20, 2.0), 2)
             rec_drive = {"x_mps": speed, "duration_s": dur}
-            range_category = "CLOSE" if dist_jaws_cm <= 16.0 else ("MID" if dist_jaws_cm <= 30.0 else "FAR")
-            rec_action = f"ADAPTIVE_APPROACH ({range_category}, {dist_jaws_cm:.1f}cm away): Call drive_chassis(x_mps={speed}, duration_s={dur}) to advance {advance_cm:.1f}cm into grasp zone!"
+            range_category = "CLOSE" if dist_jaws_cm <= 10.0 else ("MID" if dist_jaws_cm <= 22.0 else "FAR")
+            rec_action = f"ADAPTIVE_APPROACH ({range_category}, {dist_jaws_cm:.1f}cm away): Call drive_chassis(x_mps={speed}, duration_s={dur}) to advance {advance_cm:.1f}cm directly into grasp zone!"
 
         return {
             "detected": True,
@@ -330,7 +331,7 @@ TOOLS = [
     {"type": "function", "function": {
         "name": "grasp_can",
         "description": (
-            "EXECUTE GUARANTEED PHYSICAL GRASP: Call this as soon as the drink can is centered in corridor (offset within +/-25px) "
+            "Attempt a bounded grasp macro when the drink can is centered in corridor (offset within +/-25px) "
             "and can bottom is in or entering grasp zone (bottomYPx >= 300 or isInGraspRange == True).\n"
             "This command automatically:\n"
             "1. Verifies/lowers robotic arm to floor level (dy_mm = -35).\n"
@@ -338,7 +339,7 @@ TOOLS = [
             "3. Drives forward gently at 0.065 m/s for ~1.2s (~7.8 cm advance) to seat the can snugly against the rubber throat bumper without bulldozing or tipping.\n"
             "4. Clamps gripper jaws tightly with high power (power = 80).\n"
             "5. Lifts robotic arm off the floor (dy_mm = +35) holding the can.\n"
-            "DO NOT CALL grasp_can AGAIN once the can is lifted! Proceed immediately to transport forward with drive_chassis."
+            "Command completion does not verify holding. Loaded transport is disabled; stop for operator verification."
         ),
         "parameters": {"type": "object", "additionalProperties": False,
             "properties": {
@@ -394,7 +395,7 @@ TOOLS = [
             "required": ["state", "power"]}}},
     {"type": "function", "function": {
         "name": "stop_robot",
-        "description": "Stop the robot and finish the task when the can has been picked up, carried, and placed back down.",
+        "description": "Request chassis zero without moving the arm or opening the gripper. This does not verify holding, placement or mission completion.",
         "parameters": {"type": "object", "additionalProperties": False,
             "properties": {"reason": {"type": "string", "description": "Reason for stopping"}}, "required": ["reason"]}}},
 ]
@@ -513,15 +514,14 @@ class RoverTools:
 
     def stop(self, reason="stop"):
         self._zero()
-        # Obligatory: Always return arm and gripper to initial home position (HOME_ARM_Y = -35mm, gripper open)
-        reset_res = {}
-        try:
-            reset_res = self.reset_arm_and_gripper()
-        except Exception:
-            pass
-        return {"stopped": True, "reason": str(reason)[:180], "armAndGripperReset": reset_res}
+        # Stop must preserve a possibly held load. Release/reset is explicit.
+        return {"stopped": True, "stationaryConfirmed": False,
+                "reason": str(reason)[:180], "armAndGripperReset": False}
 
     def drive(self, x_mps, y_mps=0.0, z_degps=0.0, duration_s=1.0, hold_heading=True, guard_tof=True):
+        if self._last_gripper_state == "close":
+            self._zero()
+            raise RoverError("holding_unverified_transport_disabled")
         x = round(clamp(float(x_mps), -MAX_X_MPS, MAX_X_MPS), 3)
         y = round(clamp(float(y_mps), -MAX_X_MPS, MAX_X_MPS), 3)
         z = round(clamp(float(z_degps), -MAX_Z_DEGPS, MAX_Z_DEGPS), 2)
@@ -535,7 +535,7 @@ class RoverTools:
             by = tracker.get("bottomYPx", 0)
             in_corr = tracker.get("isInCorridor", False)
             dist_jaws = tracker.get("distanceToJawsCm", 999.0)
-            if tracker.get("isInGraspRange") or (by >= 255.0 and in_corr) or (dist_jaws <= 8.5 and in_corr):
+            if tracker.get("isInGraspRange") or (by >= 285.0 and in_corr) or (dist_jaws <= 4.5 and in_corr):
                 in_grasp_range = True
 
         if guard_tof and x > 0 and in_grasp_range:
@@ -547,12 +547,12 @@ class RoverTools:
             }
 
         # DYNAMIC OVERSHOOT CLAMP:
-        # If driving forward towards detected can, advance directly to claw entry (leaving 6cm buffer where grasp_can glides in)
+        # If driving forward towards detected can, advance directly to claw entry (leaving 3.5cm buffer where grasp_can glides in)
         if guard_tof and x > 0 and self._last_gripper_state != "close" and self.latest_tracker and self.latest_tracker.get("detected"):
             tracker = self.latest_tracker
             dist_jaws = tracker.get("distanceToJawsCm", 999.0)
-            # Safe forward advance leaves 6.0 cm buffer where grasp_can takes over
-            safe_advance_m = max(0.04, (dist_jaws - 6.0) / 100.0)
+            # Safe forward advance leaves 3.5 cm buffer where grasp_can takes over
+            safe_advance_m = max(0.04, (dist_jaws - 3.5) / 100.0)
             req_advance_m = x * duration
             if req_advance_m > safe_advance_m:
                 duration = round(safe_advance_m / x, 2)
@@ -563,7 +563,7 @@ class RoverTools:
         if guard_tof and self._last_gripper_state != "close" and self.latest_tracker and self.latest_tracker.get("detected"):
             by = self.latest_tracker.get("bottomYPx", 0)
             dist_jaws = self.latest_tracker.get("distanceToJawsCm", 999.0)
-            if by >= 250.0 or dist_jaws <= 10.0:
+            if by >= 265.0 or dist_jaws <= 8.0:
                 is_close = True
         elif guard_tof and self._last_gripper_state != "close" and self._use_tof and self.tof_mm is not None and self.tof_at \
                 and time.monotonic() - self.tof_at < 0.5 and 0 < self.tof_mm <= 250:
@@ -623,6 +623,9 @@ class RoverTools:
             return result
 
     def turn(self, degrees, tolerance_deg=1.0, timeout_s=8.0):
+        if self._last_gripper_state == "close":
+            self._zero()
+            raise RoverError("holding_unverified_transport_disabled")
         degrees = clamp(float(degrees), -90.0, 90.0)
         # Deadband suppression: Suppress micro-jitter (< 3 deg)
         if abs(degrees) < 3.0:
@@ -647,7 +650,7 @@ class RoverTools:
                     if abs(error) <= tolerance_deg:
                         reached = True
                         break
-                    rate = clamp(error * 0.45, -MAX_Z_DEGPS, MAX_Z_DEGPS)
+                    rate = clamp(error * 0.75, -MAX_Z_DEGPS, MAX_Z_DEGPS)
                     if abs(rate) < 2.5:
                         rate = math.copysign(2.5, rate)
                     self.rover.chassis.drive_speed(x=0, y=0, z=round(rate, 2),
@@ -677,15 +680,19 @@ class RoverTools:
     def gripper(self, state, power=60):
         if state not in ("open", "close"):
             raise RoverError("bad_gripper_state")
-        self._last_gripper_state = state
         power = int(clamp(int(power), 30, 80))
         with self._lock:
             self._zero()
             method = self.rover.gripper.close if state == "close" else self.rover.gripper.open
+            # A failed close may still have acted; retain conservative state.
+            if state == "close":
+                self._last_gripper_state = state
             ack = bool(method(power=power))
+            self._last_gripper_state = state
             time.sleep(0.9)
             self.rover.gripper.pause()
-            return {"state": state, "power": power, "ack": ack}
+            return {"state": state, "power": power, "ack": ack,
+                    "holdingVerified": False}
 
     # ---- camera & live stream --------------------------------------------------
     def start_camera(self, port=8088):
@@ -827,9 +834,10 @@ class RoverTools:
         # Guard: If can is ALREADY grasped and arm is lifted, do not re-grasp!
         if self._last_gripper_state == "close" and self.arm_delta_y >= -10:
             return {
-                "grasped": True,
-                "alreadyGrasped": True,
-                "message": "Can is already grasped and lifted! Proceed to transport forward with drive_chassis."
+                "grasped": None,
+                "holdingVerified": False,
+                "alreadyCommanded": True,
+                "message": "Gripper close was already commanded; holding is unverified and transport remains disabled."
             }
 
         # Determine optimal seating duration based on metric distance and can bottom Y
@@ -837,19 +845,15 @@ class RoverTools:
         by = tracker.get("bottomYPx", 305.0) if tracker.get("detected") else 305.0
         dist_jaws = tracker.get("distanceToJawsCm", 4.0) if tracker.get("detected") else 4.0
 
-        # At gentle 0.055 m/s:
-        # If can is already at bumper (by >= 315 or dist_jaws <= 3.0cm): 0.8s = 4.4 cm gentle glide
-        # If can is entering jaws (280 <= by < 315 or 3.0 < dist_jaws <= 6.5cm): 1.1s = 6.0 cm glide
-        # If can is at mouth (by < 280 or dist_jaws > 6.5cm): 1.4s = 7.7 cm glide
+        # Required forward advance to seat the can snugly against the rubber throat bumper:
+        # Distance to claw tips (dist_jaws) + 4.5 cm depth inside jaws.
+        # At gentle 0.060 m/s:
+        target_advance_cm = clamp(dist_jaws + 4.5, 6.5, 11.0)
+        auto_dur = round(target_advance_cm / 6.0, 2)
         if forward_duration_s is not None and float(forward_duration_s) > 0:
-            calc_dur = clamp(float(forward_duration_s), 0.6, 1.5)
+            calc_dur = clamp(float(forward_duration_s), 0.8, 1.8)
         else:
-            if by >= 315.0 or dist_jaws <= 3.0:
-                calc_dur = 0.8
-            elif by >= 280.0 or dist_jaws <= 6.5:
-                calc_dur = 1.1
-            else:
-                calc_dur = 1.4
+            calc_dur = clamp(auto_dur, 1.1, 1.8)
 
         with self._lock:
             self._zero()
@@ -861,35 +865,36 @@ class RoverTools:
                     try:
                         action = self.rover.robotic_arm.move(x=0, y=dy)
                         action.wait_for_completed(timeout=3.0)
-                        time.sleep(0.3)
+                        time.sleep(0.2)
                         self.arm_delta_y += dy
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        raise RoverError("grasp_arm_lower_failed") from exc
 
             # 2. Open gripper jaws wide (12 cm span)
             try:
                 self.rover.gripper.open(power=50)
-                time.sleep(1.0)
+                time.sleep(0.8)
                 self.rover.gripper.pause()
                 self._last_gripper_state = "open"
-            except Exception:
-                pass
+            except Exception as exc:
+                raise RoverError("grasp_gripper_open_failed") from exc
 
         # 3. Drive straight forward with heading hold to funnel and seat can firmly against gripper throat bumper
-        # At gentle 0.055 m/s for calc_dur (0.8-1.4s) = ~4.4 to 7.7 cm forward glide!
+        # At gentle 0.060 m/s for calc_dur (1.1-1.8s) = ~6.6 to 10.8 cm forward glide!
         # Jaws are open wide (12cm) so can funnels safely inside without knocking or bulldozing!
-        drive_res = self.drive(x_mps=0.055, y_mps=0.0, z_degps=0.0, duration_s=calc_dur, hold_heading=True, guard_tof=False)
+        drive_res = self.drive(x_mps=0.060, y_mps=0.0, z_degps=0.0, duration_s=calc_dur, hold_heading=True, guard_tof=False)
 
         # 4. Clamp gripper firmly around the can with high power
         with self._lock:
             self._zero()
+            self._last_gripper_state = "close"
             try:
                 self.rover.gripper.close(power=80)
                 time.sleep(1.4)
                 self.rover.gripper.pause()
                 self._last_gripper_state = "close"
-            except Exception:
-                pass
+            except Exception as exc:
+                raise RoverError("grasp_gripper_close_failed") from exc
 
             # 5. Lift arm off floor with grasped can
             lift_done = False
@@ -898,15 +903,16 @@ class RoverTools:
                 lift_done = bool(action.wait_for_completed(timeout=3.0))
                 time.sleep(0.3)
                 self.arm_delta_y += 35
-            except Exception:
-                pass
+            except Exception as exc:
+                raise RoverError("grasp_arm_lift_failed") from exc
 
         return {
-            "grasped": True,
+            "grasped": None,
+            "holdingVerified": False,
             "seatedDrive": drive_res,
-            "gripperClamped": True,
+            "gripperCloseCommanded": True,
             "armLifted": lift_done,
-            "message": "Can seated into throat, clamped at power 80, and lifted off floor!"
+            "message": "Grasp macro commands completed; independent holding evidence is absent. Transport remains disabled."
         }
 
     def dispatch(self, name, args):
@@ -958,7 +964,6 @@ class RoverTools:
 
     def close(self):
         try:
-            self.reset_arm_and_gripper()
             self.stop("close")
             try:
                 self.rover.led.set_led(comp="all", r=0, g=0, b=0, effect="off")

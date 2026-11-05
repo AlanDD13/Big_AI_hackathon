@@ -1,4 +1,5 @@
 """Optional source adapters; only deployment configuration chooses their sources."""
+import json
 import math
 import sys
 import time
@@ -44,6 +45,21 @@ class LocalCapture:
     def close(self):
         self.capture.release()
 
+def _is_stale_frame(response):
+    """True only for the bridge's no-image 503 STALE_FRAME envelope."""
+    body = bytearray()
+    for chunk in response.iter_bytes():
+        if len(body) + len(chunk) > 65536:
+            return False
+        body.extend(chunk)
+    try:
+        payload = json.loads(bytes(body))
+    except (UnicodeDecodeError, ValueError):
+        return False
+    error = payload.get('error') if isinstance(payload, dict) else None
+    return isinstance(error, dict) and error.get('code') == 'STALE_FRAME'
+
+
 class RoverHTTPAdapter:
     """Pull source-identified frames from one deployment-configured bridge."""
     def __init__(self, base_url, store: FrameStore, camera_id, session_id=None, timeout=3, token=None):
@@ -61,6 +77,9 @@ class RoverHTTPAdapter:
         headers = {'Authorization': f'Bearer {self.token}'} if self.token else {}
         with httpx.Client(timeout=self.timeout, follow_redirects=False) as client:
             with client.stream('GET', self.url, headers=headers) as response:
+                # Absence only: keep _session and _last_id so a later repeat stays a repeat.
+                if response.status_code == 503 and _is_stale_frame(response):
+                    return None
                 response.raise_for_status()
                 if response.status_code != 200:
                     raise ValueError('Bridge frame unavailable')
@@ -84,9 +103,9 @@ class RoverHTTPAdapter:
                         raise ValueError('Invalid bridge sequence')
                 data = bytearray()
                 for chunk in response.iter_bytes():
-                    data.extend(chunk)
-                    if len(data) > self.store.max_image_bytes:
+                    if len(data) + len(chunk) > self.store.max_image_bytes:
                         raise ValueError('Invalid image')
+                    data.extend(chunk)
                 received_at = time.time()
         frame = self.store.put(camera_id, session_id, geometry, frame_id, captured_at, bytes(data), kind='ROVER', received_at=received_at, timestamp_basis=basis)
         self._session, self._last_id = session_id, frame_id
