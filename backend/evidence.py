@@ -53,9 +53,15 @@ def _id(payload: Mapping[str, object], name: str) -> str:
 
 
 def _finite_number(value: object, name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise InvalidEvidence(f"{name} must be a finite number")
-    return float(value)
+    try:
+        number = float(value)
+    except OverflowError:
+        raise InvalidEvidence(f"{name} must be a finite number") from None
+    if not isfinite(number):
+        raise InvalidEvidence(f"{name} must be a finite number")
+    return number
 
 
 def parse_evidence(payload: object) -> dict[str, object]:

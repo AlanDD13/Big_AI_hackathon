@@ -478,7 +478,10 @@ def create_app(
         except Exception:
             return _error(400, "INVALID_BODY", "Vision body must be JSON")
         try:
-            event = parse_vision_event(payload, allowed)
+            try:
+                event = parse_vision_event(payload, allowed)
+            except OverflowError:
+                raise InvalidVision("Vision numbers must be finite") from None
             result = app.state.backend.ingest_vision(event)
         except InvalidVision as exc:
             return _error(422, "VALIDATION_ERROR", str(exc))
