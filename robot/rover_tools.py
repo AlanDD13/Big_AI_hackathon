@@ -30,19 +30,37 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 SERIAL = "3JKCK7W0030DJS"
 
-MAX_X_MPS = 0.12
-MAX_Z_DEGPS = 28.0
+MAX_X_MPS = 0.10
+MAX_Z_DEGPS = 15.0
 MIN_DRIVE_S, MAX_DRIVE_S = 0.2, 6.0
 SDK_TIMEOUT_S = 0.4          # chassis self-stops this long after the last command
-TICK_S = 0.05
+TICK_S = 0.08
 DRIFT_RIGHT_TRIM_DEGPS = 0.0  # standing drift resolved via _auto_timer cancel
 HOLD_GAIN = 2.0              # deg/s per degree of heading error
-HOLD_MAX_DEGPS = 8.0         # heading-hold authority on a straight leg
+HOLD_MAX_DEGPS = 6.0         # heading-hold authority on a straight leg
 MAX_HEADING_ERR_DEG = 20.0   # abort a leg that has left its heading by this much
 MIN_TOF_MM = 40              # close-in safety buffer for non-grasp drives
 ATTITUDE_MAX_AGE_S = 2.0
 HOME_ARM_Y = -35.0               # elevated starting position with wide forward view
 FLOOR_ARM_Y = -70.0              # floor level for gripper grasp
+
+_YOLO_MODEL = None
+
+
+def get_yolo_model():
+    global _YOLO_MODEL
+    if _YOLO_MODEL is None:
+        try:
+            from ultralytics import YOLO
+            for cand in ("/tmp/pavia-robot/yoloe-26s-paper.pt",
+                         "/Users/alandd/Desktop/Pavia_grok_hackathon/vision/.local/yoloe-26s-paper.pt",
+                         "/Users/alandd/Desktop/Pavia_grok_hackathon/yoloe-26s-seg-pf.pt"):
+                if Path(cand).exists():
+                    _YOLO_MODEL = YOLO(cand)
+                    break
+        except Exception:
+            _YOLO_MODEL = False
+    return _YOLO_MODEL if _YOLO_MODEL is not False else None
 
 
 def clamp(value, low, high):
@@ -54,22 +72,87 @@ def _wrap(angle):
 
 
 def track_can_in_corridor(img, tof_mm=None, gripper_state="open"):
-    """Track gripper status and ToF reading. Grok 4.7 handles visual perception directly from the camera frame."""
+    """Detect upright beverage can using sub-pixel YOLO neural network."""
     if gripper_state == "close":
         return {
+            "detected": True,
             "canHeldInClaws": True,
             "gripperState": "close",
             "infraredDistanceMm": int(tof_mm) if tof_mm is not None else None,
-            "infraredIsOffCenter": True,
             "recommendedAction": "CAN_IN_CLAWS: Transport forward, lower arm (move_arm dy=-35), open gripper (state='open'), then stop_robot!"
         }
-    return {
-        "canHeldInClaws": False,
-        "gripperState": "open",
-        "infraredDistanceMm": int(tof_mm) if tof_mm is not None else None,
-        "infraredIsOffCenter": True,
-        "recommendedAction": "Use visual view: locate upright metallic drink can, center it between corridor lines (x=305..335), approach, and call grasp_can() when in grasp zone."
-    }
+
+    model = get_yolo_model()
+    if model is None or img is None or getattr(img, "size", 0) == 0:
+        return {"detected": False, "gripperState": "open", "canHeldInClaws": False}
+
+    try:
+        results = model.predict(img, conf=0.15, verbose=False)
+        if not results or len(results) == 0:
+            return {"detected": False, "gripperState": "open", "canHeldInClaws": False}
+
+        res = results[0]
+        best_can = None
+        best_score = 0.0
+
+        for b in res.boxes:
+            label = res.names[int(b.cls[0])]
+            score = float(b.conf[0])
+            if label.lower() == "can" and score > best_score:
+                best_can = b
+                best_score = score
+
+        if best_can is None:
+            for b in res.boxes:
+                label = res.names[int(b.cls[0])]
+                score = float(b.conf[0])
+                if label.lower() in ("cup", "plastic bottle") and score > best_score:
+                    best_can = b
+                    best_score = score
+
+        if best_can is None:
+            return {
+                "detected": False,
+                "gripperState": "open",
+                "canHeldInClaws": False,
+                "message": "No drink can detected. Rotate to scan."
+            }
+
+        xyxy = best_can.xyxy[0].tolist()
+        x1, y1, x2, y2 = float(xyxy[0]), float(xyxy[1]), float(xyxy[2]), float(xyxy[3])
+        cx = round((x1 + x2) / 2.0, 1)
+        by = round(y2, 1)
+        ty = round(y1, 1)
+
+        offset_px = round(cx - 320.0, 1)
+        rec_turn = round(offset_px * 0.15, 1)
+        in_corridor = (290.0 <= cx <= 350.0)
+        in_grasp = (by >= 230.0)
+        dist_to_claws = max(0, int(335.0 - by))
+
+        return {
+            "detected": True,
+            "label": "can",
+            "score": round(best_score, 3),
+            "centerXPx": cx,
+            "bottomYPx": by,
+            "topYPx": ty,
+            "box": [round(x1, 1), round(y1, 1), round(x2, 1), round(y2, 1)],
+            "offsetFromCenterPx": offset_px,
+            "recommendedTurnDeg": rec_turn if not in_corridor else 0.0,
+            "isInCorridor": in_corridor,
+            "isInGraspRange": in_grasp,
+            "distanceToClawsPx": dist_to_claws,
+            "canHeldInClaws": False,
+            "gripperState": "open",
+            "recommendedAction": (
+                "IN_GRASP_RANGE: Call grasp_can(0.9) now!" if in_grasp
+                else ("DRIVE_FORWARD: Aligned in corridor. Drive forward!" if in_corridor
+                      else f"TURN: Turn by {rec_turn:+.1f} deg to center the can.")
+            )
+        }
+    except Exception:
+        return {"detected": False, "gripperState": "open", "canHeldInClaws": False}
 
 
 def draw_hud(cv2_frame, tracker_info=None, tof_mm=None):
@@ -103,20 +186,23 @@ def draw_hud(cv2_frame, tracker_info=None, tof_mm=None):
         label_tof = f"IR ToF: {tof_mm:.0f}mm ({tof_cm:.1f}cm) [OFF-CENTER LASER]"
         cv2.putText(img, label_tof, (16, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1)
 
-    # Overlay live tracker bounding box and exact telemetry if detected
-    if tracker_info and tracker_info.get("detected"):
+    # Overlay live YOLO tracker bounding box and exact telemetry if detected
+    if tracker_info and tracker_info.get("detected") and tracker_info.get("box"):
+        x1, y1, x2, y2 = [int(v) for v in tracker_info["box"]]
         cx = int(tracker_info["centerXPx"])
         by = int(tracker_info["bottomYPx"])
-        ty = int(tracker_info.get("topYPx", max(60, by - 120)))
-        w_can = int(tracker_info.get("widthPx", 60))
-        cv2.rectangle(img, (cx - w_can // 2, ty), (cx + w_can // 2, by), (0, 255, 128), 2)
-        cv2.circle(img, (cx, by), 4, (0, 0, 255), -1)
+        score = tracker_info.get("score", 0.0)
         dx = tracker_info["offsetFromCenterPx"]
         dy = tracker_info["distanceToClawsPx"]
         in_grasp = tracker_info.get("isInGraspRange", False)
         box_color = (0, 255, 128) if in_grasp else (0, 215, 255)
-        label = f"dx={dx:+.0f}px | dy_to_claws={dy}px {'[IN GRASP RANGE!]' if in_grasp else ''}"
-        cv2.putText(img, label, (max(10, cx - 110), max(30, ty - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.42, box_color, 1)
+        # Bounding box
+        cv2.rectangle(img, (x1, y1), (x2, y2), box_color, 2)
+        # Center dot & ground contact point
+        cv2.circle(img, (cx, by), 4, (0, 0, 255), -1)
+        # Telemetry label
+        label = f"YOLO CAN {score:.2f} | dx={dx:+.0f}px | dy_claws={dy}px {'[GRASP READY!]' if in_grasp else ''}"
+        cv2.putText(img, label, (max(10, x1 - 10), max(30, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.42, box_color, 1)
 
     return img
 
@@ -149,32 +235,30 @@ TOOLS = [
         "name": "drive_chassis",
         "description": (
             "Drive the chassis forward/backward and optionally sideways. "
-            "x_mps (-0.12..0.12): forward speed (>0) / backward (<0). Use 0.08..0.12 m/s when approaching from a distance, 0.03..0.05 m/s when close. "
-            "y_mps (-0.12..0.12, default 0.0): sideways strafe (+right, -left). Keep y_mps=0.0 when approaching head-on! "
+            "x_mps (-0.12..0.12): forward speed (>0) / backward (<0). Use 0.12 m/s when approaching from a distance (y < 210), 0.08 m/s when entering mid-range (y = 210..230). "
+            "y_mps (-0.12..0.12, default 0.0): keep 0.0 when approaching head-on! "
             "z_degps (-12..12, default 0.0): keep 0.0 to lock steady straight heading. "
-            "duration_s (0.2..4.0): duration in seconds. For long distances use 1.5..2.5s. When close to the can, use 0.4..0.8s."
+            "duration_s (0.2..4.0): For distance approach (can bottom y < 210), use 2.0..2.5s (~25-30 cm) to advance quickly! For mid-range (y = 210..230), use 0.8..1.0s."
         ),
         "parameters": {"type": "object", "additionalProperties": False,
             "properties": {
-                "x_mps": {"type": "number", "description": "Forward speed in m/s (e.g. 0.10, 0.05)"},
+                "x_mps": {"type": "number", "description": "Forward speed in m/s (e.g. 0.12, 0.08)"},
                 "y_mps": {"type": "number", "description": "Sideways strafe speed (+right, -left). Default 0.0. Keep 0.0 when approaching head-on."},
                 "z_degps": {"type": "number", "description": "Rotation rate in deg/s (default 0.0 to hold heading)"},
-                "duration_s": {"type": "number", "description": "Duration in seconds (e.g. 0.4, 0.8, 1.5, 2.0)"}
+                "duration_s": {"type": "number", "description": "Duration in seconds (e.g. 1.0, 2.0, 2.5)"}
             },
             "required": ["x_mps", "duration_s"]}}},
     {"type": "function", "function": {
         "name": "turn_degrees",
         "description": (
             "Rotate the rover in place by degrees (-90..90, positive = turn right/clockwise, negative = turn left/counter-clockwise). "
-            "Use this to find or face the can directly when it is off-center in the camera! "
-            "Camera width is 640px, center is 320px (0.15 deg per pixel). "
-            "If canTracker provides recommendedTurnDeg, use that exact degree value! "
-            "If the can is to the left (x < 280), turn left (negative degrees, e.g. -15° to -30°). "
-            "If the can is to the right (x > 360), turn right (positive degrees, e.g. +15° to +30°). "
-            "If the can is slightly off-center (x in 280..310 or 330..360), use small turns (e.g. -4° or +4°)."
+            "Use this ONLY when the can is heavily off-center near frame edges (x < 260 or x > 380). "
+            "Typical turns are +/-15° to +/-30°. "
+            "DO NOT USE FOR SMALL CORRECTIONS (< 10°)! The 12 cm wide gripper jaws already funnel the can. "
+            "If the can is in the center region (x in 260..380), DRIVE FORWARD directly with drive_chassis!"
         ),
         "parameters": {"type": "object", "additionalProperties": False,
-            "properties": {"degrees": {"type": "number", "description": "Degrees to rotate in place (positive=right, negative=left)"}},
+            "properties": {"degrees": {"type": "number", "description": "Degrees to rotate in place (positive=right, negative=left, minimum magnitude 12°)"}},
             "required": ["degrees"]}}},
     {"type": "function", "function": {
         "name": "move_arm",
@@ -409,6 +493,18 @@ class RoverTools:
 
     def turn(self, degrees, tolerance_deg=1.0, timeout_s=8.0):
         degrees = clamp(float(degrees), -90.0, 90.0)
+        # Deadband suppression: Suppress micro-turns (< 10 deg) that cause hunting and slow down execution
+        if abs(degrees) < 10.0:
+            return {
+                "requestedDeg": round(degrees, 1),
+                "yawStartDeg": round(self.yaw or 0.0, 2),
+                "yawEndDeg": round(self.yaw or 0.0, 2),
+                "turnedDeg": 0.0,
+                "reached": True,
+                "deadbandSuppressed": True,
+                "message": "Deadband active: target is already aligned within wide 12cm claw funnel. Micro-turn suppressed, drive forward toward the can!"
+            }
+
         with self._lock:
             start_yaw = self._fresh_yaw()
             target = start_yaw + degrees       # positive z increases reported yaw
@@ -420,15 +516,15 @@ class RoverTools:
                     if abs(error) <= tolerance_deg:
                         reached = True
                         break
-                    rate = clamp(error * 0.7, -MAX_Z_DEGPS, MAX_Z_DEGPS)
-                    if abs(rate) < 3.5:
-                        rate = math.copysign(3.5, rate)
+                    rate = clamp(error * 0.45, -MAX_Z_DEGPS, MAX_Z_DEGPS)
+                    if abs(rate) < 2.5:
+                        rate = math.copysign(2.5, rate)
                     self.rover.chassis.drive_speed(x=0, y=0, z=round(rate, 2),
                                                    timeout=SDK_TIMEOUT_S)
                     time.sleep(TICK_S)
             finally:
                 self._zero()
-            time.sleep(0.03)
+            time.sleep(0.04)
             end_yaw = self.yaw
             return {"requestedDeg": round(degrees, 1), "yawStartDeg": round(start_yaw, 2),
                     "yawEndDeg": round(end_yaw, 2),
@@ -441,7 +537,7 @@ class RoverTools:
             self._zero()
             action = self.rover.robotic_arm.move(x=dx, y=dy)
             done = bool(action.wait_for_completed(timeout=3))
-            time.sleep(0.2)                               # physical settle
+            time.sleep(0.3)                               # physical settle
             if done and not action.has_failed:
                 self.arm_delta_y += dy
             return {"dxMm": dx, "dyMm": dy, "armHeightDeltaMm": self.arm_delta_y,
@@ -456,7 +552,7 @@ class RoverTools:
             self._zero()
             method = self.rover.gripper.close if state == "close" else self.rover.gripper.open
             ack = bool(method(power=power))
-            time.sleep(0.6)
+            time.sleep(0.9)
             self.rover.gripper.pause()
             return {"state": state, "power": power, "ack": ack}
 
@@ -588,9 +684,9 @@ class RoverTools:
             print(f"[HTTP LIVE STREAM] Could not start server on port {port}: {exc}", flush=True)
 
     # ---- tool dispatch ---------------------------------------------------------
-    def grasp_can(self, forward_duration_s=0.7):
-        """Execute physical sequence to grasp can: lower arm, open gripper wide, gentle seating drive (0.04 m/s), clamp tight, and lift."""
-        forward_duration_s = clamp(float(forward_duration_s), 0.4, 1.2)
+    def grasp_can(self, forward_duration_s=0.9):
+        """Execute physical sequence to grasp can: lower arm, open gripper wide, gentle seating drive (0.03 m/s), clamp tight, and lift."""
+        forward_duration_s = clamp(float(forward_duration_s), 0.5, 1.4)
         with self._lock:
             self._zero()
             # 1. Lower arm to floor level if not already there
@@ -601,7 +697,7 @@ class RoverTools:
                     try:
                         action = self.rover.robotic_arm.move(x=0, y=dy)
                         action.wait_for_completed(timeout=3.0)
-                        time.sleep(0.15)
+                        time.sleep(0.3)
                         self.arm_delta_y += dy
                     except Exception:
                         pass
@@ -609,22 +705,22 @@ class RoverTools:
             # 2. Open gripper jaws wide
             try:
                 self.rover.gripper.open(power=50)
-                time.sleep(0.5)
+                time.sleep(0.9)
                 self.rover.gripper.pause()
                 self._last_gripper_state = "open"
             except Exception:
                 pass
 
         # 3. Drive straight forward with heading hold to funnel and seat can in gripper throat
-        # At gentle 0.04 m/s for 0.7s = ~2.8 cm forward drive! Jaws are already open wide (12cm) so can slips inside without tipping.
-        drive_res = self.drive(x_mps=0.04, y_mps=0.0, z_degps=0.0, duration_s=forward_duration_s, hold_heading=True, guard_tof=False)
+        # At gentle 0.03 m/s for 0.9s = ~2.7 cm forward drive! Jaws are already open wide (12cm) so can slips inside without tipping.
+        drive_res = self.drive(x_mps=0.03, y_mps=0.0, z_degps=0.0, duration_s=forward_duration_s, hold_heading=True, guard_tof=False)
 
         # 4. Clamp gripper firmly around the can with high power
         with self._lock:
             self._zero()
             try:
                 self.rover.gripper.close(power=80)
-                time.sleep(0.7)
+                time.sleep(1.2)
                 self.rover.gripper.pause()
                 self._last_gripper_state = "close"
             except Exception:
@@ -635,7 +731,7 @@ class RoverTools:
             try:
                 action = self.rover.robotic_arm.move(x=0, y=35)
                 lift_done = bool(action.wait_for_completed(timeout=3.0))
-                time.sleep(0.15)
+                time.sleep(0.3)
                 self.arm_delta_y += 35
             except Exception:
                 pass
@@ -654,7 +750,7 @@ class RoverTools:
             raise RoverError("arguments_must_be_object")
         try:
             if name == "grasp_can":
-                return self.grasp_can(args.get("forward_duration_s", 0.7))
+                return self.grasp_can(args.get("forward_duration_s", 0.9))
             if name == "drive_chassis":
                 return self.drive(args["x_mps"], args.get("y_mps", 0.0), args.get("z_degps", 0.0), args["duration_s"])
             if name == "turn_degrees":
@@ -676,7 +772,7 @@ class RoverTools:
             # 1. Open gripper jaws wide
             try:
                 self.rover.gripper.open(power=50)
-                time.sleep(0.5)
+                time.sleep(0.9)
                 self.rover.gripper.pause()
                 self._last_gripper_state = "open"
             except Exception:
@@ -689,7 +785,7 @@ class RoverTools:
                 if abs(dy) >= 3:
                     action = self.rover.robotic_arm.move(x=0, y=dy)
                     action.wait_for_completed(timeout=3.0)
-                    time.sleep(0.15)
+                    time.sleep(0.3)
                     self.arm_delta_y += dy
             except Exception:
                 pass
