@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
 
-function page({ultra = false, zoom = false, largeJpeg = false} = {}) {
+function page({ultra = false, zoom = false, largeJpeg = false, failWide = false} = {}) {
   const elements = {};
   for (const id of ['camera-id', 'token', 'start', 'stop', 'status', 'preview', 'lens', 'camera-details', 'grok-toggle', 'grok-status']) {
     elements[id] = {value: '', disabled: false, textContent: '', listeners: {},
@@ -37,6 +37,11 @@ function page({ultra = false, zoom = false, largeJpeg = false} = {}) {
       enumerateDevices: async () => devices,
       getUserMedia: async constraints => {
         calls.push(constraints);
+        if (failWide && constraints.video.width?.ideal > 1920) {
+          const error = new Error('OverconstrainedError');
+          error.name = 'OverconstrainedError';
+          throw error;
+        }
         const deviceId = constraints.video.deviceId?.exact || 'rear';
         const settings = {deviceId, zoom: 1};
         const track = {label: devices.find(d => d.deviceId === deviceId).label, stopped: false,
@@ -83,6 +88,24 @@ test('prefers the ultra-wide lens and uploads native 4K dimensions', async () =>
   assert.match(p.elements['camera-details'].textContent, /Ultra Wide/);
   assert.equal(p.uploads.length, 1);
   assert.equal(p.uploads[0].headers['Authorization'], 'Bearer scoped-camera-token');
+});
+
+test('a rejected high-resolution request still starts the rear camera', async () => {
+  const p = page({failWide: true});
+  await p.start();
+  assert.equal(p.calls.at(-1).video.width.ideal, 1920);
+  assert.equal(p.uploads.length, 1);
+  assert.equal(p.elements.status.textContent.startsWith('Sending'), true);
+});
+
+test('portrait keeps the preview running until the phone is landscape', async () => {
+  const p = page();
+  p.elements.preview.videoWidth = 1080;
+  p.elements.preview.videoHeight = 1920;
+  await p.start();
+  assert.match(p.elements.status.textContent, /landscape/);
+  assert.equal(p.tracks.some(track => track.stopped), false);
+  assert.equal(p.uploads.length, 0);
 });
 
 test('requests 0.5 zoom only when supported and reports the actual setting', async () => {

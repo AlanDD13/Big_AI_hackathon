@@ -1,5 +1,10 @@
 # Continue Alan's work in Cursor
 
+For the current LangGraph testing task, start with
+[`CURSOR_LANGGRAPH_HANDOFF.md`](CURSOR_LANGGRAPH_HANDOFF.md). It records PR19,
+the isolated test clone and offline-first commands, and supersedes older
+LangGraph/board-status assumptions below for that task.
+
 Updated 2026-11-04, 18:36 Europe/Rome. This replaces the earlier handoff.
 Check live Git/board state before acting; other agents are working concurrently.
 

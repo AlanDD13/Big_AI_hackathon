@@ -204,7 +204,12 @@ class VisionService:
         if processed and processed[:2] == context[:2] and context[2] <= processed[2]:
             return
         detections = await asyncio.to_thread(self.detector.detect, frame.jpeg)
-        if self.now() - frame.received_at > self.settings.stale_seconds or not self._same_epoch(frame):
+        # A full-resolution tiled pass often takes longer than the one-second
+        # evidence window. Publish the boxes on this exact frame anyway.
+        # Eligibility still requires last_seen within stale_seconds, so a late
+        # result cannot become a pickup target. A changed session or geometry
+        # still drops the result.
+        if not self._same_epoch(frame):
             return
         # Any malformed box invalidates that frame rather than accidentally hiding a person.
         if any(len(d.bbox) != 4 or not all(math.isfinite(v) for v in d.bbox)

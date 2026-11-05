@@ -150,3 +150,59 @@ def test_bridge_requires_complete_metadata_and_rejects_http_errors(monkeypatch):
         bridge.read()
     with pytest.raises(httpx.HTTPStatusError):
         bridge.read()
+
+
+def test_bridge_stale_poll_stores_one_frame_and_keeps_its_id():
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from vision.cameras.adapters import RoverHTTPAdapter
+    image = jpeg()
+    frame_headers = {'X-Camera-Id': 'rover', 'X-Session-Id': 'epoch1', 'X-Geometry-Version': 'g1', 'X-Frame-Id': '40', 'X-Captured-At': '10', 'X-Timestamp-Basis': 'SOURCE'}
+    steps = ['stale', 'frame', 'frame', 'stale', 'frame']
+    served = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            authorized = self.path == '/camera/frame' and self.headers.get('Authorization') == 'Bearer secret'
+            step = steps.pop(0) if authorized and steps else 'deny'
+            served.append(step)
+            if step == 'frame':
+                payload, status, extra = image, 200, {'Content-Type': 'image/jpeg', **frame_headers}
+            else:
+                code = 'STALE_FRAME' if step == 'stale' else 'UNAUTHORIZED'
+                payload = json.dumps({'error': {'code': code, 'message': 'frame older than 1.0 s' if step == 'stale' else 'bearer required'}}).encode()
+                status, extra = (503 if step == 'stale' else 401), {'Content-Type': 'application/json'}
+            self.send_response(status)
+            for name, value in extra.items():
+                self.send_header(name, value)
+            self.send_header('Content-Length', str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, format, *args):
+            return
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        store = FrameStore()
+        bridge = RoverHTTPAdapter(f'http://{host}:{port}', store, 'rover', token='secret')
+        assert bridge.read() is None
+        assert store.latest('rover') is None
+        frame = bridge.read()
+        assert (frame.camera_id, frame.session_id, frame.geometry_version, frame.frame_id, frame.captured_at, frame.timestamp_basis, frame.kind) == ('rover', 'epoch1', 'g1', 40, 10, 'SOURCE', 'ROVER')
+        assert (frame.width, frame.height) == (20, 10)
+        assert bridge.read() is None
+        assert bridge.read() is None
+        assert bridge.read() is None
+        assert store.latest('rover') == frame
+        assert store.get('rover', 'epoch1', 40) == frame
+        assert len(store._frames) == 1
+        assert served == ['stale', 'frame', 'frame', 'stale', 'frame']
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
