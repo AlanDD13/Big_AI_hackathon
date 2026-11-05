@@ -34,7 +34,7 @@ class Limits:
     telemetry_s: float = 0.5
     heartbeat_s: float = 1.0
     poll_s: float = 0.02
-    write_timeout_s: float = 0.05
+    write_timeout_s: float = 0.10
     stop_confirmation_s: float = 1.5
     stationary_span_s: float = 0.2
     max_x: float = 0.35
@@ -248,66 +248,76 @@ class SafetyController:
             self._heartbeat_at = self._clock()
 
     def observe(self, vx, vy, yaw_rate, sample_id=None):
-        """Call only on a NEW coherent, locally fresh pose/velocity/attitude sample.
+        """Observe fresh telemetry; request zero OUTSIDE the controller lock.
 
-        Stop confirmation requires >= 3 distinct stationary observations spanning
-        >= 0.2 s (`stationary_span_s`) after `_stop_sent_at`.
+        Confirmation still needs three fresh quiet samples spanning >=200ms.
+        Fault authority is latched atomically before releasing the lock.
         """
         with self._lock:
-            if not all(finite(v) for v in (vx, vy, yaw_rate)):
-                self._telemetry_at = None
-                self._trip("INVALID_TELEMETRY")
+            fault = self._observe_sample_locked(vx, vy, yaw_rate, sample_id)
+            if fault:
+                self._latch_fault_locked(fault)
+        if fault:
+            self._send_zero()
+
+    def _observe_sample_locked(self, vx, vy, yaw_rate, sample_id):
+        if not all(finite(v) for v in (vx, vy, yaw_rate)):
+            self._telemetry_at = None
+            return "INVALID_TELEMETRY"
+        if sample_id is not None and (type(sample_id) is not int or sample_id < 0):
+            self._telemetry_at = None
+            return "INVALID_TELEMETRY"
+        now = self._clock()
+        previous_at = self._telemetry_at
+        self._telemetry_at = now
+        quiet = abs(vx) <= 0.025 and abs(vy) <= 0.025 and abs(yaw_rate) <= 3
+        if not quiet:
+            self._quiet_count, self._quiet_since = 0, None
+            if (self._stage == "STOPPED"
+                    or (self._stage == "IDLE" and self._active is None)
+                    or (self._release_pending
+                        and now - self._stop_requested_at >= self.limits.stop_confirmation_s)):
+                return "UNEXPECTED_MOTION"
+            # Clean release stays UNKNOWN/disarmed during physical braking.
+            # Motion resets quiet evidence; tick still repeats zero. Motion
+            # past the existing confirmation bound faults and cannot later
+            # auto-return to IDLE. Stationary thresholds are unchanged.
+            return
+        # Duplicate quiet observations cannot manufacture stop evidence;
+        # unexpected motion above is still processed immediately.
+        if sample_id is not None:
+            if self._last_sample_id is not None and sample_id <= self._last_sample_id:
                 return
-            if sample_id is not None and (type(sample_id) is not int or sample_id < 0):
-                self._telemetry_at = None
-                self._trip("INVALID_TELEMETRY")
+            self._last_sample_id = sample_id
+            if self._last_observation_at is not None and now < self._last_observation_at:
                 return
-            now = self._clock()
-            previous_at = self._telemetry_at
-            self._telemetry_at = now
-            quiet = abs(vx) <= 0.025 and abs(vy) <= 0.025 and abs(yaw_rate) <= 3
-            if not quiet:
-                self._quiet_count, self._quiet_since = 0, None
-                if (self._stage == "STOPPED"
-                        or (self._stage == "IDLE" and self._active is None)
-                        or self._release_pending):
-                    self._trip("UNEXPECTED_MOTION")
+        else:
+            if self._last_observation_at is not None and now <= self._last_observation_at:
                 return
-            # Duplicate quiet observations cannot manufacture stop evidence;
-            # unexpected motion above is still processed immediately.
-            if sample_id is not None:
-                if self._last_sample_id is not None and sample_id <= self._last_sample_id:
-                    return
-                self._last_sample_id = sample_id
-                if self._last_observation_at is not None and now < self._last_observation_at:
-                    return
-            else:
-                if self._last_observation_at is not None and now <= self._last_observation_at:
-                    return
-            self._last_observation_at = now
-            if previous_at is not None and now - previous_at >= self.limits.telemetry_s:
-                self._quiet_count, self._quiet_since = 0, None
-            if (self._stop_sent_at is not None
-                    and now > self._stop_sent_at
-                    and not self._write_stuck
-                    and self._transport_error is None):
-                self._quiet_since = now if self._quiet_since is None else self._quiet_since
-                self._quiet_count += 1
-                if self._quiet_count >= 3 and now - self._quiet_since >= self.limits.stationary_span_s:
-                    if self._stage == "UNKNOWN":
-                        if self._release_pending and self._fresh(self._heartbeat_at, self.limits.heartbeat_s):
-                            self._release_pending = False
-                            self._generation += 1
-                            self._armed = True
-                            self._active = None
-                            self._sequence = 0
-                            self._reason = None
-                            self._stop_unconfirmed = False
-                            self._set_stage("IDLE")
-                        else:
-                            self._release_pending = False
-                            self._set_stage("STOPPED")
-                            self._stop_unconfirmed = False
+        self._last_observation_at = now
+        if previous_at is not None and now - previous_at >= self.limits.telemetry_s:
+            self._quiet_count, self._quiet_since = 0, None
+        if (self._stop_sent_at is not None
+                and now > self._stop_sent_at
+                and not self._write_stuck
+                and self._transport_error is None):
+            self._quiet_since = now if self._quiet_since is None else self._quiet_since
+            self._quiet_count += 1
+            if self._quiet_count >= 3 and now - self._quiet_since >= self.limits.stationary_span_s:
+                if self._stage == "UNKNOWN":
+                    if self._release_pending and self._fresh(self._heartbeat_at, self.limits.heartbeat_s):
+                        self._release_pending = False
+                        self._generation += 1
+                        self._armed = True
+                        self._active = None
+                        self._sequence = 0
+                        self._reason = None
+                        self._stop_unconfirmed = False
+                        self._set_stage("IDLE")
+                    else:
+                        self._release_pending = False
+                        self._set_stage("STOPPED")
+                        self._stop_unconfirmed = False
 
     def _send_zero(self):
         with self._lock:

@@ -83,6 +83,32 @@ hardware validation before physical bench testing.
 
 ## 2. Transport, Auth & Routes (`P1 -> P3 -> P4` and Bench Dev Proxy)
 
+### Required restart fence (`bridgeBootId-v1`)
+
+P3/P4 agreement: public drive, release and rearm writes require JSON
+`bridgeBootId`, exactly the lowercase 32-hex boot returned by P4. P1/P3 retain
+the boot with the granted lease/session and never substitute a newly queried
+boot into an old request. P4 validates against its immutable current process
+boot before any lease/controller mutation. Missing or malformed boot returns
+`422 VALIDATION_ERROR`; a different boot returns `409 BRIDGE_BOOT_MISMATCH`
+without changing the current process's authority or issuing motor commands.
+`GET /health` advertises `manualBootFence: "bridgeBootId-v1"`; P3 must require
+this capability before admitting manual motion. Status-before-drive alone does
+not fence a restart race. An old boot response/request must be reconciled; do
+not automatically resend motion with a replacement boot or lease.
+
+Public release additionally requires the matching `roverId`, `leaseId` and
+`leaseGeneration`, checked atomically with release. Stale/nonmatching/expired
+lease returns `409 LEASE_EXPIRED` without releasing a newer operator's lease.
+The release response includes `bridgeBootId`. Lease counters may restart; the
+boot plus lease/generation, not the counter alone, is authority.
+
+Authenticated global stop (`POST /api/manual/stop` -> P4 `POST /stop`) remains
+unfenced and does not require a lease. It must remain available after restart
+or lost ownership. Rearm uses the boot of the observed confirmed stop; it never
+restores the previous lease or motion. The fence applies at the public HTTP
+boundary; trusted in-process P4 owner calls are not browser/proxy transports.
+
 ### Browser -> Backend (`P1 -> P3`)
 Authenticated via the same-origin HttpOnly session cookie established at
 `POST /api/session` (per `contracts/backend-stream-v1.md`). Expired or missing
@@ -126,6 +152,7 @@ session returns `401 Unauthorized`.
        "leaseId": "lease-1",
        "leaseGeneration": 1,
        "sequence": 1,
+       "bridgeBootId": "cccccccccccccccccccccccccccccccc",
        "issuedAt": 1793797200.05,
        "expiresAt": 1793797200.25,
        "xMps": 0.2,
@@ -161,10 +188,12 @@ session returns `401 Unauthorized`.
        "roverId": "rover-1",
        "leaseId": "lease-1",
        "leaseGeneration": 1,
-       "reason": "user_release"
+       "reason": "user_release",
+       "bridgeBootId": "cccccccccccccccccccccccccccccccc"
      }
      ```
      (`reason` is `"user_release"`, `"blur"`, or `"tab_hidden"`.)
+   The request must also include `bridgeBootId` from the granted lease.
    - Immediately commands `drive_speed(x=0.0, y=0.0, z=0.0, timeout=0.25)` on P4
      and invalidates the lease. Because real EP Core `ProtoChassisSpeedMode`
      packets have no protocol ACK, P4 enters `UNKNOWN` when zero velocity is
@@ -182,6 +211,7 @@ session returns `401 Unauthorized`.
      {
        "roverId": "rover-1",
        "released": true,
+       "bridgeBootId": "cccccccccccccccccccccccccccccccc",
        "stage": "UNKNOWN",
        "zeroVelocityRequested": true,
        "stationaryConfirmed": false,
@@ -207,7 +237,8 @@ session returns `401 Unauthorized`.
    - Request:
      ```json
      {
-       "roverId": "rover-1"
+       "roverId": "rover-1",
+       "bridgeBootId": "cccccccccccccccccccccccccccccccc"
      }
      ```
    - Legal only when confirmed `STOPPED` (rejected with **`409 NOT_STOPPED`** while

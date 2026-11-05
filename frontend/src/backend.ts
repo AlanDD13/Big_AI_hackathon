@@ -119,5 +119,5 @@ export function connectBackend(publish: (state: Connection) => void, supplied?: 
     timer = deps.schedule(() => { void load(); }, Math.min(1000 * 2 ** retries++, 15_000));
   }
   void load();
-  return { close() { stopped = true; ++generation; cleanup(); }, retry() { retries = 0; void load(); } };
+  return { close() { stopped = true; ++generation; cleanup(); }, retry() { retries = 0; return load(); } };
 }

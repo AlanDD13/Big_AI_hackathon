@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Bell, Box, CircleHelp, RefreshCw, ShieldAlert } from 'lucide-react';
 import CameraWidget from './CameraWidget';
 import FleetPanel from './FleetPanel';
+import ConnectedManual from './ConnectedManual';
 import PerceptionDetails from './PerceptionDetails';
 import { perceptionFacts } from './perception';
 import { visionFixture, visionStages } from './visionFixture';
@@ -14,7 +15,7 @@ const label = (value: unknown, fallback?: string) => text(value, fallback).repla
 const time = (value: unknown) => { const n = number(value); const d = new Date(n !== null ? n * 1000 : text(value, '')); return Number.isNaN(d.getTime()) ? 'Unavailable' : d.toLocaleString(); };
 function Fact({ title, children }: { title: string; children: React.ReactNode }) { return <div><dt>{title}</dt><dd>{children}</dd></div>; }
 
-export default function BackendDashboard({ view }: { view: 'objects' | 'fleet' }) {
+export default function BackendDashboard({ view }: { view: 'objects' | 'fleet' | 'manual' }) {
   const [connection, setConnection] = useState<Connection>({ status: 'loading', message: 'Loading backend snapshot…', store: null, updatedAt: null });
   const [preview, setPreview] = useState(false);
   const [visionStage, setVisionStage] = useState<VisionStage>('Observed');
@@ -42,6 +43,8 @@ export default function BackendDashboard({ view }: { view: 'objects' | 'fleet' }
   const unread = alerts.filter(a => !readAlerts.has(alertKey(a.alertId))).length;
   function selectObject(id: string) { setSelected(id); }
 
+  if (view === 'manual') return <ConnectedManual ready={Boolean(connection.store)} onRefresh={() => client.current?.retry()}/>;
+
   if (view === 'fleet') return <FleetPanel connection={connection} onRefresh={() => client.current?.retry()}/>;
 
   return <div className="backend-workspace">
@@ -64,7 +67,7 @@ export default function BackendDashboard({ view }: { view: 'objects' | 'fleet' }
       <section className="panel backend-boundary"><h2>{useFixtures ? 'Fixture context' : 'Connected operations'}</h2><p>{useFixtures ? 'This scenario contains no robot or mission records.' : store ? `${store.robots.length} robots · ${store.missions.length} missions reported by the backend.` : 'Robot and mission status are unavailable.'} Mission dispatch and live manual control are awaiting their API integration.</p><button className="button secondary" disabled>Dispatch unavailable</button></section>
     </div><aside className="backend-detail-column">
       <section className="panel backend-detail" aria-label="Object details"><div className="panel-heading"><h2>Object details</h2><span className="badge neutral">Read-only</span></div>{object ? <ObjectDetails key={`${store?.backendBootId}:${object.objectId}`} object={object}/> : <div className="empty-message">{selected ? 'This object is no longer present in the current snapshot.' : 'Select an object or alert to inspect its evidence.'}</div>}</section>
-      <CameraWidget/>
+      <CameraWidget enabled={!useFixtures && Boolean(connection.store)} onRefreshSession={() => client.current?.retry()}/>
     </aside></div>
     <footer className="page-footer"><span>{useFixtures ? 'Labelled contract fixture · no live observations' : 'Backend data only · no simulated robot telemetry'}</span><span>ROVR / OPERATIONS CONSOLE</span></footer>
   </div>;

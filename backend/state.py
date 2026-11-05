@@ -261,13 +261,6 @@ class BackendState:
                 self._remember_vision(event, event.object_id, None, None, persist=persist)
                 return VisionIngestResult(event.object_id, None, False, True)
 
-            if (
-                self._current_vision_boot is not None
-                and event.producer_boot_id != self._current_vision_boot
-            ):
-                self._stale_vision_boots.add(self._current_vision_boot)
-            self._current_vision_boot = event.producer_boot_id
-
             if event.producer_boot_id in self._gapped_vision_boots:
                 raise VisionConflict("Vision sequence gap was not applied")
             last_sequence = self._vision_sequence.get(event.producer_boot_id)
@@ -286,14 +279,15 @@ class BackendState:
             version_key = (event.object_id, event.producer_boot_id)
             last_version = self._vision_entity_version.get(version_key)
             if last_version is not None and event.entity_version <= last_version:
-                self._vision_sequence[event.producer_boot_id] = event.sequence
                 current = self._objects.get(event.object_id)
                 revision = None if current is None else int(current["backendRevision"])
                 self._remember_vision(event, event.object_id, revision, current, persist=persist)
+                self._vision_sequence[event.producer_boot_id] = event.sequence
                 return VisionIngestResult(event.object_id, revision, False, True)
 
             body = self._vision_body_unlocked(event)
             self._remember_vision(event, event.object_id, int(body["backendRevision"]), body, persist=persist)
+            self._revisions[("object", event.object_id)] = int(body["backendRevision"])
             self._vision_sequence[event.producer_boot_id] = event.sequence
             self._vision_entity_version[version_key] = event.entity_version
             self._objects[event.object_id] = body
@@ -319,6 +313,14 @@ class BackendState:
                 raise VisionConflict(str(exc)) from exc
             except StorageUnavailable:
                 raise
+        # An unaccepted event must not retire the active producer epoch.
+        if event.producer_boot_id not in self._stale_vision_boots:
+            if (
+                self._current_vision_boot is not None
+                and event.producer_boot_id != self._current_vision_boot
+            ):
+                self._stale_vision_boots.add(self._current_vision_boot)
+            self._current_vision_boot = event.producer_boot_id
         self._ingested[event.event_id] = (event.canonical, object_id, revision)
 
     def _vision_body_unlocked(self, event: ParsedVisionEvent) -> dict[str, object]:
@@ -332,12 +334,15 @@ class BackendState:
             body["visualPickupAdvisory"] = previous.get("visualPickupAdvisory")
         body.pop("_visualStatusPresent", None)
         body.pop("_visualAdvisoryPresent", None)
-        revision = self._next_revision_unlocked("object", event.object_id)
+        # Reserve the number locally; publish it only after durable acceptance.
+        revision = self._revisions.get(("object", event.object_id), 0) + 1
         body["backendBootId"] = self.boot_id
         body["backendRevision"] = revision
         body["dispatchEligible"] = False
         advisory = body.get("visualPickupAdvisory")
         if isinstance(advisory, dict):
+            advisory = dict(advisory)
+            body["visualPickupAdvisory"] = advisory
             advisory["pickupVerified"] = False
             advisory["advisory"] = True
         return body
