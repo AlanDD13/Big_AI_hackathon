@@ -71,6 +71,19 @@ class ManualProxy:
         self._unknown = False
         self._boot: str | None = None
         self._stop_latched = False
+        self._client: httpx.AsyncClient | None = None
+
+    async def start(self):
+        # TLS/context initialization can take >250ms on Windows. Perform it
+        # once at app startup, not inside an intent's bounded network operation.
+        if self._client is None and self._configured():
+            self._client = httpx.AsyncClient(transport=self._transport, trust_env=False,
+                                            follow_redirects=False, timeout=0.2)
+
+    async def close(self):
+        client, self._client = self._client, None
+        if client is not None:
+            await client.aclose()
 
     def _configured(self):
         try:
@@ -86,26 +99,30 @@ class ManualProxy:
         if not self._configured():
             raise ManualFailure(503, "MANUAL_UNAVAILABLE")
         try:
+            await self.start()  # Also supports direct offline library consumers.
+            client = self._client
+            if path == "/manual/drive":
+                parse_manual_request("drive", body, now=self._now())
             async with asyncio.timeout(0.25):
-                async with httpx.AsyncClient(transport=self._transport, trust_env=False,
-                                            follow_redirects=False, timeout=0.2) as client:
-                    async with client.stream(method, self._url + path, json=body,
-                                             headers={"Authorization": f"Bearer {self._peer}"}) as response:
-                        data = bytearray()
-                        async for chunk in response.aiter_bytes():
-                            data.extend(chunk)
-                            if len(data) > 65536:
-                                raise ValueError
-                        result = json.loads(data)
-                        if not isinstance(result, dict):
+                async with client.stream(method, self._url + path, json=body,
+                                         headers={"Authorization": f"Bearer {self._peer}"}) as response:
+                    data = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        data.extend(chunk)
+                        if len(data) > 65536:
                             raise ValueError
-                        if response.status_code != 200:
-                            error = result.get("error")
-                            code = error.get("code") if isinstance(error, dict) else None
-                            if response.status_code in {404, 409, 422, 503} and isinstance(code, str) and code in ERRORS:
-                                raise ManualFailure(response.status_code, code)
-                            raise ValueError
-                        return result
+                    result = json.loads(data)
+                    if not isinstance(result, dict):
+                        raise ValueError
+                    if response.status_code != 200:
+                        error = result.get("error")
+                        code = error.get("code") if isinstance(error, dict) else None
+                        if response.status_code in {404, 409, 422, 503} and isinstance(code, str) and code in ERRORS:
+                            raise ManualFailure(response.status_code, code)
+                        raise ValueError
+                    return result
+        except InvalidManualRequest:
+            raise
         except (httpx.HTTPError, httpx.InvalidURL, ValueError, TimeoutError, OSError):
             raise ManualFailure(503, "MANUAL_UNAVAILABLE") from None
 

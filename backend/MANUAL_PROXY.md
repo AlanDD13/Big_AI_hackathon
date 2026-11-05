@@ -110,6 +110,12 @@ stop and retains uncertainty. Nonzero writes use a 250 ms total upstream budget
 server-side peer auth, no environment HTTP proxy, and a 64 KiB response limit.
 This network timeout is not P4's independent <=300 ms watchdog guarantee.
 
+The verified-TLS HTTP client is initialized once during backend lifespan startup
+and reused across requests, then closed on shutdown. Client/context construction
+is outside the 250 ms transport budget because Windows initialization can exceed
+that budget alone. Direct library users should call `start()`/`close()` around
+their session; lazy setup is supported and drive expiry is rechecked afterwards.
+
 ## Offline checks
 
 ```powershell
