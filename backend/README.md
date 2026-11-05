@@ -48,6 +48,12 @@ and a planner. For disposable local testing, set
 classification and approved pickup profile. The fixture produces a queue
 row only. Event cursors retain the existing session and boot scope.
 
+A track currently marked `LOST` or `EXCLUDED` by Vision cannot queue from its
+historical mapping samples. Admission returns `STATIONARITY_REQUIRED` before
+planning; stored samples remain available for audit. New mapping samples alone
+do not clear that Vision revocation. A later valid Vision state can restore
+admission only if the ordinary freshness, classification and profile gates pass.
+
 Vision ingest uses the same `Authorization: Bearer $PEER_TOKEN` check.
 `POST /api/detections` accepts `object.observed` and shows the object
 immediately. Until classification is completed, that status is `OBSERVING`
