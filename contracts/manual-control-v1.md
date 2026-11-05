@@ -294,6 +294,10 @@ session returns `401 Unauthorized`.
   - Out-of-range or non-finite values are rejected with `422 Unprocessable Entity`
     without moving motors so UI scaling bugs fail closed.
 - **Strict sequence & intent expiry (`<= 500 ms`)**:
+  - Backend and bridge validators allow `issuedAt` up to `100 ms`
+    ahead of their wall clock to accommodate small clock differences. This
+    does not extend `expiresAt`: an expired command is always rejected, and
+    `expiresAt - issuedAt` must still be at most `500 ms`.
   - `sequence` must be a strictly increasing positive integer per
     `(leaseId, leaseGeneration)`.
   - Duplicate or lower `sequence`, mismatched `leaseId`/`leaseGeneration`, or

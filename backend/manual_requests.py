@@ -10,6 +10,10 @@ from math import isfinite
 from backend.evidence import ID_RE
 
 
+# Browser, backend and bridge wall clocks may differ slightly. Expiry stays strict.
+MAX_FUTURE_CLOCK_SKEW_S = 0.1
+
+
 class InvalidManualRequest(ValueError):
     pass
 
@@ -66,7 +70,8 @@ def parse_manual_request(action: str, payload: object, *, now: float) -> dict[st
         issued, expires = payload["issuedAt"], payload["expiresAt"]
         if not _number(issued) or not _number(expires):
             raise InvalidManualRequest("Intent timestamps must be finite numbers")
-        if not 0 < expires - issued <= 0.5 or issued > now or expires <= now:
+        if (not 0 < expires - issued <= 0.5
+                or issued > now + MAX_FUTURE_CLOCK_SKEW_S or expires <= now):
             raise StaleManualIntent("Intent must be current with a lifetime at most 500 ms")
     if action == "release" and (not isinstance(payload["reason"], str)
                                 or payload["reason"] not in {"user_release", "blur", "tab_hidden"}):
