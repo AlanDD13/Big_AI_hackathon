@@ -47,14 +47,14 @@ SYSTEM = (
     "The gripper claws open 12 cm wide! That is a huge funnel.\n"
     "1. TURNING: If canTracker gives recommendedTurnDeg != 0 (e.g. +16° or -20°), turn by that exact angle ONCE.\n"
     "   NEVER call turn_degrees with angles < 10°! If isInCorridor is True, IT IS ALIGNED. DRIVE FORWARD!\n"
-    "2. FAST APPROACH: When can is far (bottom y < 210 or distanceToClawsPx > 120):\n"
+    "2. FAST APPROACH: When can is far (bottom y < 210 or distanceToClawsPx > 125):\n"
     "   Advance boldly: drive_chassis(x_mps=0.12, duration_s=2.2) (~26 cm advance per step!). Do not creep by 10 cm!\n"
-    "3. MID-RANGE APPROACH: When can is approaching (bottom y between 210 and 230):\n"
-    "   Advance into grasp zone: drive_chassis(x_mps=0.08, duration_s=1.0) (~8 cm advance).\n"
-    "4. GUARANTEED GRASP: As soon as can bottom reaches y >= 230 (or isInGraspRange is True):\n"
-    "   CALL grasp_can(forward_duration_s=0.9) IMMEDIATELY!\n"
+    "3. MID-RANGE APPROACH: When can is approaching (bottom y between 210 and 265):\n"
+    "   Advance close to grasp zone: drive_chassis(x_mps=0.08, duration_s=1.0) (~8 cm advance). DO NOT call grasp_can yet while still at mid-range!\n"
+    "4. GUARANTEED GRASP: As soon as can bottom reaches y >= 270 (yellow grasp line) or isInGraspRange is True:\n"
+    "   CALL grasp_can(forward_duration_s=1.3) IMMEDIATELY!\n"
     "   DO NOT DRIVE FORWARD SEPARATELY WITH drive_chassis (driving forward with closed claws kicks the can!).\n"
-    "   grasp_can automatically lowers arm, opens 12cm claws wide, glides forward 2.7 cm, clamps tight at power 80, and lifts can off floor!\n"
+    "   grasp_can automatically lowers arm, opens 12cm claws wide, glides forward ~6 cm into the throat, clamps tight at power 80, and lifts can off floor!\n"
     "5. TRANSPORT & FINISH:\n"
     "   Once can is held and lifted (canTracker['canHeldInClaws'] or last action grasp_can):\n"
     "   - Step A: drive_chassis(x_mps=0.08, duration_s=1.2)\n"
@@ -66,7 +66,7 @@ SYSTEM = (
     "- Output exactly ONE tool call per step.\n"
     "- Trust your eyes and canTracker to locate the metallic drink can and ignore shadows and floor debris.\n"
     "- When can is in the corridor, DO NOT TURN! Advance directly!\n"
-    "- When can bottom reaches y >= 230 (or isInGraspRange is True), call grasp_can(0.9) immediately!\n"
+    "- When can bottom reaches y >= 270 (or isInGraspRange is True), call grasp_can(1.3) immediately!\n"
     "- Once released on floor, call stop_robot() immediately!"
 )
 
@@ -179,11 +179,16 @@ def generate_html_summary(log_dir, steps, result, calls):
         yolo = s.get("yoloPosition") or {}
         if yolo.get("detected"):
             box_str = json.dumps(yolo.get("box"))
+            score_val = float(yolo.get("score") or 0.0)
+            dx_val = float(yolo.get("offsetFromCenterPx") or 0.0)
+            cx_val = yolo.get("centerXPx", "N/A")
+            by_val = yolo.get("bottomYPx", "N/A")
+            dy_val = yolo.get("distanceToClawsPx", "N/A")
             yolo_str = f"""
-            <div style="font-size: 12px; color: #58a6ff; font-weight: bold; margin-bottom: 4px;">🎯 YOLO Can Detected: {yolo.get('score', 0):.2f}</div>
+            <div style="font-size: 12px; color: #58a6ff; font-weight: bold; margin-bottom: 4px;">🎯 YOLO Can Detected: {score_val:.2f}</div>
             <div style="font-size: 11px; font-family: monospace; color: #8b949e;">Box: {box_str}</div>
-            <div style="font-size: 11px; font-family: monospace; color: #8b949e;">Center X: {yolo.get('centerXPx')} px (dx: {yolo.get('offsetFromCenterPx'):+.0f} px)</div>
-            <div style="font-size: 11px; font-family: monospace; color: #8b949e;">Bottom Y: {yolo.get('bottomYPx')} px (dy to claws: {yolo.get('distanceToClawsPx')} px)</div>
+            <div style="font-size: 11px; font-family: monospace; color: #8b949e;">Center X: {cx_val} px (dx: {dx_val:+.0f} px)</div>
+            <div style="font-size: 11px; font-family: monospace; color: #8b949e;">Bottom Y: {by_val} px (dy to claws: {dy_val} px)</div>
             <div style="font-size: 11px; font-family: monospace; color: {'#3fb950' if yolo.get('isInGraspRange') else ('#d29922' if yolo.get('isInCorridor') else '#f85149')};">
                 Status: {'GRASP READY' if yolo.get('isInGraspRange') else ('IN CORRIDOR' if yolo.get('isInCorridor') else 'OFF-CENTER')}
             </div>

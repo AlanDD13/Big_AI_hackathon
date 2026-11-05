@@ -103,20 +103,25 @@ class StableYOLOTracker:
         except Exception:
             pass
 
-        # Hysteresis: acquire new track at score >= 0.15, maintain existing track down to 0.08
+        # Hysteresis & Jump handling
         min_conf = 0.08 if self.track else 0.15
         if best_box is not None and best_score >= min_conf:
             self.miss_count = 0
             if self.track is None:
                 self.track = {"box": best_box, "score": best_score}
             else:
-                # Exponential moving average filter for smooth coordinates
                 prev_box = self.track["box"]
-                self.track["box"] = [
-                    self.alpha * best_box[i] + (1.0 - self.alpha) * prev_box[i]
-                    for i in range(4)
-                ]
-                self.track["score"] = 0.3 * best_score + 0.7 * self.track["score"]
+                # If large movement (> 25px, e.g. after chassis turn/drive), snap immediately to eliminate lag/flick back
+                delta_move = max(abs(best_box[0] - prev_box[0]), abs(best_box[1] - prev_box[1]))
+                if delta_move > 25.0:
+                    self.track["box"] = best_box
+                else:
+                    # Subtle smoothing for micro tremors only
+                    self.track["box"] = [
+                        0.75 * best_box[i] + 0.25 * prev_box[i]
+                        for i in range(4)
+                    ]
+                self.track["score"] = best_score
         else:
             self.miss_count += 1
             if self.miss_count > self.max_misses:
@@ -138,7 +143,8 @@ class StableYOLOTracker:
         offset_px = round(cx - 320.0, 1)
         rec_turn = round(offset_px * 0.15, 1)
         in_corridor = (290.0 <= cx <= 350.0)
-        in_grasp = (by >= 230.0)
+        # Grasp zone: can bottom must reach yellow line area (y >= 270) before calling grasp_can!
+        in_grasp = (by >= 270.0)
         dist_to_claws = max(0, int(335.0 - by))
 
         return {
@@ -157,7 +163,7 @@ class StableYOLOTracker:
             "canHeldInClaws": False,
             "gripperState": "open",
             "recommendedAction": (
-                "IN_GRASP_RANGE: Call grasp_can(0.9) now!" if in_grasp
+                "IN_GRASP_RANGE: Call grasp_can(1.3) now!" if in_grasp
                 else ("DRIVE_FORWARD: Aligned in corridor. Drive forward!" if in_corridor
                       else f"TURN: Turn by {rec_turn:+.1f} deg to center the can.")
             )
@@ -708,9 +714,9 @@ class RoverTools:
             print(f"[HTTP LIVE STREAM] Could not start server on port {port}: {exc}", flush=True)
 
     # ---- tool dispatch ---------------------------------------------------------
-    def grasp_can(self, forward_duration_s=0.9):
-        """Execute physical sequence to grasp can: lower arm, open gripper wide, gentle seating drive (0.03 m/s), clamp tight, and lift."""
-        forward_duration_s = clamp(float(forward_duration_s), 0.5, 1.4)
+    def grasp_can(self, forward_duration_s=1.3):
+        """Execute physical sequence to grasp can: lower arm, open gripper wide, gentle seating glide (0.045 m/s, ~6cm), clamp tight, and lift."""
+        forward_duration_s = clamp(float(forward_duration_s), 0.8, 2.0)
         with self._lock:
             self._zero()
             # 1. Lower arm to floor level if not already there
@@ -736,8 +742,8 @@ class RoverTools:
                 pass
 
         # 3. Drive straight forward with heading hold to funnel and seat can in gripper throat
-        # At gentle 0.03 m/s for 0.9s = ~2.7 cm forward drive! Jaws are already open wide (12cm) so can slips inside without tipping.
-        drive_res = self.drive(x_mps=0.03, y_mps=0.0, z_degps=0.0, duration_s=forward_duration_s, hold_heading=True, guard_tof=False)
+        # At gentle 0.045 m/s for 1.3s = ~5.8 cm forward drive! Jaws are open wide (12cm) so can funnels safely inside.
+        drive_res = self.drive(x_mps=0.045, y_mps=0.0, z_degps=0.0, duration_s=forward_duration_s, hold_heading=True, guard_tof=False)
 
         # 4. Clamp gripper firmly around the can with high power
         with self._lock:
