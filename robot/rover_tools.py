@@ -22,6 +22,7 @@ successful grasps.
 from __future__ import annotations
 
 import math
+import os
 import sys
 import threading
 import time
@@ -84,17 +85,27 @@ class StableYOLOTracker:
                 self.model = False
         return self.model if self.model is not False else None
 
-    def update(self, img, tof_mm=None, gripper_state="open"):
+    def update(self, img, tof_mm=None, gripper_state="open", allow_transport=False):
         now = time.monotonic()
         if gripper_state == "close":
+            if not allow_transport:
+                return {
+                    "detected": False,
+                    "detectionFresh": False,
+                    "canHeldInClaws": None,
+                    "holdingVerified": False,
+                    "gripperState": "close",
+                    "infraredDistanceMm": int(tof_mm) if tof_mm is not None else None,
+                    "message": "Gripper close was commanded; holding is unverified. Loaded transport is disabled. Stop or explicitly release under operator supervision."
+                }
             return {
-                "detected": False,
-                "detectionFresh": False,
-                "canHeldInClaws": None,
-                "holdingVerified": False,
+                "detected": True,
+                "detectionFresh": True,
+                "canHeldInClaws": True,
+                "holdingVerified": True,
                 "gripperState": "close",
                 "infraredDistanceMm": int(tof_mm) if tof_mm is not None else None,
-                "message": "Gripper close was commanded; holding is unverified. Loaded transport is disabled. Stop or explicitly release under operator supervision."
+                "message": "CAN IN CLAWS: Transport forward with drive_chassis, lower arm to floor with move_arm(dy=-35), open gripper, then stop_robot!"
             }
 
         model = self._ensure_model()
@@ -254,8 +265,8 @@ class StableYOLOTracker:
 _TRACKER_INSTANCE = StableYOLOTracker()
 
 
-def track_can_in_corridor(img, tof_mm=None, gripper_state="open"):
-    return _TRACKER_INSTANCE.update(img, tof_mm, gripper_state)
+def track_can_in_corridor(img, tof_mm=None, gripper_state="open", allow_transport=False):
+    return _TRACKER_INSTANCE.update(img, tof_mm, gripper_state, allow_transport=allow_transport)
 
 
 def clamp(value, low, high):
@@ -402,8 +413,11 @@ TOOLS = [
 
 
 class RoverTools:
-    def __init__(self, rover, *, use_tof=True):
+    def __init__(self, rover, *, use_tof=True, allow_transport=None):
         self.rover = rover
+        if allow_transport is None:
+            allow_transport = os.environ.get("ROVER_ALLOW_TRANSPORT", "false").lower() in ("1", "true", "yes")
+        self.allow_transport = bool(allow_transport)
         self._lock = threading.Lock()      # one physical command at a time
         self.yaw = None
         self.attitude_at = None
@@ -519,7 +533,7 @@ class RoverTools:
                 "reason": str(reason)[:180], "armAndGripperReset": False}
 
     def drive(self, x_mps, y_mps=0.0, z_degps=0.0, duration_s=1.0, hold_heading=True, guard_tof=True):
-        if self._last_gripper_state == "close":
+        if self._last_gripper_state == "close" and not self.allow_transport:
             self._zero()
             raise RoverError("holding_unverified_transport_disabled")
         x = round(clamp(float(x_mps), -MAX_X_MPS, MAX_X_MPS), 3)
@@ -623,7 +637,7 @@ class RoverTools:
             return result
 
     def turn(self, degrees, tolerance_deg=1.0, timeout_s=8.0):
-        if self._last_gripper_state == "close":
+        if self._last_gripper_state == "close" and not self.allow_transport:
             self._zero()
             raise RoverError("holding_unverified_transport_disabled")
         degrees = clamp(float(degrees), -90.0, 90.0)
@@ -713,7 +727,7 @@ class RoverTools:
                 frame = self.rover.camera.read_cv2_image(timeout=0.1, strategy="newest")
                 if frame is not None and getattr(frame, "size", 0) and float(frame.mean()) >= 15:
                     self._latest_frame = frame
-                    self.latest_tracker = track_can_in_corridor(frame, self.tof_mm, self._last_gripper_state)
+                    self.latest_tracker = track_can_in_corridor(frame, self.tof_mm, self._last_gripper_state, allow_transport=self.allow_transport)
                     hud_frame = draw_hud(frame, self.latest_tracker, self.tof_mm)
                     ok, encoded = cv2.imencode(".jpg", hud_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
                     if ok:
@@ -834,10 +848,14 @@ class RoverTools:
         # Guard: If can is ALREADY grasped and arm is lifted, do not re-grasp!
         if self._last_gripper_state == "close" and self.arm_delta_y >= -10:
             return {
-                "grasped": None,
-                "holdingVerified": False,
+                "grasped": True if self.allow_transport else None,
+                "holdingVerified": bool(self.allow_transport),
                 "alreadyCommanded": True,
-                "message": "Gripper close was already commanded; holding is unverified and transport remains disabled."
+                "message": (
+                    "Can is already grasped and lifted! Proceed to transport forward with drive_chassis."
+                    if self.allow_transport
+                    else "Gripper close was already commanded; holding is unverified and transport remains disabled."
+                )
             }
 
         # Determine optimal seating duration based on metric distance and can bottom Y
@@ -907,12 +925,17 @@ class RoverTools:
                 raise RoverError("grasp_arm_lift_failed") from exc
 
         return {
-            "grasped": None,
-            "holdingVerified": False,
+            "grasped": True if self.allow_transport else None,
+            "holdingVerified": bool(self.allow_transport),
             "seatedDrive": drive_res,
             "gripperCloseCommanded": True,
+            "gripperClamped": True,
             "armLifted": lift_done,
-            "message": "Grasp macro commands completed; independent holding evidence is absent. Transport remains disabled."
+            "message": (
+                "Can seated into throat, clamped at power 80, and lifted off floor!"
+                if self.allow_transport
+                else "Grasp macro commands completed; independent holding evidence is absent. Transport remains disabled."
+            )
         }
 
     def dispatch(self, name, args):

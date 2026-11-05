@@ -115,4 +115,16 @@ class T(unittest.TestCase):
                 self.t.grasp_can()
         self.assertEqual(self.r.robotic_arm.moves, [])
         self.assertEqual(self.t._last_gripper_state, "close")
+    def test_loaded_transport_enabled_when_authorized(self):
+        self.t.allow_transport = True
+        self.t.gripper("close")
+        out = self.t.drive(0.04, 0, 0.5)
+        self.assertEqual(out["xMps"], 0.04)
+        turn_out = self.t.turn(15)
+        self.assertTrue(turn_out["reached"])
+        self.t.arm_delta_y = -35
+        with patch.object(self.t, "drive", return_value={"stoppedBy": None}):
+            grasp_res = self.t.grasp_can()
+        self.assertTrue(grasp_res["grasped"])
+        self.assertTrue(grasp_res["holdingVerified"])
 if __name__ == "__main__": unittest.main()

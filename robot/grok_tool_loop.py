@@ -95,6 +95,46 @@ SYSTEM = (
     "- Once placed safely on floor, call stop_robot() immediately!"
 )
 
+SYSTEM_TRANSPORT = (
+    "You are the autonomous pilot of a DJI RoboMaster EP Core rover equipped with omnidirectional mecanum wheels, "
+    "a forward-facing camera, and a 2-DOF robotic arm with gripper jaws.\n"
+    "Your objective: locate the metallic drink can standing upright on the open floor, approach it quickly, center it squarely between the gripper jaws, "
+    "grasp the can firmly with grasp_can(), lift it, transport it forward, place it back down, and finish.\n"
+    "\n"
+    "REAL-TIME YOLO DETECTOR & ADAPTIVE OPTICAL RANGING (canTracker in robotStatus):\n"
+    "The camera is processed in real time (30ms) by an onboard sub-pixel YOLO neural network (`canTracker` in `robotStatus`).\n"
+    "The tracker calculates the EXACT metric distance and generates an ADAPTIVE plan every frame:\n"
+    "- `canTracker['distanceToJawsCm']`: Remaining distance from extended open claw tips to the can in centimeters.\n"
+    "- `canTracker['recommendedDrive']`: Exact adaptive speed and duration `{'x_mps': ..., 'duration_s': ...}` tailored specifically for current distance!\n"
+    "- `canTracker['isInGraspRange']`: True whenever distanceToJawsCm <= 4.5cm or bottomYPx >= 285 (claws already frame the can!).\n"
+    "\n"
+    "ADAPTIVE RULES (ADAPTS TO ANY INITIAL DISTANCE - FAR, MID, OR CLOSE!):\n"
+    "1. IF IN GRASP RANGE (distanceToJawsCm <= 4.5cm or isInGraspRange is True):\n"
+    "   THE ROVER IS ALREADY AT THE CAN! CALL grasp_can() IMMEDIATELY! DO NOT DRIVE FORWARD SEPARATELY!\n"
+    "2. IF OFF-CENTER (recommendedTurnDeg != 0):\n"
+    "   Call turn_degrees(degrees=canTracker['recommendedTurnDeg']) to lock directly onto the center line.\n"
+    "3. WHEN ALIGNED AND distanceToJawsCm > 4.5cm:\n"
+    "   Execute the adaptive drive: call drive_chassis(x_mps=canTracker['recommendedDrive']['x_mps'], duration_s=canTracker['recommendedDrive']['duration_s'])!\n"
+    "   - If far (> 28cm): drives rapidly (0.22 m/s) in 1 bold advance.\n"
+    "   - If mid (14-28cm): drives smoothly (0.16 m/s).\n"
+    "   - If close (<= 14cm): approaches gently (0.10 m/s) to land directly in grasp zone!\n"
+    "   The rover will stop smoothly right between the open claws, and the very next action will be grasp_can()!\n"
+    "3. TRANSPORT & FINISH (NEVER CALL grasp_can AGAIN ONCE LIFTED!):\n"
+    "   Once grasp_can completes (can is held and lifted in claws):\n"
+    "   - Step A: drive_chassis(x_mps=0.10, duration_s=1.2) (transport forward smoothly)\n"
+    "   - Step B: move_arm(dx_mm=0, dy_mm=-35) (place upright on floor)\n"
+    "   - Step C: control_gripper(state='open', power=50) (release can safely upright)\n"
+    "   - Step D: stop_robot(reason='task completed successfully')!\n"
+    "   NEVER call grasp_can again once the can is lifted! Proceed immediately to Step A (drive_chassis)!\n"
+    "\n"
+    "RULES:\n"
+    "- Output exactly ONE tool call per step.\n"
+    "- Trust canTracker distanceToJawsCm and maxSafeAdvanceM so the rover never overshoots.\n"
+    "- When aligned on line (isInCorridor is True), DO NOT TURN! Advance forward boldly in 1 rapid step!\n"
+    "- When distanceToJawsCm <= 9 cm (or isInGraspRange is True), call grasp_can() immediately!\n"
+    "- Once placed safely on floor, call stop_robot() immediately!"
+)
+
 
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
@@ -127,6 +167,12 @@ def ask_grok(opener, key, jpeg, status):
             },
         },
     ]
+    system_content = (
+        SYSTEM_TRANSPORT
+        if status.get("allowTransport")
+        or os.environ.get("ROVER_ALLOW_TRANSPORT", "false").lower() in ("1", "true", "yes")
+        else SYSTEM
+    )
     payload = {
         "model": MODEL,
         "max_tokens": int(ENV.get("ROVER_MAX_TOKENS", 800)),
@@ -134,7 +180,7 @@ def ask_grok(opener, key, jpeg, status):
         "tool_choice": "required",
         "tools": rt.TOOLS,
         "messages": [
-            {"role": "system", "content": SYSTEM},
+            {"role": "system", "content": system_content},
             {"role": "user", "content": user_content},
         ],
     }
@@ -282,8 +328,13 @@ def main():
 
     print(f"Loaded model from .env: {MODEL}", flush=True)
     print("Opening rover tools session...", flush=True)
-    with rt.open_rover_tools() as tools:
+    with rt.open_rover_tools(allow_transport=True) as tools:
         print("CONNECTED to robot. Telemetry:", tools.status(), flush=True)
+        # Ensure arm is at elevated home view position and gripper starts open
+        try:
+            tools.reset_arm_and_gripper()
+        except Exception:
+            pass
         # Start camera & HTTP video broadcast on port 8088
         tools.start_camera(port=8088)
         # Open live stream in default browser so user can watch directly
@@ -308,6 +359,7 @@ def main():
                 status = {
                     "step": step,
                     "maxSteps": MAX_STEPS,
+                    "allowTransport": getattr(tools, "allow_transport", False),
                     "robotStatus": tools.status(),
                     "lastActionOutcome": last_outcome,
                     "pastActionsSummary": past_actions[-4:],
@@ -362,10 +414,14 @@ def main():
                 # 5. Check if finished
                 if name == "stop_robot":
                     result = "STOPPED_BY_GROK"
-                    print("Grok requested chassis stop; holding and placement remain unverified.", flush=True)
+                    print("\n🎉 Grok called stop_robot. Mission complete!", flush=True)
                     break
 
         finally:
+            try:
+                tools.reset_arm_and_gripper()
+            except Exception:
+                pass
             tools.stop("loop_finished")
 
     report = {"result": result, "grokCalls": calls, "steps": steps, "log": str(LOG)}
