@@ -1,44 +1,64 @@
 {
-  "source": "C:\\Users\\Amirkhan\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\ucheba\\Big_AI_hackathon\\mapping\\new_photo.jpg",
-  "imageWidth": 1920,
-  "imageHeight": 1080,
+  "source": "C:\\Users\\Amirkhan\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\ucheba\\Big_AI_hackathon\\mapping\\calibration_photo.jpg",
+  "imageWidth": 960,
+  "imageHeight": 1280,
   "FLOOR_POLYGON_PX": [
     [
-      5.24,
-      10.47
+      95.0,
+      0.0
     ],
     [
-      12.22,
-      1068.22
+      0.0,
+      975.0
     ],
     [
-      1879.85,
-      1075.2
+      959.0,
+      884.0
     ],
     [
-      1630.25,
-      857.02
-    ],
-    [
-      1515.05,
-      603.93
-    ],
-    [
-      1892.07,
-      464.29
-    ],
-    [
-      1885.09,
-      19.2
-    ],
-    [
-      5.24,
-      10.47
+      959.0,
+      0.0
     ]
   ],
-  "pointCount": 8,
+  "pointCount": 4,
   "cellMetres": 0.5,
   "rows": "A top to D bottom",
   "columns": "1 left to 4 right",
-  "calibrated": false
+  "calibrated": false,
+  "penLengthM": 0.142,
+  "penClicksBirdseyePx": [
+    [
+      708,
+      389
+    ],
+    [
+      780,
+      404
+    ]
+  ],
+  "penPixelDistance": 73.546,
+  "metersPerPixel": 0.0019307669389269431,
+  "sectorSizePx": 258.9644508196746,
+  "homography": [
+    [
+      -1.1854727603922423e-16,
+      1.1030750237416904,
+      1.7929338433042804e-14
+    ],
+    [
+      1.009506172839506,
+      0.09836213991769545,
+      -95.90308641975307
+    ],
+    [
+      -9.73236009732361e-05,
+      0.00010224754669199113,
+      1.0
+    ]
+  ],
+  "birdseyeSize": [
+    979,
+    963
+  ],
+  "note": "Pen scale on this unwrapped photo. Not shared MappingEvidence."
 }
