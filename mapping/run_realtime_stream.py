@@ -19,13 +19,14 @@ import re
 import sys
 import threading
 import time
+import uuid
 import webbrowser
 from pathlib import Path
 from urllib.parse import quote
 
 import cv2
 import numpy as np
-from flask import Flask, Response
+from flask import Flask, Response, jsonify
 
 MAPPING = Path(__file__).resolve().parent
 sys.path.insert(0, str(MAPPING))
@@ -54,7 +55,10 @@ def _setting(name: str) -> str:
 
 USE_GROK = _as_bool(_setting("USE_GROK"), True)
 VIEWER_PORT = int(_setting("VIEWER_PORT") or "5051")
+VIEWER_HOST = _setting("VIEWER_HOST") or "0.0.0.0"
 PAGE_URL = f"http://localhost:{VIEWER_PORT}"
+STALE_SECONDS = 2.0
+_viewer_session = uuid.uuid4().hex
 CONF_THRESHOLD = 0.20
 BLACK_MEAN = 15.0
 TRACK_INTERVAL = 0.3
@@ -102,6 +106,8 @@ _pending: dict[str, object] | None = None
 _model: object | None = None
 _model_ready = False
 _last_publish = 0.0
+_frame_at = 0.0
+_camera_error = ""
 
 
 PAGE = """<!doctype html>
@@ -162,13 +168,15 @@ def _read_bright(capture: cv2.VideoCapture) -> np.ndarray | None:
 
 def _capture_loop() -> None:
     """Read forever and keep only the newest bright frame."""
-    global latest_frame
+    global latest_frame, _frame_at, _camera_error
     capture: cv2.VideoCapture | None = None
     failures = 0
     while not _stop.is_set():
         if capture is None or not capture.isOpened():
             capture = _open_capture()
             if capture is None:
+                with _lock:
+                    _camera_error = "videocapture_unavailable"
                 if _stop.wait(1.0):
                     break
                 continue
@@ -176,6 +184,8 @@ def _capture_loop() -> None:
         if frame is None:
             failures += 1
             if failures > 30:
+                with _lock:
+                    _camera_error = "camera_read_failed"
                 capture.release()
                 capture = None
                 failures = 0
@@ -183,6 +193,8 @@ def _capture_loop() -> None:
         failures = 0
         with _lock:
             latest_frame = frame
+            _frame_at = time.monotonic()
+            _camera_error = ""
     if capture is not None:
         capture.release()
 
@@ -745,6 +757,72 @@ def _frames():
         time.sleep(0.05)
 
 
+def _lan_ip() -> str:
+    """Address this machine uses to reach the phone. Empty when that route is down."""
+    import socket
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("192.168.5.146", 80))
+        return str(sock.getsockname()[0])
+    except OSError:
+        return ""
+    finally:
+        sock.close()
+
+
+def _health_body() -> dict[str, object]:
+    now = time.monotonic()
+    with _lock:
+        frame = latest_frame
+        seen = _frame_at
+        error = _camera_error
+    age_ms = None if seen <= 0 else int((now - seen) * 1000)
+    stale = seen <= 0 or (now - seen) > STALE_SECONDS
+    _user, password = tracker._camera_password()
+    return {
+        "ok": frame is not None and not stale and not error,
+        "camera": "connected" if frame is not None and not stale else "unavailable",
+        "stale": stale,
+        "lastFrameAgeMs": age_ms,
+        "frameWidth": None if frame is None else int(frame.shape[1]),
+        "frameHeight": None if frame is None else int(frame.shape[0]),
+        "rawJpeg": "/camera.jpg",
+        "rawMjpeg": "/camera.mjpg",
+        "annotatedMjpeg": "/stream.mjpg",
+        "mapId": "demo-grid",
+        "calibrated": False,
+        "grid": "ROW_A_TOP",
+        "viewerSessionId": _viewer_session,
+        "source": VIDEO_URL,
+        "cameraAuthConfigured": bool(password),
+        "error": error or None,
+        "note": "Uncalibrated demo grid. Not MappingEvidence and not a rover route.",
+    }
+
+
+def _jpeg(frame: np.ndarray) -> bytes | None:
+    ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+    if not ok:
+        return None
+    return encoded.tobytes()
+
+
+def _raw_frames():
+    """Send the newest camera frame. A stale capture closes the stream."""
+    while not _stop.is_set():
+        with _lock:
+            frame = None if latest_frame is None else latest_frame.copy()
+            seen = _frame_at
+        if frame is None or time.monotonic() - seen > STALE_SECONDS:
+            return
+        payload = _jpeg(frame)
+        if payload is None:
+            return
+        yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + payload + b"\r\n"
+        time.sleep(0.05)
+
+
 def _serve() -> None:
     app = Flask(__name__)
 
@@ -752,11 +830,33 @@ def _serve() -> None:
     def index() -> str:
         return PAGE
 
+    @app.route("/health")
+    def health():
+        body = _health_body()
+        status = 200 if body["ok"] else 503
+        return jsonify(body), status
+
+    @app.route("/camera.jpg")
+    def camera_jpeg():
+        body = _health_body()
+        if not body["ok"]:
+            return jsonify(body), 503
+        with _lock:
+            frame = None if latest_frame is None else latest_frame.copy()
+        payload = None if frame is None else _jpeg(frame)
+        if payload is None:
+            return jsonify(body), 503
+        return Response(payload, mimetype="image/jpeg")
+
+    @app.route("/camera.mjpg")
+    def camera_stream() -> Response:
+        return Response(_raw_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
     @app.route("/stream.mjpg")
     def stream() -> Response:
         return Response(_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
-    app.run(host="127.0.0.1", port=VIEWER_PORT, threaded=True, use_reloader=False)
+    app.run(host=VIEWER_HOST, port=VIEWER_PORT, threaded=True, use_reloader=False)
 
 
 def _status_frame(text: str) -> np.ndarray:
@@ -769,7 +869,11 @@ def main() -> int:
     threading.Thread(target=_serve, daemon=True).start()
     threading.Timer(1.5, lambda: webbrowser.open(PAGE_URL)).start()
     print(f"browser {PAGE_URL}", flush=True)
-    print(f"viewer_port {VIEWER_PORT} use_grok {USE_GROK}", flush=True)
+    print(f"viewer_port {VIEWER_PORT} viewer_host {VIEWER_HOST} use_grok {USE_GROK}", flush=True)
+    lan = _lan_ip()
+    if lan:
+        print(f"lan_health http://{lan}:{VIEWER_PORT}/health", flush=True)
+        print(f"lan_camera http://{lan}:{VIEWER_PORT}/camera.mjpg", flush=True)
     print("desktop window opening", flush=True)
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(WINDOW, 1280, 720)
