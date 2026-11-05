@@ -53,6 +53,8 @@ def rover_session(serial, verbose=False):
         if not rover.initialize(conn_type="sta", proto_type="udp", sn=serial):
             raise RuntimeError("SDK initialization failed")
         reported_serial = rover.get_sn()
+        if not reported_serial:
+            raise RuntimeError("Device serial query returned no response; identity unconfirmed")
         if reported_serial != serial:
             raise RuntimeError("Device serial mismatch; no further queries issued")
         firmware = rover.get_version()

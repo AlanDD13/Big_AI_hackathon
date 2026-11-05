@@ -148,3 +148,197 @@ Measured on physical unit `3JKCK7W0030DJS` (firmware `01.01.1150`, STA/UDP):
 - `720p` (`1280x720`): `30.9 FPS` sustained capture (`95` frames in `3.0 s`),
   `0.53–0.68 ms` HTTP poll latency, `24.6 ms` frame age, `slot_0` forward TOF
   reading `2294–2305 mm`.
+
+## Command tracking and backend bridge (step 7)
+
+`robot/bridge.py` implements the closed P4 tool surface (`contracts/robot-simulator-v1.md`,
+`contracts/fixtures/robot-simulator.json`, `contracts/manual-control-v1.md`, and
+`contracts/fixtures/manual-control.json`) guarded by `SafetyController` and `Watchdog`:
+
+- Mission command routes (`Authorization: Bearer <PEER_TOKEN>`):
+  - `POST /commands/pickup`, `POST /commands/{commandId}/hold`,
+    `POST /commands/{commandId}/stop`, `POST /commands/{commandId}/rearm`,
+    `GET /commands/{commandId}`, `POST /stop`
+  - Tracks `bridgeBootId` (`404 UNKNOWN_COMMAND` after bridge restart without
+    re-creating or repeating prior commands) and idempotent `statusRevision`.
+- Manual control routes (`MANUAL_CHASSIS_SLICE_1`):
+  - `POST /manual/lease`, `POST /manual/drive`, `POST /manual/release`,
+    `POST /manual/rearm`, `GET /manual/status`
+  - Enforces mutual exclusion between autonomous commands (`409 AUTONOMOUS_ACTIVE`)
+    and manual leases (`409 MANUAL_LEASE_ACTIVE`), `<= 0.5 s` telemetry freshness
+    (`503 TELEMETRY_STALE` in `UNKNOWN`), `409 STOP_LOCKED` in latched `STOPPED`,
+    `409 NOT_STOPPED` on `rearm` until 3 stationary samples spanning `>= 200 ms`,
+    and body-frame velocity caps (`0.35 m/s`, `0.35 m/s`, `45 deg/s` -> `422 VALIDATION_ERROR`).
+
+```bash
+# Run offline unit tests (safety, telemetry, camera, bridge):
+robot/.venv/bin/python -m unittest discover -s robot/tests -v
+
+# Start simulator bridge (no hardware actuation):
+PEER_TOKEN=your_peer_token robot/.venv/bin/python robot/bridge.py --mode simulator --port 8004
+```
+
+The HTTP server owns an independent watchdog in both modes; status and health
+expose `watchdogAlive` and `watchdogError`. Physical startup uses a dedicated
+chassis adapter with the same limits as the safety core, not the bench-only
+0.05 m/s adapter. It subscribes coherent chassis pose/attitude/velocity feedback
+and feeds heartbeat only from new valid observations. Shutdown unsubscribes
+telemetry and stops the watchdog. Zero writes cancel the SDK host timer and do
+not replace it with another timer.
+
+Physical command stop and rover-wide stop remain `UNKNOWN` until telemetry
+confirms stationarity. GET reconciles the command to `STOPPED`; command rearm
+returns `409 NOT_STOPPED` while confirmation is pending or core recovery fails.
+Simulator mode retains the normative command fixtures; those immediate simulated
+states are not physical acceptance evidence. Pending manual release/stop also
+blocks pickup, including the concurrent lease-release window.
+
+PR #17 review fixes were verified offline with SDK-shaped recording fixtures
+and loopback HTTP tests. No physical bridge startup or movement is claimed by
+those checks. Updating these files does not replace a running camera-only server;
+stop the sole existing SDK owner before any separately authorized physical launch.
+
+### Supervised acceptance harness
+
+`physical_acceptance.py` uses one SDK session and opens no HTTP listener. Stop
+the existing camera/bridge owner first; a listener on local port 8004 blocks
+launch. This is a useful guard, not proof that no other machine owns the SDK.
+Keep an operator at the physical power switch throughout. Unexpected motion
+means power off, regardless of what the report says.
+
+Start with the disarmed, zero-only camera and telemetry observation:
+
+```bash
+robot/.venv/bin/python robot/physical_acceptance.py --sn 3JKCK7W0030DJS
+```
+
+The operator must type `ALLOW ZERO ONLY`. It sends startup/shutdown zero
+commands, observes camera and telemetry for two seconds, checks UNKNOWN and
+early rearm rejection, then confirms shutdown before disconnecting. SDK
+initialization changes SDK/mode state; this is not a passive network probe.
+Telemetry thresholds cannot exclude very slow drift; watch the actual rover.
+
+Only after investigating unexpected movement and agreeing a supervised test
+window, the separate `--allow-motion` option requires `ALLOW FORWARD TEST`.
+It sends one 0.05 m/s forward intent through the bridge, makes no requests for
+350 ms, verifies a zero dispatch within 300 ms, waits for stationary telemetry,
+and checks that explicit rearm does not issue another movement. No sideways,
+reverse, rotation, arm, gripper, transport, or policy execution is included.
+
+Reports are saved under ignored `robot/.local/acceptance/` with unique names.
+`PASS` refers only to the report's named scope. Dispatch timing is not physical
+stop latency; physical outcome requires operator/video confirmation. Remaining
+physical gates are listed in the report, including release/pickup arbitration.
+Existing offline tests cover that arbitration but do not establish live acceptance.
+No full physical recovery-loop completion is claimed. SDK calls can block;
+the operator must not rely on host cleanup as the emergency stop.
+
+### Physical recovery adapter proposal
+
+`recovery_adapter.PhysicalRecoveryAdapter` is explicitly `mode="physical"`.
+It accepts an existing `PhysicalBridgeRuntime`; it never opens another SDK
+session, exposes a new HTTP route, or implicitly rearms. The current shared
+LangGraph rejects this mode: the integration owner must explicitly wire and
+review physical support, rather than relabelling this adapter as a simulator.
+
+Constructor dependencies are mandatory:
+
+- `authority.reserve(mission_id)` must durably reserve through P3; only literal
+  `True` grants authority. `authority.allows(command)` checks current dispatch
+  authorization. No permissive authority stub is supplied.
+- `observations(binding)` must return actual trusted perception/sensor evidence
+  for the mission or command binding: matching object/revision, camera/session,
+  increasing frame, identity evidence and capture/telemetry ages <=500 ms.
+  It must also provide command-bound pickup/place evidence before those future
+  capabilities can be integrated. Camera images or TOF alone do not establish
+  object identity, a safe route, or successful grasp.
+- `planner(command, observation)` returns a calibrated `ChassisPlan` tied to
+  that exact command/object/revision and refreshed frame/identity evidence.
+  Grok is not permitted to supply velocities or pretend a demo grid is calibrated.
+- `journal_path` is a private persistent local SQLite file, for example under
+  `robot/.local/recovery/`. It supplements P3 authority; it is not backend storage.
+
+Currently only bounded `approach` and `align` are implemented, through shared
+manual lease arbitration. Test caps are stricter than the bridge: 0.05 m/s per
+axis, 5 degrees/s, <=150 ms per segment. The controller receives an expiring
+intent; an independent watchdog remains active. Clean release must be confirmed
+by fresh telemetry before ACKNOWLEDGED is returned. Receipt ACK is not evidence
+that the target was reached. Perception must independently establish that.
+
+Pickup, transport and place are rejected without output. Agreed physical arm
+macro durations, verified object profiles, held-object/destination evidence and
+shared graph wiring are still required for a full five-phase test. No executable
+entry point or default fixture can turn this proposal into an autonomous run.
+
+Local reservations survive process restarts; command IDs are written UNKNOWN
+before any possible output. No ID is resent, even after a previous successful
+ACK. An ambiguous drive outcome remains uncertain even if a later stop confirms.
+There is intentionally no automatic journal reset/release or replay operation.
+
+### Live Grok local hardware diagnostic
+
+`live_grok.py` uses the actual rover camera and telemetry, OpenRouter
+`x-ai/grok-4.7` with low reasoning, and one strictly validated `recovery_action`
+proposal. A key is read from `OPENROUTER_API_KEY` or a non-echoed prompt and is
+never saved. TLS verification and redirect rejection remain enabled. There is
+no provider retry or model fallback. Explanatory prose is ignored; only a single
+validated tool with the bound target ID is considered.
+
+This is currently an approach diagnostic, **not a completed five-phase loop**.
+No backend mission/dispatch, arm, gripper, transport or place is connected to
+this entry point. Its reports explicitly retain the missing grasp-pose gate.
+
+For a supervised local approach, supply a real reference image and the selected
+can's pixel rectangle using `--reference PATH --reference-box X Y W H
+--allow-motion`. The operator clears the flat floor and remains at the power
+switch. `can_tracker.py` independently rejects weak/ambiguous template matches,
+changed geometry and disappearance. This is local appearance association, not
+backend object identity or independent grasp evidence.
+
+`--move-seconds 0.8` produces roughly 5cm at .05m/s, with short expiring intents
+and continuous camera/TOF/association checks. After the final intent there are
+350ms without requests and the watchdog's zero dispatch is measured against
+the 300ms limit. Stop requires fresh stationary samples. Heading feedback uses
+a .3-degree deadband, <=3deg/s correction and a 5-degree abort gate; this added
+feedback has offline tests but no physical acceptance yet.
+
+The position subscription offsets the origin, not the axes. Reports therefore
+include both odometry XY displacement and its projection onto initial body
+heading; nonzero odometry Y alone does not establish a strafe. Logged velocity
+and yaw are needed to assess the actual trajectory.
+
+`range_estimation.py` can estimate camera optical depth from known forward
+odometry and independent image scale change, without assuming a can size.
+It rejects weak features, small baseline/parallax, rotation and high fit error.
+The engineering uncertainty includes baseline/scale systematics; it is not a
+validated sensor confidence interval or a gripper distance. Camera/gripper
+extrinsics and near-field pickup calibration are still required. The single TOF
+beam alone cannot establish that its return came from the tracked can.
+
+Real test evidence is local under `robot/.local/live-grok/`: reports, JPEGs,
+per-intent image snapshots, telemetry and exact output timestamps. The accepted
+short Grok approach measured a .2711s silence cutoff. The longer approach
+measured .2642s with odometry delta [.06174,-.01215]m and yaw change -1.33deg;
+projected at its initial -9.72deg heading, that is .0629m forward and -.00155m
+lateral. These are actual physical runs, not simulator fixtures. Neither
+established a completed pickup, transport or placement.
+
+## Direct Grok 4.7 Tool Calling Loop (`grok_tool_loop.py`)
+
+An experimental opt-in tool-calling runner for supervised hardware work (3JKCK7W0030DJS). It is separate from the manual bridge safety path and does not establish a completed autonomous recovery:
+- **Tools**: `grasp_can`, `drive_chassis`, `turn_degrees`, `move_arm`, `control_gripper`, `stop_robot`.
+- **Live Stream**: broadcasts MJPEG 30 FPS stream with HUD crosshairs and corridor marks at `http://localhost:8088`.
+- **Pure Vision**: Grok 4.7 inspects the camera frames directly without fragile heuristic bounding-box trackers that confuse floor shadows with cans.
+- **Anti-Kick Distance Optimization**: bounded forward creep (`x_mps <= 0.035`, `duration_s <= 0.5s`) in close range, pre-opened 12 cm funnel jaws, and gentle `grasp_can` floor glide (~2.7 cm at 0.03 m/s) with power 80 clamp and arm lift.
+- **Load-preserving stop**: stop and shutdown request chassis zero without moving the arm or opening the gripper. Release/reset requires an explicit operator action.
+- **Unverified grasp**: actuator completion and gripper-close are not independent holding evidence. The runner reports holding as unverified and blocks drive/turn while the gripper is closed; loaded transport is disabled pending an evidence-backed integration. Stopping does not establish mission completion.
+
+Run:
+```bash
+python3 robot/grok_tool_loop.py 25 grok
+```
+
+Unit tests:
+```bash
+python3 -m unittest robot/tests/test_rover_tools.py -v
+```
