@@ -5,6 +5,7 @@ const caps = { maxAbsXMps: .05, maxAbsYMps: .04, maxAbsZDegps: 5, watchdogTimeou
 const boot = 'a'.repeat(32);
 function harness(mode = 'simulator', allowPhysical = false) {
   let now = 100_000;
+  let grantCaps = caps;
   const calls: { action: string; body: any }[] = [];
   let status: any = { roverId: 'rover-1', bridgeBootId: boot, stage: 'IDLE', telemetryFresh: true, stationaryConfirmed: true, executionMode: mode, manualBootFence: 'bridgeBootId-v1', backendStopLocked: false, caps };
   let failDrive = false;
@@ -12,7 +13,7 @@ function harness(mode = 'simulator', allowPhysical = false) {
   let pendingDrive = false;
   let delayLease: ((value: Response) => void) | null = null;
   let pendingLease = false;
-  const grant = () => ({ ...status, issuedAt: now / 1000, expiresAt: now / 1000 + 2, leaseId: 'lease-1', leaseGeneration: 1 });
+  const grant = () => ({ ...status, caps: grantCaps, issuedAt: now / 1000, expiresAt: now / 1000 + 2, leaseId: 'lease-1', leaseGeneration: 1 });
   const deps = { now: () => now, fetch: (async (input: unknown, init?: RequestInit) => {
     assert.equal(init?.credentials, 'same-origin');
     const action = String(input).split('/').at(-1)!.split('?')[0];
@@ -34,7 +35,7 @@ function harness(mode = 'simulator', allowPhysical = false) {
     throw new Error(action);
   }) as typeof fetch };
   const client = createManualClient('rover-1', () => {}, deps, { allowPhysical });
-  return { client, calls, set: (patch: any) => { status = { ...status, ...patch }; }, advance: (ms: number) => { now += ms; }, fail: () => { failDrive = true; },
+  return { client, calls, setGrantCaps: (value: typeof caps) => { grantCaps = value; }, set: (patch: any) => { status = { ...status, ...patch }; }, advance: (ms: number) => { now += ms; }, fail: () => { failDrive = true; },
     delayDrive: () => { pendingDrive = true; }, completeDrive: () => delayDrive?.(Response.json({ ...status, stage: 'MANUAL_DRIVING', lastSequence: 1, appliedVelocity: { xMps: .05, yMps: 0, zDegps: 0 } })),
     delayLease: () => { pendingLease = true; }, completeLease: () => delayLease?.(Response.json(grant())) };
 }
@@ -93,4 +94,16 @@ test('physical opt-in admits only low bench caps and keeps priority stop availab
   assert.equal(high.calls.some(c => c.action === 'lease'), false);
   assert.equal(high.calls.some(c => c.action === 'drive'), false);
   assert.equal(high.calls.at(-1)?.action, 'stop');
+});
+
+
+test('physical grant cannot raise bench caps after a low-cap status', async () => {
+  const h = harness('physical', true);
+  await h.client.poll();
+  h.setGrantCaps({ ...caps, maxAbsXMps: .15 });
+  await h.client.acquire();
+  await h.client.tick(0, 1, 0);
+  assert.equal(h.client.getState().lease, null);
+  assert.equal(h.calls.some(c => c.action === 'drive'), false);
+  assert.equal(h.calls.at(-1)?.action, 'stop');
 });

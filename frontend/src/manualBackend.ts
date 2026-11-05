@@ -91,6 +91,7 @@ export function createManualClient(rover: string, update: (state: ManualState) =
       const lease = parseManualLease(await call('lease', { roverId: rover, requestedTtlMs: 2000 }), rover);
       if (closed || gen !== epoch) return; // backend priority stop reconciles cancelled grants
       if (lease.bridgeBootId !== boot || Math.abs(lease.issuedAt - deps.now() / 1000) > .2 || lease.caps.maxIntentTtlMs < 100 || lease.caps.watchdogTimeoutMs < 200) throw new Error('Lease identity, clock or timing limits unsupported.');
+      if (state.status?.executionMode === 'physical' && (lease.caps.maxAbsXMps > .05 || lease.caps.maxAbsYMps > .05 || lease.caps.maxAbsZDegps > 5)) throw new Error('Physical grant exceeds supervised bench limits.');
       sequence = 0; leaseDeadline = deps.now() + (lease.expiresAt - lease.issuedAt) * 1000;
       emit({ lease, pending: false, uncertain: false, message: `${state.status?.executionMode === 'physical' ? 'Physical' : 'Simulator'} control held · hold an input to drive.` });
     } catch (error) { if (!closed && gen === epoch) await lose(error instanceof Error ? error.message : 'Lease unavailable.'); }
