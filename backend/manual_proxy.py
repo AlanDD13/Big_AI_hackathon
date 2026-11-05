@@ -268,6 +268,11 @@ class ManualProxy:
                 if action == "lease" and boot != status["bridgeBootId"]:
                     raise ManualFailure(409, "BRIDGE_BOOT_MISMATCH")
                 if action == "lease":
+                    # Canonical lease ACKs omit status fields. If a bridge does
+                    # include them, they must not contradict a stationary grant.
+                    if (("stage" in result and result["stage"] != "MANUAL_IDLE")
+                            or ("telemetryFresh" in result and result["telemetryFresh"] is not True)):
+                        raise ManualFailure(503, "MANUAL_UNAVAILABLE")
                     caps = result.get("caps", {})
                     for key, max_value in [("maxAbsXMps", 0.35), ("maxAbsYMps", 0.35),
                                            ("maxAbsZDegps", 45.0), ("watchdogTimeoutMs", 300), ("maxIntentTtlMs", 500)]:

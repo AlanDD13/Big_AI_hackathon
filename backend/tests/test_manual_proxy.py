@@ -194,6 +194,31 @@ class ManualProxyTests(unittest.TestCase):
         self.proxy._autonomous_active = None
         self.assertEqual(self.post("lease", {"roverId": "rover-1", "requestedTtlMs": 2000}).json()["error"]["code"], "STORAGE_UNAVAILABLE")
 
+    def test_contradictory_lease_ack_cannot_grant_driving_authority(self):
+        for field, value in [("stage", "UNKNOWN"), ("stage", "STOPPED"),
+                             ("stage", "MANUAL_DRIVING"), ("telemetryFresh", False)]:
+            with self.subTest(field=field, value=value):
+                bridge = FakeBridge()
+                def handler(request):
+                    response = bridge(request)
+                    if request.url.path == "/manual/lease":
+                        response = httpx.Response(200, json={**response.json(), field: value})
+                    return response
+                proxy = ManualProxy(url="https://bridge.invalid", peer_token=PEER,
+                                    now=lambda: 100.05, autonomous_active=lambda _: False,
+                                    transport=httpx.MockTransport(handler))
+                app = create_app(operator_token=OPERATOR, peer_token=PEER, cookie_secure=False, manual_proxy=proxy)
+                with TestClient(app) as client:
+                    client.post("/api/session", json={"token": OPERATOR})
+                    response = client.post("/api/manual/lease", json={"roverId": "rover-1", "requestedTtlMs": 2000})
+                    self.assertEqual(response.status_code, 503)
+                    self.assertIsNone(proxy._lease)
+                    self.assertTrue(proxy._stop_latched)
+                    self.assertEqual(bridge.calls[-1].url.path, "/stop")
+                    response = client.post("/api/manual/drive", json=intent(xMps=0.03))
+                    self.assertEqual(response.status_code, 409)
+                    self.assertFalse(any(call.url.path == "/manual/drive" for call in bridge.calls))
+
     def test_logout_and_expiry_invalidate_authority_and_request_stop(self):
         self.lease()
         self.assertEqual(self.client.delete("/api/session").status_code, 204)
