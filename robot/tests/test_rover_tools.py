@@ -62,6 +62,15 @@ class T(unittest.TestCase):
         self.t.attitude_at = time.monotonic() - 5
         with self.assertRaises(rt.RoverError): self.t.drive(0.04, 0, 1)
         self.assertEqual(self.r.chassis.cmds, [])
+    def test_mission_pose_requires_fresh_finite_position_and_attitude(self):
+        self.r.chassis.cbs["pos"]([1, 2, 0])
+        self.assertEqual(self.t.pose(), (1, 2, 0))
+        self.t.position_at = time.monotonic() - 3
+        with self.assertRaisesRegex(rt.RoverError, "position_telemetry_stale"):
+            self.t.pose()
+        self.r.chassis.cbs["pos"]([float("nan"), 2, 0])
+        with self.assertRaisesRegex(rt.RoverError, "position_telemetry_stale"):
+            self.t.pose()
     def test_dispatch_validation(self):
         for bad in (("nope", {}), ("drive_chassis", {"x_mps": 1}), ("control_gripper", {"state": "x", "power": 5}), ("move_arm", [])):
             with self.assertRaises(rt.RoverError): self.t.dispatch(*bad)

@@ -422,6 +422,7 @@ class RoverTools:
         self.yaw = None
         self.attitude_at = None
         self.position = None
+        self.position_at = None
         self.tof_mm = None
         self.tof_at = None
         self.arm_delta_y = 0
@@ -454,7 +455,10 @@ class RoverTools:
 
         def on_position(msg):
             try:
-                self.position = (float(msg[0]), float(msg[1]))
+                position = (float(msg[0]), float(msg[1]))
+                if all(math.isfinite(value) for value in position):
+                    self.position = position
+                    self.position_at = time.monotonic()
             except (TypeError, ValueError, IndexError):
                 pass
 
@@ -516,6 +520,16 @@ class RoverTools:
                 "telemetryAgeS": None if self.attitude_at is None
                 else round(time.monotonic() - self.attitude_at, 2)}
 
+    def pose(self):
+        """Fresh session-local wheel odometry and yaw for measured routes."""
+        yaw = self._fresh_yaw()
+        if (self.position is None or self.position_at is None
+                or time.monotonic() - self.position_at > .5):
+            raise RoverError("position_telemetry_stale")
+        if not math.isfinite(yaw):
+            raise RoverError("invalid_yaw")
+        return (*self.position, yaw)
+
     # ---- primitives ------------------------------------------------------------
     def _zero(self):
         timer = getattr(self.rover.chassis, "_auto_timer", None)
@@ -532,7 +546,8 @@ class RoverTools:
         return {"stopped": True, "stationaryConfirmed": False,
                 "reason": str(reason)[:180], "armAndGripperReset": False}
 
-    def drive(self, x_mps, y_mps=0.0, z_degps=0.0, duration_s=1.0, hold_heading=True, guard_tof=True):
+    def drive(self, x_mps, y_mps=0.0, z_degps=0.0, duration_s=1.0, hold_heading=True,
+              guard_tof=True, reference_yaw_deg=None):
         if self._last_gripper_state == "close" and not self.allow_transport:
             self._zero()
             raise RoverError("holding_unverified_transport_disabled")
@@ -597,6 +612,9 @@ class RoverTools:
         straight = hold_heading and abs(z) < 1.5
         with self._lock:
             start_yaw = self._fresh_yaw()
+            reference_yaw = start_yaw if reference_yaw_deg is None else float(reference_yaw_deg)
+            if not math.isfinite(reference_yaw):
+                raise RoverError("invalid_heading_reference")
             start_pos = self.position
             stopped_by = None
             try:
@@ -608,7 +626,7 @@ class RoverTools:
                         stopped_by = "tof_minimum_guard"
                         break
                     if straight:
-                        error = _wrap(start_yaw - yaw)
+                        error = _wrap(reference_yaw - yaw)
                         if abs(error) > MAX_HEADING_ERR_DEG:
                             stopped_by = "heading_deviation_exceeded"
                             break

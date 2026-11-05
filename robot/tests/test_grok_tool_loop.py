@@ -3,13 +3,15 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 try:
     import rover_tools
 except ImportError:
     from robot import rover_tools
+from robot import route_mission
 
 
 def load_runner():
@@ -19,8 +21,9 @@ def load_runner():
     # Never consult real operator .env files or run main during import.
     with patch.object(Path, "is_file", return_value=False), patch.object(
             sys, "argv", [str(path), "1", "test/model"]), patch.dict(
-            sys.modules, {"rover_tools": rover_tools}):
+            sys.modules, {"rover_tools": rover_tools, "route_mission": route_mission}):
         spec.loader.exec_module(runner)
+    runner.MODEL = "test/model"
     return runner
 
 
@@ -86,3 +89,38 @@ class GrokToolLoopTests(unittest.TestCase):
                 with self.assertRaises((ValueError, RuntimeError)):
                     self.runner.ask_grok(opener, "fake", b"jpeg", {})
                 self.assertEqual(len(opener.requests), 1)
+
+    def test_pickup_loop_exits_after_grasp_without_transport_or_release(self):
+        tools = Mock(allow_transport=True, tof_mm=None, latest_tracker=None)
+        tools.frame_jpeg.return_value = b"jpeg"
+        tools.status.return_value = {}
+        tools.dispatch.return_value = {"gripperCloseCommanded": True,
+                                       "gripperClamped": True, "armLifted": True,
+                                       "seatedDrive": {"stoppedBy": None}}
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+                self.runner, "LOG", Path(directory)), patch.object(
+                self.runner, "BRAIN_DIR", Path(directory)), patch.object(
+                self.runner, "update_brain_monitor"), patch.object(
+                self.runner, "ask_grok", return_value=("grasp_can", {}, "id", "")) as ask:
+            result = self.runner.run_grok_loop(tools, None, "fake", pickup_only=True)
+        self.assertEqual(result["result"], "PICKUP_COMMANDED")
+        self.assertEqual(result["grokCalls"], 1)
+        self.assertEqual(ask.call_count, 1)
+        tools.dispatch.assert_called_once_with("grasp_can", {})
+        tools.reset_arm_and_gripper.assert_not_called()
+
+    def test_failed_macro_never_reports_pickup_success(self):
+        tools = Mock(allow_transport=True, tof_mm=None, latest_tracker=None)
+        tools.frame_jpeg.return_value = b"jpeg"
+        tools.status.return_value = {}
+        for outcome in ({"armLifted": False}, rover_tools.RoverError("uncertain")):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory:
+                tools.dispatch.side_effect = outcome if isinstance(outcome, Exception) else None
+                tools.dispatch.return_value = outcome
+                with patch.object(self.runner, "LOG", Path(directory)), patch.object(
+                        self.runner, "BRAIN_DIR", Path(directory)), patch.object(
+                        self.runner, "update_brain_monitor"), patch.object(
+                        self.runner, "ask_grok", return_value=("grasp_can", {}, "id", "")) as ask:
+                    result = self.runner.run_grok_loop(tools, None, "fake", pickup_only=True)
+                self.assertEqual(result["result"], "HARDWARE_ERROR")
+                self.assertEqual(ask.call_count, 1)
