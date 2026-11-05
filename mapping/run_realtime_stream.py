@@ -1,6 +1,6 @@
 """Stream the phone camera with the convex floor grid and confirmed trash labels.
 
-The desktop window and http://localhost:5000 open on startup. A capture thread
+The desktop window and http://localhost:5051 open on startup. A capture thread
 keeps only the newest phone frame. The floor mask and detector run a few times
 a second, and every other frame redraws that last grid and those last boxes.
 Grok is asked only when a box appears away from a label already cached.
@@ -12,12 +12,14 @@ This viewer does not mint vision ids and does not post observations.
 from __future__ import annotations
 
 import math
+import os
 import re
 import sys
 import threading
 import time
 import webbrowser
 from pathlib import Path
+from urllib.parse import quote
 
 import cv2
 import numpy as np
@@ -33,7 +35,21 @@ from grid_mapper import sector_to_coordinates
 
 VIDEO_URL = "http://192.168.5.146:8081/video"
 WINDOW = "Live Floor Grid & Trash Tracker"
-PAGE_URL = "http://localhost:5000"
+
+
+def _as_bool(value: str | None, default: bool) -> bool:
+    if value is None or value.strip() == "":
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _setting(name: str) -> str:
+    return os.environ.get(name) or floor._load_env(floor.REPO / ".env").get(name) or ""
+
+
+USE_GROK = _as_bool(_setting("USE_GROK"), True)
+VIEWER_PORT = int(_setting("VIEWER_PORT") or "5051")
+PAGE_URL = f"http://localhost:{VIEWER_PORT}"
 CONF_THRESHOLD = 0.12
 BLACK_MEAN = 15.0
 TRACK_INTERVAL = 0.3
@@ -75,20 +91,27 @@ PAGE = """<!doctype html>
 """
 
 
-def _open_capture() -> cv2.VideoCapture | None:
+def _stream_url() -> str:
+    """Use the camera password from the environment. Never print the password."""
     user, password = tracker._camera_password()
-    addresses = [VIDEO_URL]
-    if password:
-        addresses.append(VIDEO_URL.replace("://", f"://{user}:{password}@", 1))
-    for address in addresses:
-        capture = cv2.VideoCapture(address)
-        capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        capture.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 8000)
-        capture.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 4000)
-        if capture.isOpened():
-            print(f"[INFO] Connected to IP Camera Lite at {VIDEO_URL}", flush=True)
-            return capture
-        capture.release()
+    if not password:
+        return VIDEO_URL
+    return VIDEO_URL.replace(
+        "://",
+        f"://{quote(user or 'admin', safe='')}:{quote(password, safe='')}@",
+        1,
+    )
+
+
+def _open_capture() -> cv2.VideoCapture | None:
+    capture = cv2.VideoCapture(_stream_url())
+    capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    capture.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 8000)
+    capture.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 4000)
+    if capture.isOpened():
+        print(f"[INFO] Connected to IP Camera Lite at {VIDEO_URL}", flush=True)
+        return capture
+    capture.release()
     print("videocapture_unavailable", flush=True)
     return None
 
@@ -129,11 +152,44 @@ def _capture_loop() -> None:
         capture.release()
 
 
+def _inference_device() -> str:
+    """Pick MPS, CUDA, or CPU. YOLO_DEVICE=cpu|mps|cuda overrides the check."""
+    requested = _setting("YOLO_DEVICE").strip().lower()
+    if requested in {"cpu", "mps", "cuda"}:
+        return requested
+    try:
+        import torch
+
+        if torch.backends.mps.is_available():
+            return "mps"
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception as exc:
+        print(f"device_detect {type(exc).__name__}", flush=True)
+    return "cpu"
+
+
+_device = ""
+
+
+def _device_once() -> str:
+    global _device
+    if not _device:
+        _device = _inference_device()
+        print(f"yolo_device {_device}", flush=True)
+    return _device
+
+
 def _model_once() -> object | None:
     global _model, _model_ready
     if not _model_ready:
         _model = tracker._load_model()
         _model_ready = True
+        if _model is not None and hasattr(_model, "to"):
+            try:
+                _model.to(_device_once())
+            except Exception as exc:
+                print(f"yolo_device_move {type(exc).__name__}: {exc}", flush=True)
     return _model
 
 
@@ -141,7 +197,13 @@ def _yolo_boxes(image: np.ndarray) -> list[dict[str, object]]:
     model = _model_once()
     boxes: list[dict[str, object]] = []
     if model is not None:
-        results = model.predict(source=image, conf=CONF_THRESHOLD, imgsz=416, device="cpu", verbose=False)
+        results = model.predict(
+            source=image,
+            conf=CONF_THRESHOLD,
+            imgsz=416,
+            device=_device_once(),
+            verbose=False,
+        )
         found = results[0].boxes
         names = results[0].names
         if found is not None:
@@ -317,6 +379,23 @@ def _track_once(image: np.ndarray) -> None:
                     best_distance = distance
                     best_index = index
             if best_index < 0:
+                if not USE_GROK:
+                    sector = str(item["sector"])
+                    x_m, y_m = sector_to_coordinates(sector)
+                    cache.append(
+                        {
+                            "cx": cx,
+                            "cy": cy,
+                            "bbox": item["bbox"],
+                            "sector": sector,
+                            "label": str(item["label"]),
+                            "score": float(item["score"]),
+                            "x_m": x_m,
+                            "y_m": y_m,
+                            "seen": now,
+                        }
+                    )
+                    continue
                 fresh.append(item)
                 continue
             used.add(best_index)
@@ -346,7 +425,7 @@ def _track_once(image: np.ndarray) -> None:
             for track in _cache
         ]
         _hits = hits
-    if fresh:
+    if USE_GROK and fresh:
         _queue_new(image, fresh[0])
     print(
         f"track_ms {int((time.monotonic() - started) * 1000)} hits {len(hits)} new {len(fresh)}",
@@ -368,7 +447,7 @@ def _grok_loop() -> None:
         token = env.get("PEER_TOKEN") or env.get("VISION_TOKEN") or ""
         cert = env.get("VISION_CA_CERT") or ""
         classification = None
-        if token and cert and Path(cert).is_file():
+        if USE_GROK and token and cert and Path(cert).is_file():
             classification = trash._classify(
                 token,
                 cert,
@@ -491,7 +570,7 @@ def _serve() -> None:
     def stream() -> Response:
         return Response(_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
-    app.run(host="127.0.0.1", port=5000, threaded=True, use_reloader=False)
+    app.run(host="127.0.0.1", port=VIEWER_PORT, threaded=True, use_reloader=False)
 
 
 def _status_frame(text: str) -> np.ndarray:
@@ -504,6 +583,7 @@ def main() -> int:
     threading.Thread(target=_serve, daemon=True).start()
     threading.Timer(1.5, lambda: webbrowser.open(PAGE_URL)).start()
     print(f"browser {PAGE_URL}", flush=True)
+    print(f"viewer_port {VIEWER_PORT} use_grok {USE_GROK}", flush=True)
     print("desktop window opening", flush=True)
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(WINDOW, 1280, 720)
@@ -513,7 +593,8 @@ def main() -> int:
     cv2.waitKey(1)
     threading.Thread(target=_capture_loop, daemon=True).start()
     threading.Thread(target=_track_loop, daemon=True).start()
-    threading.Thread(target=_grok_loop, daemon=True).start()
+    if USE_GROK:
+        threading.Thread(target=_grok_loop, daemon=True).start()
     frames = 0
     fps_stamp = time.monotonic()
     while not _stop.is_set():
