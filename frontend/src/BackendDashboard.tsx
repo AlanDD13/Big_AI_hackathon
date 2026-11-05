@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Bell, Box, CircleHelp, RefreshCw, ShieldAlert } from 'lucide-react';
 import CameraWidget from './CameraWidget';
 import FleetPanel from './FleetPanel';
+import ConnectedManual from './ConnectedManual';
 import PerceptionDetails from './PerceptionDetails';
 import { perceptionFacts } from './perception';
 import { visionFixture, visionStages } from './visionFixture';
@@ -14,7 +15,7 @@ const label = (value: unknown, fallback?: string) => text(value, fallback).repla
 const time = (value: unknown) => { const n = number(value); const d = new Date(n !== null ? n * 1000 : text(value, '')); return Number.isNaN(d.getTime()) ? 'Unavailable' : d.toLocaleString(); };
 function Fact({ title, children }: { title: string; children: React.ReactNode }) { return <div><dt>{title}</dt><dd>{children}</dd></div>; }
 
-export default function BackendDashboard({ view }: { view: 'objects' | 'fleet' }) {
+export default function BackendDashboard({ view }: { view: 'objects' | 'fleet' | 'manual' }) {
   const [connection, setConnection] = useState<Connection>({ status: 'loading', message: 'Loading backend snapshot…', store: null, updatedAt: null });
   const [preview, setPreview] = useState(false);
   const [visionStage, setVisionStage] = useState<VisionStage>('Observed');
@@ -41,6 +42,8 @@ export default function BackendDashboard({ view }: { view: 'objects' | 'fleet' }
   const alertKey = (id: string) => `${store?.backendBootId}:${id}`;
   const unread = alerts.filter(a => !readAlerts.has(alertKey(a.alertId))).length;
   function selectObject(id: string) { setSelected(id); }
+
+  if (view === 'manual') return <ConnectedManual ready={Boolean(connection.store)} onRefresh={() => client.current?.retry()}/>;
 
   if (view === 'fleet') return <FleetPanel connection={connection} onRefresh={() => client.current?.retry()}/>;
 
