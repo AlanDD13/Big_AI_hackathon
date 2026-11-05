@@ -7,6 +7,7 @@ Neither credential is accepted in place of the other.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 import json
 import os
@@ -74,7 +75,15 @@ def create_app(
     manual_proxy: ManualProxy | None = None,
     camera_proxy: CameraProxy | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="Rover backend", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(app):
+        await manual.start()
+        try:
+            yield
+        finally:
+            await manual.close()
+
+    app = FastAPI(title="Rover backend", version="0.1.0", lifespan=lifespan)
     app.state.operator_token = operator_token
     app.state.peer_token = peer_token
     app.state.cookie_secure = cookie_secure
