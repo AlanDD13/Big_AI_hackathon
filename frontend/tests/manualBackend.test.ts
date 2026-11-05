@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createManualClient, manualVelocity, parseManualStatus } from '../src/manualBackend.ts';
 const caps = { maxAbsXMps: .05, maxAbsYMps: .04, maxAbsZDegps: 5, watchdogTimeoutMs: 300, maxIntentTtlMs: 200 };
 const boot = 'a'.repeat(32);
-function harness(mode = 'simulator') {
+function harness(mode = 'simulator', allowPhysical = false) {
   let now = 100_000;
   const calls: { action: string; body: any }[] = [];
   let status: any = { roverId: 'rover-1', bridgeBootId: boot, stage: 'IDLE', telemetryFresh: true, stationaryConfirmed: true, executionMode: mode, manualBootFence: 'bridgeBootId-v1', backendStopLocked: false, caps };
@@ -33,7 +33,7 @@ function harness(mode = 'simulator') {
     if (action === 'rearm') { status = { ...status, stage: 'IDLE', backendStopLocked: false }; return Response.json({ ...status, rearmed: true, motion: false }); }
     throw new Error(action);
   }) as typeof fetch };
-  const client = createManualClient('rover-1', () => {}, deps);
+  const client = createManualClient('rover-1', () => {}, deps, { allowPhysical });
   return { client, calls, set: (patch: any) => { status = { ...status, ...patch }; }, advance: (ms: number) => { now += ms; }, fail: () => { failDrive = true; },
     delayDrive: () => { pendingDrive = true; }, completeDrive: () => delayDrive?.(Response.json({ ...status, stage: 'MANUAL_DRIVING', lastSequence: 1, appliedVelocity: { xMps: .05, yMps: 0, zDegps: 0 } })),
     delayLease: () => { pendingLease = true; }, completeLease: () => delayLease?.(Response.json(grant())) };
@@ -83,4 +83,14 @@ test('status never adopts a foreign lease and rejects unsupported capabilities',
   assert.equal(h.client.getState().lease, null); assert.equal(h.calls.some(c => c.action === 'lease'), false);
   assert.throws(() => parseManualStatus({ roverId: 'rover-1' }, 'rover-1'));
   assert.deepEqual(manualVelocity(NaN,1,0,caps), { xMps: 0, yMps: 0, zDegps: 0 });
+});
+
+test('physical opt-in admits only low bench caps and keeps priority stop available', async () => {
+  const h = harness('physical', true); await h.client.poll(); await h.client.acquire(); await h.client.tick(0,1,0);
+  assert.equal(h.calls.find(c => c.action === 'drive')?.body.xMps, .05);
+  await h.client.release();
+  const high = harness('physical', true); high.set({caps: {...caps, maxAbsXMps: .15}}); await high.client.poll(); await high.client.acquire(); await high.client.tick(0,1,0); await high.client.stop();
+  assert.equal(high.calls.some(c => c.action === 'lease'), false);
+  assert.equal(high.calls.some(c => c.action === 'drive'), false);
+  assert.equal(high.calls.at(-1)?.action, 'stop');
 });
