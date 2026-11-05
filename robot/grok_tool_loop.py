@@ -23,8 +23,38 @@ from urllib.request import HTTPSHandler, HTTPRedirectHandler, Request, build_ope
 
 import rover_tools as rt
 
-MODEL_KEY = sys.argv[2] if len(sys.argv) > 2 else os.environ.get("ROVER_MODEL", "grok")
-MODEL = "x-ai/grok-4.7" if "grok" in MODEL_KEY.lower() else "google/gemini-3.8-flash"
+def load_env_config():
+    config = {}
+    candidates = [
+        Path(__file__).resolve().parent / ".env",
+        Path("/Users/alandd/Desktop/Pavia_grok_hackathon/vision/.env"),
+        Path("/Users/alandd/Desktop/Pavia_grok_hackathon/.env"),
+        Path(".env"),
+    ]
+    for p in candidates:
+        if p.is_file():
+            for line in p.read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    k, v = k.strip(), v.strip().strip("\"'")
+                    if k not in config:
+                        config[k] = v
+    return config
+
+ENV = load_env_config()
+
+# Model configured dynamically from environment / .env file
+MODEL = (
+    sys.argv[2].strip() if len(sys.argv) > 2 and sys.argv[2].strip()
+    else os.environ.get("ROVER_MODEL")
+    or ENV.get("ROVER_MODEL")
+    or ENV.get("OPENROUTER_FAST_MODEL")
+    or ENV.get("OPENROUTER_VISION_MODEL")
+)
+if not MODEL:
+    raise RuntimeError("missing_model_in_env: please set ROVER_MODEL in your .env file")
+
 MAX_STEPS = int(sys.argv[1]) if len(sys.argv) > 1 else 20
 LOG = Path("/tmp/pavia-robot/logs") / f"tools-{time.time_ns()}"
 BRAIN_DIR = Path("/Users/alandd/.gemini/antigravity-cli/brain/dd744dcc-2fe5-4c81-8537-0ceabfe0ca93")
@@ -40,18 +70,19 @@ SYSTEM = (
     "The tracker calculates the EXACT metric distance and generates an ADAPTIVE plan every frame:\n"
     "- `canTracker['distanceToJawsCm']`: Remaining distance from extended open claw tips to the can in centimeters.\n"
     "- `canTracker['recommendedDrive']`: Exact adaptive speed and duration `{'x_mps': ..., 'duration_s': ...}` tailored specifically for current distance!\n"
-    "- `canTracker['isInGraspRange']`: True whenever distanceToJawsCm <= 9.0cm or bottomYPx >= 250 (claws already frame the can!).\n"
+    "- `canTracker['isInGraspRange']`: True whenever distanceToJawsCm <= 4.5cm or bottomYPx >= 285 (claws already frame the can!).\n"
     "\n"
     "ADAPTIVE RULES (ADAPTS TO ANY INITIAL DISTANCE - FAR, MID, OR CLOSE!):\n"
-    "1. IF ALREADY CLOSE (distanceToJawsCm <= 9.0cm or isInGraspRange is True):\n"
+    "1. IF IN GRASP RANGE (distanceToJawsCm <= 4.5cm or isInGraspRange is True):\n"
     "   THE ROVER IS ALREADY AT THE CAN! CALL grasp_can() IMMEDIATELY! DO NOT DRIVE FORWARD SEPARATELY!\n"
     "2. IF OFF-CENTER (recommendedTurnDeg != 0):\n"
     "   Call turn_degrees(degrees=canTracker['recommendedTurnDeg']) to lock directly onto the center line.\n"
-    "3. WHEN ALIGNED AND distanceToJawsCm > 9.0cm:\n"
+    "3. WHEN ALIGNED AND distanceToJawsCm > 4.5cm:\n"
     "   Execute the adaptive drive: call drive_chassis(x_mps=canTracker['recommendedDrive']['x_mps'], duration_s=canTracker['recommendedDrive']['duration_s'])!\n"
-    "   - If far (> 30cm): drives at high speed (0.22 m/s) in 1 bold advance.\n"
-    "   - If close/mid (9-30cm): drives at safe gentle speed (0.10-0.16 m/s) tailored to close the remaining gap smoothly!\n"
-    "   The rover will stop smoothly right at the claw mouth, and the very next action will be grasp_can()!\n"
+    "   - If far (> 28cm): drives rapidly (0.22 m/s) in 1 bold advance.\n"
+    "   - If mid (14-28cm): drives smoothly (0.16 m/s).\n"
+    "   - If close (<= 14cm): approaches gently (0.10 m/s) to land directly in grasp zone!\n"
+    "   The rover will stop smoothly right between the open claws, and the very next action will be grasp_can()!\n"
     "3. TRANSPORT & FINISH (NEVER CALL grasp_can AGAIN ONCE LIFTED!):\n"
     "   Once grasp_can completes (can is held and lifted in claws):\n"
     "   - Step A: drive_chassis(x_mps=0.10, duration_s=1.2) (transport forward smoothly)\n"
@@ -75,13 +106,10 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 def load_key():
-    for path in (Path("/Users/alandd/Desktop/Pavia_grok_hackathon/vision/.env"),
-                 Path("/Users/alandd/Desktop/Pavia_grok_hackathon/.env")):
-        if path.is_file():
-            for line in path.read_text().splitlines():
-                if line.startswith("OPENROUTER_API_KEY=") and line.split("=", 1)[1].strip():
-                    return line.split("=", 1)[1].strip().strip("\"'")
-    raise RuntimeError("missing_api_key")
+    key = os.environ.get("OPENROUTER_API_KEY") or ENV.get("OPENROUTER_API_KEY")
+    if key:
+        return key
+    raise RuntimeError("missing_api_key: please set OPENROUTER_API_KEY in your .env file")
 
 
 def json_default(obj):
@@ -105,8 +133,7 @@ def ask_grok(opener, key, jpeg, status):
     ]
     payload = {
         "model": MODEL,
-        "reasoning": {"effort": "low"},
-        "max_tokens": 300,
+        "max_tokens": int(ENV.get("ROVER_MAX_TOKENS", 800)),
         "parallel_tool_calls": False,
         "tool_choice": "required",
         "tools": rt.TOOLS,
@@ -115,30 +142,62 @@ def ask_grok(opener, key, jpeg, status):
             {"role": "user", "content": user_content},
         ],
     }
+    effort = os.environ.get("OPENROUTER_REASONING_EFFORT") or ENV.get("OPENROUTER_REASONING_EFFORT")
+    if effort and effort.lower() != "none":
+        payload["reasoning"] = {"effort": effort}
+    elif "grok" in MODEL.lower():
+        payload["reasoning"] = {"effort": "low"}
     request = Request(
         "https://openrouter.ai/api/v1/chat/completions",
         data=json.dumps(payload, default=json_default).encode("utf-8"),
         method="POST",
         headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
     )
-    with opener.open(request, timeout=30) as response:
-        data = json.loads(response.read(500_000))
+    for attempt in range(3):
+        try:
+            with opener.open(request, timeout=30) as response:
+                data = json.loads(response.read(500_000))
+        except Exception as exc:
+            if attempt < 2:
+                time.sleep(1.0 * (attempt + 1))
+                continue
+            raise
 
-    choice = data["choices"][0]
-    msg = choice["message"]
-    thought = msg.get("reasoning") or msg.get("reasoning_content") or msg.get("content") or ""
-    if not thought and msg.get("reasoning_details"):
-        for rd in msg["reasoning_details"]:
-            if rd.get("type") == "reasoning.text" and rd.get("text"):
-                thought += rd["text"]
+        choice = data["choices"][0]
+        msg = choice["message"]
+        thought = msg.get("reasoning") or msg.get("reasoning_content") or msg.get("content") or ""
+        if not thought and msg.get("reasoning_details"):
+            for rd in msg["reasoning_details"]:
+                if rd.get("type") == "reasoning.text" and rd.get("text"):
+                    thought += rd["text"]
 
-    calls = msg.get("tool_calls") or []
-    if len(calls) != 1:
-        raise RuntimeError("exactly_one_tool_call_required")
-    function = calls[0]["function"]
-    raw_args = function["arguments"]
-    args = raw_args if isinstance(raw_args, dict) else json.loads(raw_args)
-    return function["name"], args, data.get("id"), thought
+        calls = msg.get("tool_calls") or []
+        if len(calls) >= 1:
+            function = calls[0]["function"]
+            raw_args = function["arguments"]
+            args = raw_args if isinstance(raw_args, dict) else json.loads(raw_args)
+            return function["name"], args, data.get("id"), thought
+
+        # Fallback: check if content contains a JSON tool call
+        content = msg.get("content") or ""
+        if "{" in content and "}" in content:
+            try:
+                start = content.index("{")
+                end = content.rindex("}") + 1
+                cand = json.loads(content[start:end])
+                if "name" in cand:
+                    args = cand.get("arguments") or cand.get("parameters") or {}
+                    if isinstance(args, str):
+                        args = json.loads(args)
+                    return cand["name"], args, data.get("id"), thought
+            except Exception:
+                pass
+
+        if attempt < 2:
+            time.sleep(0.5)
+            continue
+        print("DEBUG FULL DATA:", json.dumps(data), flush=True)
+        raise RuntimeError(f"no_tool_call_in_response: {content[:100]}")
 
 
 def update_brain_monitor(step, max_steps, name, args, outcome, steps):
@@ -255,6 +314,7 @@ def main():
     result = "INCOMPLETE"
     calls = 0
 
+    print(f"Loaded model from .env: {MODEL}", flush=True)
     print("Opening rover tools session...", flush=True)
     with rt.open_rover_tools() as tools:
         print("CONNECTED to robot. Telemetry:", tools.status(), flush=True)
@@ -276,7 +336,7 @@ def main():
         try:
             for step in range(1, MAX_STEPS + 1):
                 # 1. Take photo
-                jpeg = tools.frame_jpeg(quality=75)
+                jpeg = tools.frame_jpeg(quality=65)
                 (LOG / f"step-{step:02d}.jpg").write_bytes(jpeg)
                 # Mirror to brain directory for user viewing
                 (BRAIN_DIR / "latest_rover_frame.jpg").write_bytes(jpeg)
