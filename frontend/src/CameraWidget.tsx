@@ -4,7 +4,24 @@ import { CAMERA_FEED, CAMERA_STATUS, cameraRetryDelay, parseCameraStatus } from 
 import './camera.css';
 
 type Phase = 'idle' | 'loading' | 'unverified' | 'disabled' | 'unavailable' | 'session';
-export default function CameraWidget({ enabled = false, onRefreshSession }: { enabled?: boolean; onRefreshSession?: () => void | Promise<void> }) {
+type CameraWidgetProps = {
+  enabled?: boolean;
+  onRefreshSession?: () => void | Promise<void>;
+  title?: string;
+  statusUrl?: string;
+  feedUrl?: string;
+  waitingMessage?: string;
+  quiet?: boolean;
+};
+export default function CameraWidget({
+  enabled = false,
+  onRefreshSession,
+  title = 'Main camera',
+  statusUrl = CAMERA_STATUS,
+  feedUrl = CAMERA_FEED,
+  waitingMessage,
+  quiet = false,
+}: CameraWidgetProps) {
   const [phase, setPhase] = useState<Phase>('idle');
   const [message, setMessage] = useState('');
   const [retry, setRetry] = useState(0);
@@ -30,7 +47,7 @@ export default function CameraWidget({ enabled = false, onRefreshSession }: { en
       setPhase('loading'); setMessage('Connecting to camera…');
       deadline = window.setTimeout(() => controller.abort(), 5000);
       try {
-        const statusResponse = await fetch(CAMERA_STATUS, { credentials: 'same-origin', cache: 'no-store', signal: controller.signal });
+        const statusResponse = await fetch(statusUrl, { credentials: 'same-origin', cache: 'no-store', signal: controller.signal });
         if (!current()) return;
         if (statusResponse.status === 401) {
           window.clearTimeout(deadline);
@@ -40,11 +57,11 @@ export default function CameraWidget({ enabled = false, onRefreshSession }: { en
           } else { setPhase('session'); setMessage('Operator session unavailable. Refresh the connection and retry.'); }
           return;
         }
-        if (statusResponse.status === 404) { window.clearTimeout(deadline); setPhase('disabled'); setMessage('Camera proxy is not installed on this backend.'); return; }
+        if (statusResponse.status === 404) { window.clearTimeout(deadline); setPhase('disabled'); setMessage(waitingMessage || 'Camera proxy is not installed on this backend.'); return; }
         if (!statusResponse.ok) throw new Error('Camera status unavailable.');
         const status = parseCameraStatus(await statusResponse.json());
-        if (!status.configured) { window.clearTimeout(deadline); setPhase('disabled'); setMessage('Camera source is not configured on the backend.'); return; }
-        const response = await fetch(CAMERA_FEED, { credentials: 'same-origin', cache: 'no-store', signal: controller.signal });
+        if (!status.configured) { window.clearTimeout(deadline); setPhase('disabled'); setMessage(waitingMessage || 'Camera source is not configured on the backend.'); return; }
+        const response = await fetch(feedUrl, { credentials: 'same-origin', cache: 'no-store', signal: controller.signal });
         if (!current()) return;
         if (!response.ok || !response.body) throw new Error('Camera feed unavailable.');
         const media = response.headers.get('content-type')?.split(';')[0].trim().toLowerCase();
@@ -96,7 +113,7 @@ export default function CameraWidget({ enabled = false, onRefreshSession }: { en
       } catch {
         if (!current()) return;
         controller.abort(); clearFrame(); window.clearTimeout(deadline); window.clearTimeout(lifetime);
-        setPhase('unavailable'); setMessage('Camera disconnected or image unavailable. Retrying…');
+        setPhase('unavailable'); setMessage(waitingMessage || 'Camera disconnected or image unavailable. Retrying…');
         retryTimer = window.setTimeout(() => { void connect(); }, cameraRetryDelay(failures++));
       }
     }
@@ -105,18 +122,20 @@ export default function CameraWidget({ enabled = false, onRefreshSession }: { en
       closed = true; request?.abort(); window.clearTimeout(retryTimer);
       window.clearTimeout(deadline); window.clearTimeout(lifetime); clearFrame();
     };
-  }, [enabled, retry]);
+  }, [enabled, retry, statusUrl, feedUrl, waitingMessage]);
 
+  const titleId = `${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-title`;
   const showing = enabled && phase === 'unverified';
-  const badge = !enabled ? 'Not connected' : phase === 'loading' ? 'Connecting' : phase === 'unverified' ? 'Unverified' : phase === 'session' ? 'Session required' : phase === 'disabled' ? 'Not configured' : 'Disconnected';
-  return <section className="panel main-camera-widget" aria-labelledby="main-camera-title">
-    <div className="panel-heading"><div className="row"><Video size={16}/><h2 id="main-camera-title">Main camera</h2></div><span className={`badge ${showing ? 'gold' : 'neutral'}`}>{badge}</span></div>
-    {!enabled ? <div className="main-camera-empty" role="img" aria-label="Main camera feed, empty"/> : <>
+  const waiting = quiet && (phase === 'disabled' || phase === 'unavailable');
+  const badge = !enabled ? 'Not connected' : phase === 'loading' ? 'Connecting' : phase === 'unverified' ? 'Unverified' : phase === 'session' ? 'Session required' : waiting ? 'Waiting' : phase === 'disabled' ? 'Not configured' : 'Disconnected';
+  return <section className="panel main-camera-widget" aria-labelledby={titleId}>
+    <div className="panel-heading"><div className="row"><Video size={16}/><h2 id={titleId}>{title}</h2></div><span className={`badge ${showing ? 'gold' : 'neutral'}`}>{badge}</span></div>
+    {!enabled ? <div className="main-camera-empty" role="img" aria-label={`${title} feed, empty`}/> : <>
       <div className="camera-preview">
-        {imageUrl !== null && <img src={imageUrl} alt="Main camera preview; source capture freshness unverified" className={showing ? '' : 'camera-loading-image'}/>}
+        {imageUrl !== null && <img src={imageUrl} alt={`${title} preview; source capture freshness unverified`} className={showing ? '' : 'camera-loading-image'}/>}
         {!showing && <div className="camera-placeholder"><VideoOff size={24}/><p role="status">{message || 'Camera unavailable.'}</p></div>}
       </div>
-      <div className="camera-footer"><small>{showing ? 'Source freshness unverified · display only' : 'No capture freshness or robot authority claimed'}</small><button className="icon-button" aria-label="Retry main camera" onClick={() => setRetry(n => n + 1)}><RefreshCw size={15}/></button></div>
+      <div className="camera-footer"><small>{showing ? 'Source freshness unverified · display only' : 'No capture freshness or robot authority claimed'}</small><button className="icon-button" aria-label={`Retry ${title.toLowerCase()}`} onClick={() => setRetry(n => n + 1)}><RefreshCw size={15}/></button></div>
     </>}
   </section>;
 }
