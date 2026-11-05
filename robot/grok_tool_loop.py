@@ -63,7 +63,7 @@ SYSTEM = (
     "You are the autonomous pilot of a DJI RoboMaster EP Core rover equipped with omnidirectional mecanum wheels, "
     "a forward-facing camera, and a 2-DOF robotic arm with gripper jaws.\n"
     "Your objective: locate the metallic drink can standing upright on the open floor, approach it quickly, center it squarely between the gripper jaws, "
-    "grasp the can firmly with grasp_can(), lift it, transport it forward, place it back down, and finish.\n"
+    "attempt grasp_can(), then stop for operator verification. Holding and placement are unverified; loaded transport is disabled.\n"
     "\n"
     "REAL-TIME YOLO DETECTOR & ADAPTIVE OPTICAL RANGING (canTracker in robotStatus):\n"
     "The camera is processed in real time (30ms) by an onboard sub-pixel YOLO neural network (`canTracker` in `robotStatus`).\n"
@@ -83,13 +83,9 @@ SYSTEM = (
     "   - If mid (14-28cm): drives smoothly (0.16 m/s).\n"
     "   - If close (<= 14cm): approaches gently (0.10 m/s) to land directly in grasp zone!\n"
     "   The rover will stop smoothly right between the open claws, and the very next action will be grasp_can()!\n"
-    "3. TRANSPORT & FINISH (NEVER CALL grasp_can AGAIN ONCE LIFTED!):\n"
-    "   Once grasp_can completes (can is held and lifted in claws):\n"
-    "   - Step A: drive_chassis(x_mps=0.10, duration_s=1.2) (transport forward smoothly)\n"
-    "   - Step B: move_arm(dx_mm=0, dy_mm=-35) (place upright on floor)\n"
-    "   - Step C: control_gripper(state='open', power=50) (release can safely upright)\n"
-    "   - Step D: stop_robot(reason='task completed successfully')!\n"
-    "   NEVER call grasp_can again once the can is lifted! Proceed immediately to Step A (drive_chassis)!\n"
+    "3. AFTER GRASP: call stop_robot(reason='holding unverified; operator verification required').\n"
+    "   Gripper-close, an actuator ACK and camera heuristics are not independent holding evidence.\n"
+    "   Do not drive, turn, release or claim delivery after grasp. Stop preserves the arm and gripper.\n"
     "\n"
     "RULES:\n"
     "- Output exactly ONE tool call per step.\n"
@@ -318,12 +314,6 @@ def main():
     print("Opening rover tools session...", flush=True)
     with rt.open_rover_tools() as tools:
         print("CONNECTED to robot. Telemetry:", tools.status(), flush=True)
-        # Ensure arm is at elevated home view position and gripper starts open
-        try:
-            tools.reset_arm_and_gripper()
-        except Exception:
-            pass
-
         # Start camera & HTTP video broadcast on port 8088
         tools.start_camera(port=8088)
         # Open live stream in default browser so user can watch directly
@@ -402,15 +392,10 @@ def main():
                 # 5. Check if finished
                 if name == "stop_robot":
                     result = "STOPPED_BY_GROK"
-                    print("\n🎉 Grok called stop_robot. Mission complete!", flush=True)
+                    print("Grok requested chassis stop; holding and placement remain unverified.", flush=True)
                     break
 
         finally:
-            try:
-                print("Reverting arm and opening claws to bottom position...", flush=True)
-                tools.reset_arm_and_gripper()
-            except Exception:
-                pass
             tools.stop("loop_finished")
 
     report = {"result": result, "grokCalls": calls, "steps": steps, "log": str(LOG)}

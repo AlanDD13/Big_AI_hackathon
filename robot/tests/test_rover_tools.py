@@ -1,5 +1,6 @@
 """Offline tests with a fake rover that has a constant leftward yaw bias."""
 import time, unittest
+from unittest.mock import patch
 try:
     import rover_tools as rt
 except ImportError:
@@ -71,4 +72,43 @@ class T(unittest.TestCase):
         self.assertTrue(self.t.dispatch("stop_robot", {"reason": "x"})["stopped"])
     def test_tool_names_match_dispatch(self):
         for tool in rt.TOOLS: self.assertIn(tool["function"]["name"], ("drive_chassis", "turn_degrees", "move_arm", "control_gripper", "stop_robot", "grasp_can"))
+    def test_closed_gripper_is_not_holding_evidence_or_transport_authority(self):
+        tracker = rt.StableYOLOTracker().update(None, gripper_state="close")
+        self.assertIsNone(tracker["canHeldInClaws"])
+        self.assertFalse(tracker["holdingVerified"])
+        self.assertFalse(tracker["detectionFresh"])
+        self.t.gripper("close")
+        before = list(self.r.chassis.cmds)
+        for action in (lambda: self.t.drive(.04), lambda: self.t.turn(15)):
+            with self.assertRaisesRegex(rt.RoverError, "holding_unverified"):
+                action()
+        self.assertEqual(self.r.chassis.cmds, before)
+        self.assertIsNone(self.t.grasp_can()["grasped"])
+        self.assertFalse(self.t.grasp_can()["holdingVerified"])
+    def test_stop_and_close_preserve_possible_load_until_explicit_release(self):
+        self.t.gripper("close")
+        self.r.gripper.calls.clear()
+        self.r.robotic_arm.moves.clear()
+        self.t.stop("operator_stop")
+        self.t.close()
+        self.assertEqual(self.r.gripper.calls, [])
+        self.assertEqual(self.r.robotic_arm.moves, [])
+        self.assertEqual(self.r.chassis.wheel_cmds[-1], (0, 0, 0, 0))
+        self.t.gripper("open")
+        self.assertEqual(self.r.gripper.calls[0][0], "open")
+    def test_grasp_macro_ack_never_claims_verified_holding(self):
+        self.t.arm_delta_y = -35
+        with patch.object(self.t, "drive", return_value={"stoppedBy": None}):
+            result = self.t.grasp_can()
+        self.assertIsNone(result["grasped"])
+        self.assertFalse(result["holdingVerified"])
+        self.assertTrue(result["gripperCloseCommanded"])
+    def test_failed_gripper_close_aborts_before_arm_lift(self):
+        self.t.arm_delta_y = -35
+        with patch.object(self.t, "drive", return_value={}), patch.object(
+                self.r.gripper, "close", side_effect=RuntimeError("no ack")):
+            with self.assertRaisesRegex(rt.RoverError, "grasp_gripper_close_failed"):
+                self.t.grasp_can()
+        self.assertEqual(self.r.robotic_arm.moves, [])
+        self.assertEqual(self.t._last_gripper_state, "close")
 if __name__ == "__main__": unittest.main()

@@ -325,12 +325,13 @@ established a completed pickup, transport or placement.
 
 ## Direct Grok 4.7 Tool Calling Loop (`grok_tool_loop.py`)
 
-A fully autonomous closed-loop tool-calling pipeline proven on real hardware (3JKCK7W0030DJS):
+An experimental opt-in tool-calling runner for supervised hardware work (3JKCK7W0030DJS). It is separate from the manual bridge safety path and does not establish a completed autonomous recovery:
 - **Tools**: `grasp_can`, `drive_chassis`, `turn_degrees`, `move_arm`, `control_gripper`, `stop_robot`.
 - **Live Stream**: broadcasts MJPEG 30 FPS stream with HUD crosshairs and corridor marks at `http://localhost:8088`.
 - **Pure Vision**: Grok 4.7 inspects the camera frames directly without fragile heuristic bounding-box trackers that confuse floor shadows with cans.
 - **Anti-Kick Distance Optimization**: bounded forward creep (`x_mps <= 0.035`, `duration_s <= 0.5s`) in close range, pre-opened 12 cm funnel jaws, and gentle `grasp_can` floor glide (~2.7 cm at 0.03 m/s) with power 80 clamp and arm lift.
-- **Obligatory Home Reset**: automatically resets arm elevation to `HOME_ARM_Y = -35.0 mm` and opens gripper jaws on mission finish or stop.
+- **Load-preserving stop**: stop and shutdown request chassis zero without moving the arm or opening the gripper. Release/reset requires an explicit operator action.
+- **Unverified grasp**: actuator completion and gripper-close are not independent holding evidence. The runner reports holding as unverified and blocks drive/turn while the gripper is closed; loaded transport is disabled pending an evidence-backed integration. Stopping does not establish mission completion.
 
 Run:
 ```bash
