@@ -715,7 +715,7 @@ class RobotBridge:
                 "watchdogTimeoutMs": 300,
             }
 
-    def manual_release(self, payload: dict[str, object] | None = None) -> tuple[int, dict[str, object]]:
+    def manual_release(self, payload: dict[str, object] | None = None, *, require_authority=False) -> tuple[int, dict[str, object]]:
         body = payload or {}
         if not isinstance(body, dict):
             return self._error_response(422, "VALIDATION_ERROR", "JSON object body required")
@@ -723,6 +723,15 @@ class RobotBridge:
         if reason not in ("user_release", "blur", "tab_hidden"):
             reason = "user_release"
         with self._lock:
+            if require_authority:
+                generation = body.get("leaseGeneration")
+                if (body.get("roverId") != self.rover_id or not _valid_id(body.get("leaseId"))
+                        or type(generation) is not int or generation < 1):
+                    return self._error_response(422, "VALIDATION_ERROR", "Release requires rover, lease and generation")
+                if (self._lease is None or self._lease.lease_id != body["leaseId"]
+                        or self._lease.generation != generation
+                        or self._wall_clock() > self._lease.expires_at):
+                    return self._error_response(409, "LEASE_EXPIRED", "Release authority no longer matches")
             self._manual_interlock = True
             # Publish the core's pending stop before freeing the lease. Pickup
             # uses this same lock and cannot slip into an idle-looking gap.
@@ -733,6 +742,7 @@ class RobotBridge:
         return 200, {
             "roverId": self.rover_id,
             "released": True,
+            "bridgeBootId": self.boot_id,
             "stage": "UNKNOWN",
             "zeroVelocityRequested": True,
             "stationaryConfirmed": False,
@@ -930,6 +940,9 @@ class BridgeHTTPServer:
                     _, m_status = parent.bridge.manual_status()
                     health["bridgeBootId"] = parent.bridge.boot_id
                     health["manualStage"] = m_status.get("stage")
+                    health["executionMode"] = "physical" if parent.bridge.physical else "simulator"
+                    health["manualCaps"] = m_status.get("caps")
+                    health["manualBootFence"] = "bridgeBootId-v1"
                     health["watchdogAlive"] = m_status.get("watchdogAlive", False)
                     health["watchdogError"] = m_status.get("watchdogError")
                     self._send_json(200, health)
@@ -976,6 +989,17 @@ class BridgeHTTPServer:
                 if not ok or body is None:
                     return
 
+                # A server instance's boot is immutable. Validate BEFORE any
+                # controller/lease mutation; no status-then-write restart race.
+                if path in ("/manual/drive", "/manual/release", "/manual/rearm"):
+                    expected_boot = body.get("bridgeBootId")
+                    if not isinstance(expected_boot, str) or not re.fullmatch(r"[a-f0-9]{32}", expected_boot):
+                        self._send_json(422, {"error": {"code": "VALIDATION_ERROR", "message": "bridgeBootId is required"}})
+                        return
+                    if expected_boot != parent.bridge.boot_id:
+                        self._send_json(409, {"error": {"code": "BRIDGE_BOOT_MISMATCH", "message": "Bridge restarted; reconcile authority"}})
+                        return
+
                 if path == "/commands/pickup":
                     status, resp = parent.bridge.pickup(body)
                     self._send_json(status, resp)
@@ -997,7 +1021,7 @@ class BridgeHTTPServer:
                     return
 
                 if path == "/manual/release":
-                    status, resp = parent.bridge.manual_release(body)
+                    status, resp = parent.bridge.manual_release(body, require_authority=True)
                     self._send_json(status, resp)
                     return
 
@@ -1070,14 +1094,22 @@ def main() -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8004)
     parser.add_argument("--allow-motion", action="store_true", help="Required for physical chassis actuation")
+    parser.add_argument("--max-x-mps", type=float, default=0.35)
+    parser.add_argument("--max-y-mps", type=float, default=0.35)
+    parser.add_argument("--max-yaw-degps", type=float, default=45.0)
     args = parser.parse_args()
+    try:
+        configured_limits = Limits(max_x=args.max_x_mps, max_y=args.max_y_mps,
+                                   max_yaw=args.max_yaw_degps)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     peer_token = os.getenv("PEER_TOKEN")
     if not peer_token:
         raise SystemExit("PEER_TOKEN environment variable is required")
 
     if args.mode == "simulator":
-        ctrl = SafetyController(lambda x, y, yaw: True)
+        ctrl = SafetyController(lambda x, y, yaw: True, limits=configured_limits)
         buf = RoverFrameBuffer(camera_id=args.rover_id, max_age_s=1.0)
         bridge = RobotBridge(ctrl, buf, rover_id=args.rover_id)
         server = BridgeHTTPServer(bridge, host=args.host, port=args.port, peer_token=peer_token)
@@ -1113,7 +1145,10 @@ def main() -> int:
 
     with rover_session(args.sn) as (rover, identity):
         buf = RoverFrameBuffer(camera_id=args.rover_id, max_age_s=1.0)
-        runtime = PhysicalBridgeRuntime(rover, buf, rover_id=args.rover_id)
+        output = PhysicalChassisAdapter(rover, max_x=configured_limits.max_x,
+                                       max_y=configured_limits.max_y,
+                                       max_yaw=configured_limits.max_yaw)
+        runtime = PhysicalBridgeRuntime(rover, buf, rover_id=args.rover_id, output=output)
         bridge = runtime.bridge
         capture = EPStreamCapture(rover, buf, resolution=args.resolution, subscribe_distance=True)
         server = BridgeHTTPServer(bridge, host=args.host, port=args.port, peer_token=peer_token)

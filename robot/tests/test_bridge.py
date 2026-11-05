@@ -57,6 +57,41 @@ def http_call(
 
 
 class BridgeTests(unittest.TestCase):
+    def test_http_boot_fence_rejects_previous_process_with_colliding_lease(self):
+        old, old_clock, _ = self._make_bridge()
+        current, clk, writes = self._make_bridge()
+        self._ready(old, old_clock)
+        self._ready(current, clk)
+        old_lease = old.manual_lease({})[1]
+        lease = current.manual_lease({})[1]
+        self.assertEqual(old_lease['leaseId'], lease['leaseId'])
+        self.assertEqual(old_lease['leaseGeneration'], lease['leaseGeneration'])
+        self.assertNotEqual(old.boot_id, current.boot_id)
+        server = BridgeHTTPServer(current, host='127.0.0.1', port=0, peer_token='test-peer-token')
+        base = server.start()
+        self.addCleanup(server.close)
+        before = list(writes)
+        for path in ('/manual/drive','/manual/release','/manual/rearm'):
+            code, body = http_call(base,'POST',path,body={
+                'roverId':'rover-1','leaseId':old_lease['leaseId'],
+                'leaseGeneration':old_lease['leaseGeneration'],'bridgeBootId':old.boot_id,
+                'sequence':1,'issuedAt':clk.wall,'expiresAt':clk.wall+.25,
+                'xMps':.05,'yMps':0,'zDegps':0})
+            self.assertEqual((code,body['error']['code']),(409,'BRIDGE_BOOT_MISMATCH'))
+            self.assertEqual(writes,before)
+            self.assertIsNotNone(current._lease)
+        code, body = http_call(base,'POST','/manual/release',body={
+            'roverId':'rover-1','leaseId':'wrong-lease',
+            'leaseGeneration':lease['leaseGeneration'],'bridgeBootId':current.boot_id})
+        self.assertEqual((code,body['error']['code']),(409,'LEASE_EXPIRED'))
+        self.assertEqual(writes,before)
+        code, body = http_call(base,'POST','/manual/rearm',body={'roverId':'rover-1'})
+        self.assertEqual((code,body['error']['code']),(422,'VALIDATION_ERROR'))
+        self.assertEqual(writes,before)
+        # Authenticated global stop remains usable without a lease or boot.
+        self.assertEqual(http_call(base,'POST','/stop',body={'reason':'operator_stop'})[0],200)
+        self.assertEqual(writes[-1],(0,0,0))
+
     def _ready(self, bridge, clk, start_sample=1):
         bridge.controller.stop("STARTUP")
         self._confirm(bridge, clk, start_sample)
@@ -298,7 +333,7 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(st, 503)
         self.assertEqual(body["error"]["code"], "TELEMETRY_STALE")
 
-        st, body = http_call(base_url, "POST", "/manual/rearm", token=token, body={"roverId": "rover-1"})
+        st, body = http_call(base_url, "POST", "/manual/rearm", token=token, body={"roverId": "rover-1", "bridgeBootId": bridge.boot_id})
         self.assertEqual(st, 409)
         self.assertEqual(body["error"]["code"], "NOT_STOPPED")
 
@@ -315,7 +350,7 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(body["error"]["code"], "STOP_LOCKED")
 
         # 3. Explicit rearm transitions STOPPED -> IDLE with motion=False
-        st, body = http_call(base_url, "POST", "/manual/rearm", token=token, body={"roverId": "rover-1"})
+        st, body = http_call(base_url, "POST", "/manual/rearm", token=token, body={"roverId": "rover-1", "bridgeBootId": bridge.boot_id})
         self.assertEqual(st, 200)
         self.assertEqual(body["stage"], "IDLE")
         self.assertFalse(body["motion"])
@@ -359,6 +394,7 @@ class BridgeTests(unittest.TestCase):
                 "roverId": "rover-1",
                 "leaseId": lease["leaseId"],
                 "leaseGeneration": lease["leaseGeneration"],
+                "bridgeBootId": bridge.boot_id,
                 "sequence": 1,
                 "issuedAt": clk.wall,
                 "expiresAt": clk.wall + 0.25,
@@ -382,6 +418,7 @@ class BridgeTests(unittest.TestCase):
                 "roverId": "rover-1",
                 "leaseId": lease["leaseId"],
                 "leaseGeneration": lease["leaseGeneration"],
+                "bridgeBootId": bridge.boot_id,
                 "reason": "user_release",
             },
         )
@@ -410,6 +447,7 @@ class BridgeTests(unittest.TestCase):
                 "roverId": "rover-1",
                 "leaseId": lease2["leaseId"],
                 "leaseGeneration": lease2["leaseGeneration"],
+                "bridgeBootId": bridge.boot_id,
                 "sequence": 1,
                 "issuedAt": clk.wall,
                 "expiresAt": clk.wall + 0.25,
@@ -463,6 +501,19 @@ class RecordingRover:
 
 
 class PhysicalWiringTests(unittest.TestCase):
+    def test_reduced_bench_caps_reject_excess_motion_before_sdk_write(self):
+        rover = RecordingRover()
+        output = PhysicalChassisAdapter(rover, max_x=.05, max_y=.05, max_yaw=5)
+        runtime = PhysicalBridgeRuntime(rover, output=output)
+        self.assertEqual(runtime.bridge.manual_status()[1]['caps']['maxAbsXMps'], .05)
+        baseline = list(rover.chassis.calls)
+        for velocity in ((.051,0,0),(0,-.051,0),(0,0,5.1)):
+            with self.assertRaises(ValueError):
+                output(*velocity)
+        self.assertEqual(rover.chassis.calls, baseline)
+        output(.05,0,0)
+        self.assertEqual(rover.chassis.calls[-1]['x'], .05)
+
     def test_adapter_supports_bridge_caps_and_yaw_not_bench_caps(self):
         rover = RecordingRover()
         adapter = PhysicalChassisAdapter(rover)
