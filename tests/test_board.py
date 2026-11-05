@@ -2,14 +2,39 @@
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
 
 
 BOARD = Path(__file__).resolve().parents[1] / "tools" / "board"
+
+
+def _shell_path(path: Path) -> str:
+    resolved = path.resolve()
+    drive = resolved.drive.rstrip(":").lower()
+    if not drive:
+        return resolved.as_posix()
+    return f"/{drive}{resolved.as_posix().split(':', 1)[1]}"
+
+
+def bash_executable():
+    found = shutil.which("bash")
+    if found:
+        return found
+    for candidate in (
+        Path(r"C:\Program Files\Git\bin\bash.exe"),
+        Path(r"C:\Program Files\Git\usr\bin\bash.exe"),
+    ):
+        if candidate.is_file():
+            return str(candidate)
+    return "bash"
+
+
 FAKE_GH = r'''#!/usr/bin/env python3
 import base64, json, os, sys
 from pathlib import Path
@@ -57,8 +82,15 @@ class BoardTests(unittest.TestCase):
         self.script = self.root / "tools" / "board"
         shutil.copy2(BOARD, self.script)
         (self.root / "bin").mkdir()
+        fake_py = self.root / "bin" / "gh-fake.py"
+        fake_py.write_text(FAKE_GH, newline="\n")
         fake = self.root / "bin" / "gh"
-        fake.write_text(FAKE_GH)
+        fake.write_text(
+            "#!/bin/sh\n"
+            f"exec {shlex.quote(_shell_path(Path(sys.executable)))} "
+            f"{shlex.quote(_shell_path(fake_py))} \"$@\"\n",
+            newline="\n",
+        )
         fake.chmod(0o755)
         self.comments = self.root / "comments.json"
         self.comments.write_text("[]")
@@ -70,9 +102,20 @@ class BoardTests(unittest.TestCase):
                         FAKE_COMMENTS=str(self.comments), FAKE_LOG=str(self.log))
 
     def run_board(self, *args, input=None, extra_env=None, cwd=None):
-        return subprocess.run(["bash", str(self.script), *args], cwd=cwd or self.root,
-                              env={**self.env, **(extra_env or {})}, input=input,
-                              capture_output=True, text=True, timeout=4)
+        result = subprocess.run(
+            [bash_executable(), str(self.script), *args],
+            cwd=cwd or self.root,
+            env={**self.env, **(extra_env or {})},
+            input=None if input is None else input.encode(),
+            capture_output=True,
+            timeout=4,
+        )
+        return subprocess.CompletedProcess(
+            result.args,
+            result.returncode,
+            result.stdout.decode(),
+            result.stderr.decode(),
+        )
 
     def rows(self, entries):
         self.comments.write_text(json.dumps([
