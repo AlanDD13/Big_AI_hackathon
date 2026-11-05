@@ -34,7 +34,7 @@ class Limits:
     telemetry_s: float = 0.5
     heartbeat_s: float = 1.0
     poll_s: float = 0.02
-    write_timeout_s: float = 0.05
+    write_timeout_s: float = 0.10
     stop_confirmation_s: float = 1.5
     stationary_span_s: float = 0.2
     max_x: float = 0.35

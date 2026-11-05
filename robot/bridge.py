@@ -820,7 +820,13 @@ class PhysicalChassisAdapter:
             timer = getattr(self.rover.chassis, "_auto_timer", None)
             if timer is not None and timer.is_alive():
                 timer.cancel()
-            self.rover.chassis.drive_speed(x=0.0, y=0.0, z=0.0)
+            if hasattr(self.rover.chassis, "drive_wheels"):
+                try:
+                    self.rover.chassis.drive_wheels(w1=0, w2=0, w3=0, w4=0)
+                except Exception:
+                    self.rover.chassis.drive_speed(x=0.0, y=0.0, z=0.0)
+            else:
+                self.rover.chassis.drive_speed(x=0.0, y=0.0, z=0.0)
 
 
 class PhysicalBridgeRuntime:
