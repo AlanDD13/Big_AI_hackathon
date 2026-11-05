@@ -174,6 +174,14 @@ class StableYOLOTracker:
         cx = round((x1 + x2) / 2.0, 1)
         by = round(y2, 1)
         ty = round(y1, 1)
+        bh = max(1.0, by - ty)
+
+        # Precise optical metric distance to can (K = 3250 px*cm for 11.5cm standard beverage can)
+        dist_cam_cm = round(3250.0 / bh, 1)
+        # Distance from extended claw jaw tips to the can (claw tips extend ~14 cm forward of camera)
+        dist_jaws_cm = max(0.0, round(dist_cam_cm - 14.0, 1))
+        # Maximum safe forward advance (m) leaving 3.5 cm buffer so robot never knocks the can
+        max_safe_advance_m = max(0.0, round((dist_jaws_cm - 3.5) / 100.0, 2))
 
         offset_px = round(cx - 320.0, 1)
 
@@ -181,15 +189,15 @@ class StableYOLOTracker:
         # At distance (by < 260), tighten corridor to +/- 20px so robot targets squarely onto the center line.
         # At close range (by >= 260), claws are 12 cm wide! Span covers +/- 45px.
         # CRITICAL SAFETY: NEVER TURN AT CLOSE RANGE (by >= 260) because rotating sweeps claws sideways into the can!
-        if by >= 260.0:
+        if by >= 260.0 or dist_jaws_cm <= 12.0:
             in_corridor = (abs(offset_px) <= 45.0)
             rec_turn = 0.0  # ZERO TURNING AT CLOSE RANGE!
         else:
             in_corridor = (abs(offset_px) <= 20.0)
             rec_turn = round(offset_px * 0.14, 1) if not in_corridor else 0.0
 
-        # Grasp ready zone: can bottom must reach close to claw entry corridor (y >= 300) and be inside claw span!
-        in_grasp = (by >= GRASP_BOTTOM_Y and in_corridor)
+        # Grasp ready zone: can bottom reaches claw entry (y >= 290 or jaws distance <= 4.0cm) and is in claw span!
+        in_grasp = ((by >= 290.0 or dist_jaws_cm <= 4.0) and in_corridor)
         dist_to_claws = max(0, int(CLAW_ENTRY_Y - by))
 
         return {
@@ -207,11 +215,14 @@ class StableYOLOTracker:
             "isInCorridor": in_corridor,
             "isInGraspRange": in_grasp,
             "distanceToClawsPx": dist_to_claws,
+            "distanceToCameraCm": dist_cam_cm,
+            "distanceToJawsCm": dist_jaws_cm,
+            "maxSafeAdvanceM": max_safe_advance_m,
             "canHeldInClaws": None,
             "gripperState": gripper_state,
             "recommendedAction": (
-                "IN_GRASP_RANGE: Call grasp_can(1.9) now!" if in_grasp
-                else ("DRIVE_FORWARD: Aligned in corridor. Drive forward!" if in_corridor
+                f"IN_GRASP_RANGE (Jaws dist {dist_jaws_cm:.1f}cm): Call grasp_can() now!" if in_grasp
+                else (f"DRIVE_FORWARD: Aligned in corridor. Safe to drive up to {max_safe_advance_m*100:.0f}cm!" if in_corridor
                       else f"TURN: Turn by {rec_turn:+.1f} deg to center the can.")
             )
         }
@@ -280,9 +291,11 @@ def draw_hud(cv2_frame, tracker_info=None, tof_mm=None):
         cv2.rectangle(img, (x1, y1), (x2, y2), box_color, 2)
         # Center dot & ground contact point
         cv2.circle(img, (cx, by), 4, (0, 0, 255), -1)
-        # Telemetry label
-        label = f"YOLO CAN {score:.2f} | dx={dx:+.0f}px | dy_claws={dy}px {'[GRASP READY!]' if in_grasp else ''}"
-        cv2.putText(img, label, (max(10, x1 - 10), max(30, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.42, box_color, 1)
+        # Telemetry label with exact optical metric distance
+        d_cam = tracker_info.get("distanceToCameraCm", 0.0)
+        d_jaws = tracker_info.get("distanceToJawsCm", 0.0)
+        label = f"YOLO CAN {score:.2f} | Dist:{d_cam:.0f}cm (Jaws:{d_jaws:.0f}cm) | dx={dx:+.0f}px {'[GRASP READY!]' if in_grasp else ''}"
+        cv2.putText(img, label, (max(10, x1 - 10), max(30, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.40, box_color, 1)
 
     return img
 
@@ -492,34 +505,47 @@ class RoverTools:
         z = round(clamp(float(z_degps), -MAX_Z_DEGPS, MAX_Z_DEGPS), 2)
         duration = round(clamp(float(duration_s), MIN_DRIVE_S, MAX_DRIVE_S), 2)
 
-        # HARD ANTI-KICK SAFETY:
-        # Only active when gripper is NOT closed (i.e. approaching an ungrasped can on floor).
-        # When gripper is already closed holding a can, ALLOW forward transport driving!
+        # HARD ANTI-KICK & OVERSHOOT SAFETY:
+        # Only active when approaching ungrasped can (gripper NOT closed)
         in_grasp_range = False
         if guard_tof and self._last_gripper_state != "close" and self.latest_tracker and self.latest_tracker.get("detected"):
             tracker = self.latest_tracker
             by = tracker.get("bottomYPx", 0)
             in_corr = tracker.get("isInCorridor", False)
-            if tracker.get("isInGraspRange") or (by >= 305.0 and in_corr):
+            dist_jaws = tracker.get("distanceToJawsCm", 999.0)
+            if tracker.get("isInGraspRange") or (by >= 290.0 and in_corr) or (dist_jaws <= 4.0 and in_corr):
                 in_grasp_range = True
 
         if guard_tof and x > 0 and in_grasp_range:
             self._zero()
             return {
                 "xMps": 0.0, "yMps": 0.0, "zDegps": 0.0, "durationS": 0.0, "headingHold": True,
-                "stoppedBy": "CAN_IN_GRASP_RANGE: Can is in grasp zone (bottom y >= 305)! Call grasp_can() now to funnel into throat and lift!",
+                "stoppedBy": "CAN_IN_GRASP_RANGE: Can is at claw entry! Call grasp_can() now to funnel into throat and lift!",
                 "isInGraspRange": True
             }
+
+        # DYNAMIC OVERSHOOT CLAMP:
+        # If driving forward towards detected can, never advance more than (dist_jaws - 3.5cm)!
+        if guard_tof and x > 0 and self._last_gripper_state != "close" and self.latest_tracker and self.latest_tracker.get("detected"):
+            tracker = self.latest_tracker
+            dist_jaws = tracker.get("distanceToJawsCm", 999.0)
+            # Safe forward advance leaves 3.5 cm buffer before the claws touch the can
+            safe_advance_m = max(0.04, (dist_jaws - 3.5) / 100.0)
+            req_advance_m = x * duration
+            if req_advance_m > safe_advance_m:
+                duration = round(safe_advance_m / x, 2)
+                duration = clamp(duration, MIN_DRIVE_S, MAX_DRIVE_S)
 
         # Close-range gentle speed limiter & automatic claw pre-opening
         # Only active when approaching ungrasped can
         is_close = False
         if guard_tof and self._last_gripper_state != "close" and self.latest_tracker and self.latest_tracker.get("detected"):
             by = self.latest_tracker.get("bottomYPx", 0)
-            if by >= 285.0:
+            dist_jaws = self.latest_tracker.get("distanceToJawsCm", 999.0)
+            if by >= 260.0 or dist_jaws <= 15.0:
                 is_close = True
         elif guard_tof and self._last_gripper_state != "close" and self._use_tof and self.tof_mm is not None and self.tof_at \
-                and time.monotonic() - self.tof_at < 0.5 and 0 < self.tof_mm <= 200:
+                and time.monotonic() - self.tof_at < 0.5 and 0 < self.tof_mm <= 250:
             is_close = True
 
         if x > 0 and is_close:
@@ -785,24 +811,24 @@ class RoverTools:
                 "message": "Can is already grasped and lifted! Proceed to transport forward with drive_chassis."
             }
 
-        # Determine optimal seating duration based on last seen can bottom Y
+        # Determine optimal seating duration based on metric distance and can bottom Y
         tracker = self.latest_tracker or {}
         by = tracker.get("bottomYPx", 305.0) if tracker.get("detected") else 305.0
+        dist_jaws = tracker.get("distanceToJawsCm", 3.0) if tracker.get("detected") else 3.0
 
-        # When by >= 300, distance to throat bumper is ~7 to 8 cm
-        # At gentle 0.065 m/s:
-        # by >= 315: 1.1s = 7.1 cm
-        # 300 <= by < 315: 1.2s = 7.8 cm
-        # by < 300: 1.35s = 8.8 cm
+        # At ultra-gentle 0.05 m/s:
+        # If can is already at/in jaws (by >= 315 or dist_jaws <= 2.0cm): 0.7s = 3.5 cm gentle touch
+        # If can is entering jaws (295 <= by < 315 or dist_jaws <= 4.5cm): 1.0s = 5.0 cm glide
+        # If by < 295: 1.2s = 6.0 cm glide
         if forward_duration_s is not None and float(forward_duration_s) > 0:
-            calc_dur = clamp(float(forward_duration_s), 0.9, 1.5)
+            calc_dur = clamp(float(forward_duration_s), 0.5, 1.3)
         else:
-            if by >= 315.0:
-                calc_dur = 1.1
-            elif by >= 300.0:
-                calc_dur = 1.2
+            if by >= 315.0 or dist_jaws <= 2.0:
+                calc_dur = 0.7
+            elif by >= 295.0 or dist_jaws <= 4.5:
+                calc_dur = 1.0
             else:
-                calc_dur = 1.35
+                calc_dur = 1.2
 
         with self._lock:
             self._zero()
@@ -829,9 +855,9 @@ class RoverTools:
                 pass
 
         # 3. Drive straight forward with heading hold to funnel and seat can firmly against gripper throat bumper
-        # At gentle 0.065 m/s for calc_dur (1.1-1.35s) = ~7.5 to 8.8 cm forward drive!
-        # Jaws are open wide (12cm) so can funnels safely inside without kicking or bulldozing!
-        drive_res = self.drive(x_mps=0.065, y_mps=0.0, z_degps=0.0, duration_s=calc_dur, hold_heading=True, guard_tof=False)
+        # At gentle 0.05 m/s for calc_dur (0.7-1.2s) = ~3.5 to 6.0 cm forward glide!
+        # Jaws are open wide (12cm) so can funnels safely inside without knocking or bulldozing!
+        drive_res = self.drive(x_mps=0.05, y_mps=0.0, z_degps=0.0, duration_s=calc_dur, hold_heading=True, guard_tof=False)
 
         # 4. Clamp gripper firmly around the can with high power
         with self._lock:
