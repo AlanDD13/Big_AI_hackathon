@@ -31,13 +31,13 @@ ROOT = Path(__file__).resolve().parent
 SERIAL = "3JKCK7W0030DJS"
 
 MAX_X_MPS = 0.12
-MAX_Z_DEGPS = 12.0
+MAX_Z_DEGPS = 28.0
 MIN_DRIVE_S, MAX_DRIVE_S = 0.2, 6.0
 SDK_TIMEOUT_S = 0.4          # chassis self-stops this long after the last command
-TICK_S = 0.1
+TICK_S = 0.05
 DRIFT_RIGHT_TRIM_DEGPS = 0.0  # standing drift resolved via _auto_timer cancel
 HOLD_GAIN = 2.0              # deg/s per degree of heading error
-HOLD_MAX_DEGPS = 6.0         # heading-hold authority on a straight leg
+HOLD_MAX_DEGPS = 8.0         # heading-hold authority on a straight leg
 MAX_HEADING_ERR_DEG = 20.0   # abort a leg that has left its heading by this much
 MIN_TOF_MM = 40              # close-in safety buffer for non-grasp drives
 ATTITUDE_MAX_AGE_S = 2.0
@@ -420,15 +420,15 @@ class RoverTools:
                     if abs(error) <= tolerance_deg:
                         reached = True
                         break
-                    rate = clamp(error * 0.4, -MAX_Z_DEGPS, MAX_Z_DEGPS)
-                    if abs(rate) < 2.5:
-                        rate = math.copysign(2.5, rate)
+                    rate = clamp(error * 0.7, -MAX_Z_DEGPS, MAX_Z_DEGPS)
+                    if abs(rate) < 3.5:
+                        rate = math.copysign(3.5, rate)
                     self.rover.chassis.drive_speed(x=0, y=0, z=round(rate, 2),
                                                    timeout=SDK_TIMEOUT_S)
                     time.sleep(TICK_S)
             finally:
                 self._zero()
-            time.sleep(0.05)
+            time.sleep(0.03)
             end_yaw = self.yaw
             return {"requestedDeg": round(degrees, 1), "yawStartDeg": round(start_yaw, 2),
                     "yawEndDeg": round(end_yaw, 2),
@@ -441,7 +441,7 @@ class RoverTools:
             self._zero()
             action = self.rover.robotic_arm.move(x=dx, y=dy)
             done = bool(action.wait_for_completed(timeout=3))
-            time.sleep(0.85)                               # measured physical settle
+            time.sleep(0.2)                               # physical settle
             if done and not action.has_failed:
                 self.arm_delta_y += dy
             return {"dxMm": dx, "dyMm": dy, "armHeightDeltaMm": self.arm_delta_y,
@@ -456,7 +456,7 @@ class RoverTools:
             self._zero()
             method = self.rover.gripper.close if state == "close" else self.rover.gripper.open
             ack = bool(method(power=power))
-            time.sleep(1.6 if state == "close" else 1.8)
+            time.sleep(0.6)
             self.rover.gripper.pause()
             return {"state": state, "power": power, "ack": ack}
 
@@ -588,9 +588,9 @@ class RoverTools:
             print(f"[HTTP LIVE STREAM] Could not start server on port {port}: {exc}", flush=True)
 
     # ---- tool dispatch ---------------------------------------------------------
-    def grasp_can(self, forward_duration_s=0.9):
-        """Execute physical sequence to grasp can: lower arm, open gripper wide, gentle seating drive (0.03 m/s), clamp tight, and lift."""
-        forward_duration_s = clamp(float(forward_duration_s), 0.5, 1.4)
+    def grasp_can(self, forward_duration_s=0.7):
+        """Execute physical sequence to grasp can: lower arm, open gripper wide, gentle seating drive (0.04 m/s), clamp tight, and lift."""
+        forward_duration_s = clamp(float(forward_duration_s), 0.4, 1.2)
         with self._lock:
             self._zero()
             # 1. Lower arm to floor level if not already there
@@ -601,7 +601,7 @@ class RoverTools:
                     try:
                         action = self.rover.robotic_arm.move(x=0, y=dy)
                         action.wait_for_completed(timeout=3.0)
-                        time.sleep(0.5)
+                        time.sleep(0.15)
                         self.arm_delta_y += dy
                     except Exception:
                         pass
@@ -609,22 +609,22 @@ class RoverTools:
             # 2. Open gripper jaws wide
             try:
                 self.rover.gripper.open(power=50)
-                time.sleep(1.2)
+                time.sleep(0.5)
                 self.rover.gripper.pause()
                 self._last_gripper_state = "open"
             except Exception:
                 pass
 
         # 3. Drive straight forward with heading hold to funnel and seat can in gripper throat
-        # At gentle 0.03 m/s for 0.9s = ~2.7 cm forward drive! Jaws are already open wide (12cm) so can slips inside without tipping.
-        drive_res = self.drive(x_mps=0.03, y_mps=0.0, z_degps=0.0, duration_s=forward_duration_s, hold_heading=True, guard_tof=False)
+        # At gentle 0.04 m/s for 0.7s = ~2.8 cm forward drive! Jaws are already open wide (12cm) so can slips inside without tipping.
+        drive_res = self.drive(x_mps=0.04, y_mps=0.0, z_degps=0.0, duration_s=forward_duration_s, hold_heading=True, guard_tof=False)
 
         # 4. Clamp gripper firmly around the can with high power
         with self._lock:
             self._zero()
             try:
                 self.rover.gripper.close(power=80)
-                time.sleep(1.8)
+                time.sleep(0.7)
                 self.rover.gripper.pause()
                 self._last_gripper_state = "close"
             except Exception:
@@ -635,7 +635,7 @@ class RoverTools:
             try:
                 action = self.rover.robotic_arm.move(x=0, y=35)
                 lift_done = bool(action.wait_for_completed(timeout=3.0))
-                time.sleep(0.5)
+                time.sleep(0.15)
                 self.arm_delta_y += 35
             except Exception:
                 pass
@@ -654,7 +654,7 @@ class RoverTools:
             raise RoverError("arguments_must_be_object")
         try:
             if name == "grasp_can":
-                return self.grasp_can(args.get("forward_duration_s", 1.2))
+                return self.grasp_can(args.get("forward_duration_s", 0.7))
             if name == "drive_chassis":
                 return self.drive(args["x_mps"], args.get("y_mps", 0.0), args.get("z_degps", 0.0), args["duration_s"])
             if name == "turn_degrees":
@@ -676,7 +676,7 @@ class RoverTools:
             # 1. Open gripper jaws wide
             try:
                 self.rover.gripper.open(power=50)
-                time.sleep(1.2)
+                time.sleep(0.5)
                 self.rover.gripper.pause()
                 self._last_gripper_state = "open"
             except Exception:
@@ -689,7 +689,7 @@ class RoverTools:
                 if abs(dy) >= 3:
                     action = self.rover.robotic_arm.move(x=0, y=dy)
                     action.wait_for_completed(timeout=3.0)
-                    time.sleep(0.5)
+                    time.sleep(0.15)
                     self.arm_delta_y += dy
             except Exception:
                 pass
@@ -731,7 +731,6 @@ def open_rover_tools(serial=SERIAL, **kwargs):
     """Connect through the existing SDK session helper and yield RoverTools."""
     sys.path.insert(0, str(ROOT))
     sys.path.insert(0, str(ROOT / "robot"))
-    sys.path.insert(0, str(ROOT.parent / "robot"))
     from check_connection import rover_session
     with rover_session(serial) as (rover, _identity):
         tools = RoverTools(rover, **kwargs)

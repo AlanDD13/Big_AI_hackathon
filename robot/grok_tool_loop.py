@@ -21,16 +21,13 @@ import time
 from pathlib import Path
 from urllib.request import HTTPSHandler, HTTPRedirectHandler, Request, build_opener
 
-try:
-    import rover_tools as rt
-except ImportError:
-    from robot import rover_tools as rt
+import rover_tools as rt
 
 MODEL_KEY = sys.argv[2] if len(sys.argv) > 2 else os.environ.get("ROVER_MODEL", "grok")
 MODEL = "x-ai/grok-4.7" if "grok" in MODEL_KEY.lower() else "google/gemini-3.8-flash"
 MAX_STEPS = int(sys.argv[1]) if len(sys.argv) > 1 else 20
-LOG = Path(os.environ.get("ROVER_LOG_DIR", "robot/.local/logs")) / f"tools-{time.time_ns()}"
-BRAIN_DIR = Path(os.environ.get("ROVER_BRAIN_DIR", "/Users/alandd/.gemini/antigravity-cli/brain/dd744dcc-2fe5-4c81-8537-0ceabfe0ca93"))
+LOG = Path("/tmp/pavia-robot/logs") / f"tools-{time.time_ns()}"
+BRAIN_DIR = Path("/Users/alandd/.gemini/antigravity-cli/brain/dd744dcc-2fe5-4c81-8537-0ceabfe0ca93")
 
 SYSTEM = (
     "You are the autonomous pilot of a DJI RoboMaster EP Core rover equipped with omnidirectional mecanum wheels, "
@@ -63,32 +60,33 @@ SYSTEM = (
     "  * If can is to the left of cyan line (x < 305): turn left! (e.g. if x=250, offset=-70px -> turn_degrees(degrees=-10.5))\n"
     "  Formula: degrees = (can_center_x - 320) * 0.15 deg/px.\n"
     "- Once centered between corridor lines (x around 310..330):\n"
-    "  * If can is far (bottom y < 210): drive forward gently: drive_chassis(x_mps=0.08, duration_s=1.0) (~8 cm advance).\n"
+    "  * If can is far (bottom y < 210): drive forward rapidly: drive_chassis(x_mps=0.12, duration_s=1.2) (~14 cm advance).\n"
     "  * If can is in mid-range (bottom y between 210 and 235): open claws if closed, creep forward: drive_chassis(x_mps=0.035, duration_s=0.5) (~1.7 cm creep).\n"
     "\n"
     "PHASE 2: EXECUTE GUARANTEED PHYSICAL GRASP (Can bottom y >= 230 or can entering claws):\n"
     "- AS SOON AS CAN IS IN GRASP RANGE (can bottom reaches y >= 230 or within ~10 cm of claws):\n"
     "  DO NOT DRIVE FORWARD SEPARATELY WITH drive_chassis! Driving forward separately will ram the can and kick it down!\n"
-    "  CALL grasp_can(forward_duration_s=0.9) IMMEDIATELY!\n"
+    "  CALL grasp_can(forward_duration_s=0.7) IMMEDIATELY!\n"
     "  grasp_can automatically:\n"
     "  1. Lowers arm to floor\n"
     "  2. Opens gripper claws wide (12 cm span) to funnel the can\n"
-    "  3. Gently glides forward at 0.03 m/s for 0.9s (~2.7 cm) without tipping\n"
+    "  3. Gently glides forward at 0.04 m/s for 0.7s (~2.8 cm) without tipping\n"
     "  4. Clamps gripper firmly at power 80\n"
     "  5. Lifts arm off the floor holding the can!\n"
     "\n"
     "PHASE 3: TRANSPORT, RELEASE, AND OBLIGATORY FINISH:\n"
     "- Once grasped and lifted (canTracker['canHeldInClaws'] or lastActionOutcome['tool'] == 'grasp_can'):\n"
-    "  1. Transport forward: drive_chassis(x_mps=0.06, y_mps=0.0, duration_s=1.2)\n"
+    "  1. Transport forward: drive_chassis(x_mps=0.10, y_mps=0.0, duration_s=1.2)\n"
     "  2. Place can down: move_arm(dx_mm=0, dy_mm=-35)\n"
     "  3. Release gripper: control_gripper(state='open', power=50)\n"
-    "  4. Finish: stop_robot(reason='can collected, carried, and placed successfully')\n"
+    "  4. Finish: on the very next step after releasing, call stop_robot(reason='can collected, carried, and placed successfully')!\n"
     "  (stop_robot automatically resets arm to initial home elevation and opens claws!)\n"
     "\n"
     "RULES:\n"
     "- Output exactly ONE tool call per step.\n"
     "- Trust your eyes to locate the metallic drink can and ignore shadows and floor debris.\n"
-    "- When can bottom reaches y >= 230, call grasp_can(0.9) immediately!"
+    "- When can bottom reaches y >= 230, call grasp_can(0.7) immediately!\n"
+    "- Once released on floor, call stop_robot() immediately!"
 )
 
 
@@ -98,13 +96,7 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 def load_key():
-    if os.environ.get("OPENROUTER_API_KEY"):
-        return os.environ["OPENROUTER_API_KEY"].strip().strip("\"'")
-    for path in (Path("vision/.env"),
-                 Path("robot/.env"),
-                 Path(".env"),
-                 Path("../vision/.env"),
-                 Path("/Users/alandd/Desktop/Pavia_grok_hackathon/vision/.env"),
+    for path in (Path("/Users/alandd/Desktop/Pavia_grok_hackathon/vision/.env"),
                  Path("/Users/alandd/Desktop/Pavia_grok_hackathon/.env")):
         if path.is_file():
             for line in path.read_text().splitlines():
@@ -135,7 +127,7 @@ def ask_grok(opener, key, jpeg, status):
     payload = {
         "model": MODEL,
         "reasoning": {"effort": "low"},
-        "max_tokens": 1500,
+        "max_tokens": 300,
         "parallel_tool_calls": False,
         "tool_choice": "required",
         "tools": rt.TOOLS,
