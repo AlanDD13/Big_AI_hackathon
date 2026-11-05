@@ -30,7 +30,7 @@ The vision producer's versioned interface is specified in
 [`contracts/vision-v1.md`](../contracts/vision-v1.md). Stateless peer
 classification for mapping is in
 [`contracts/vision-peer-classification-v1.md`](../contracts/vision-peer-classification-v1.md).
-Camera test control (draft on PR #20): `GET/PUT /api/cameras/{cameraId}/grok`
+Camera test control (implemented in merged PR #22): `GET/PUT /api/cameras/{cameraId}/grok`
 accepts that camera's scoped upload bearer or the vision master bearer, never
 another camera's scoped token or PEER_TOKEN. PUT requires exactly
 `{"enabled": true}` or `{"enabled": false}` (strict boolean); both return
@@ -61,7 +61,9 @@ Simulator-first recovery and proposed adapter boundaries are in
 This adds no physical endpoints or dispatch authority; P3/P4 agreement and
 hardware acceptance remain required. See
 [`docs/LANGGRAPH_PHYSICAL_HANDOFF.md`](LANGGRAPH_PHYSICAL_HANDOFF.md).
-These are canonical drafts on the vision branch, not merged APIs.
+These contract documents are integrated on `main`; draft status and physical
+capability restrictions still apply. In-person navigation interface agreement
+is still required before implementing the newly assigned sector flow.
 This records the [FigJam proposal](https://www.figma.com/board/bmW81xDifPQz5Icv98D8Hd/Big-AI?node-id=25-1003).
 
 ## Demo and module boundaries
