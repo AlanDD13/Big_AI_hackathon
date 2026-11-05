@@ -138,7 +138,8 @@ class PostgresEvidenceStore:
                       COALESCE((
                           SELECT jsonb_agg(data ORDER BY observed_at, frame_id, event_id)
                           FROM rover_backend.observations WHERE object_id = object.id
-                      ), '[]'::jsonb)
+                      ), '[]'::jsonb),
+                      object.state ->> 'status', object.state ->> 'state'
                FROM rover_backend.objects AS object
                LEFT JOIN rover_backend.classifications AS classification
                    ON classification.object_id = object.id
@@ -148,7 +149,11 @@ class PostgresEvidenceStore:
         if row is None:
             return None
 
-        revision, profile, status, classification, samples = row
+        revision, profile, status, classification, samples, vision_status, vision_state = row
+        if vision_status in {"LOST", "EXCLUDED"} or vision_state in {"LOST", "EXCLUDED"}:
+            # Historical metric samples remain stored, but they cannot revive
+            # a currently revoked Vision track for planning or reservation.
+            samples = []
         typed_classification = None
         if status is not None:
             classification = normalize_classification(classification)
