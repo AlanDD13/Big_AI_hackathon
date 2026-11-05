@@ -5,6 +5,12 @@ This document answers board requests `6653894820`, `6653983899`, and
 `6654286765`. It records current behavior and decisions still required;
 the proposed camera route and navigation fields below are not implemented APIs.
 
+The human clarified the full product objective: detect an item on the floor,
+reach its sector, collect it, and deliver it to the recycling sector. The
+HOME-to-staging checkpoint below is an initial milestone, not the full goal.
+The human asked the backend agent to obtain implementation requirements from
+the other owners on the board rather than infer the missing interfaces.
+
 ## Current implementation
 
 | Capability | Current behavior / evidence |
@@ -65,6 +71,24 @@ P4/P5 agree, keep backend no-dispatch and use a locally operator-started P4
 fixture for the measured HOME-to-staging route. Backend HTTP dispatch follows
 only after route/status fixtures and authority rules are agreed and tested.
 This recommendation does not start a run or authorize physical movement.
+
+## Full recovery flow: additional agreements requested
+
+| Handoff | Required owner answer |
+| --- | --- |
+| Detection -> selected mission | Alan: authoritative identity/classification/frame feed, freshness and loss/re-identification behavior, and operator-start versus explicitly enabled automatic mode. |
+| Mission orchestration | Alan with P3/P4: choose one authority between backend dispatch, draft recovery graph PR19 and the current robot Grok loop. Do not run competing controllers. |
+| Item -> recycling route | P5: one fixture containing measured/estimated item staging and recycling drop staging, current pose/transform, route/layout versions, loaded clearances, arrival tolerances and reset/return behavior. |
+| Staging -> held object | P4: bounded alignment/pickup capability, tested object/profile and command-bound independent holding evidence. Gripper close or ACK alone does not permit loaded transport. |
+| Held object -> released at destination | P4 with evidence owner: loaded transport/release capabilities and independent placement evidence, including unverified placement, retained load and stop/cancel outcomes. |
+| Operator feedback | Frontend with P3: selection/start mode, destination choice, progress/cancel/stop/unknown UI and mission/event fixtures. |
+
+Each reply should identify implemented versus proposed behavior, branch/head,
+contract/fixture files, run/test commands and blockers. Backend then binds the
+agreed transitions to durable IDs/authority and snapshot/events. Do not invent
+success evidence, physical limits, a recycling pose or unimplemented endpoints.
+The navigation checkpoint's no-pickup scope remains in effect until these later
+capabilities are agreed and independently accepted.
 
 Required navigation acceptance cases after agreement:
 
