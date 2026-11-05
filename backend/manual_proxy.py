@@ -16,7 +16,7 @@ import anyio
 from psycopg import Error as PostgresError
 
 from backend.evidence import ID_RE
-from backend.manual_requests import InvalidManualRequest, parse_manual_request
+from backend.manual_requests import InvalidManualRequest, StaleManualIntent, parse_manual_request
 from backend.postgres_projection import StorageUnavailable
 
 
@@ -304,7 +304,6 @@ class ManualProxy:
             # and does not stop-latch the lease; the next tick can still drive.
             if action == "drive" and payload["expiresAt"] <= self._now():
                 raise ManualFailure(409, "INTENT_EXPIRED")
-            parse_manual_request(action, payload, now=self._now())
             try:
                 result = await self._call("POST", "/manual/" + action, payload)
                 boot = self._identity(result)
@@ -348,6 +347,15 @@ class ManualProxy:
                         raise ManualFailure(503, "MANUAL_UNAVAILABLE")
                     lease.expires = self._now() + lease.ttl
                 return result
+            except StaleManualIntent:
+                # _call performs the final validation before transport. Expiry
+                # can cross there even after the post-gate check above. This
+                # request was valid on arrival and has not been sent.
+                if action == "drive" and payload["expiresAt"] <= self._now():
+                    raise ManualFailure(409, "INTENT_EXPIRED") from None
+                self._unknown = True
+                self._lease = None
+                raise
             except BaseException:
                 # Lost ACK/cancellation/malformed result never grants reusable authority.
                 self._unknown = True

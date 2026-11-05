@@ -241,6 +241,30 @@ class ManualProxyTests(unittest.TestCase):
         self.assertEqual(self.bridge.calls[-1].url.path, "/stop")
 
 
+    def test_tick_expiring_at_final_transport_validation_retains_lease(self):
+        self.lease()
+        original_call = self.proxy._call
+        expire_next = True
+
+        async def delayed_call(method, path, body=None):
+            nonlocal expire_next
+            if path == "/manual/drive" and expire_next:
+                expire_next = False
+                self.clock["now"] = 100.25
+            return await original_call(method, path, body)
+
+        self.proxy._call = delayed_call
+        response = self.post("drive", intent(xMps=0.03))
+        self.assertEqual(response.json()["error"]["code"], "INTENT_EXPIRED")
+        self.assertIsNotNone(self.proxy._lease)
+        self.assertFalse(self.proxy._unknown)
+        self.assertFalse(self.proxy._stop_latched)
+        self.assertFalse(any(call.url.path in {"/manual/drive", "/stop"} for call in self.bridge.calls))
+        self.clock["now"] = 100.30
+        response = self.post("drive", intent(xMps=0.03, sequence=2, issuedAt=100.30, expiresAt=100.50))
+        self.assertEqual(response.status_code, 200, response.text)
+
+
 class ManualConcurrencyTests(unittest.IsolatedAsyncioTestCase):
     async def test_priority_stop_is_not_undone_by_inflight_rearm(self):
         bridge = FakeBridge()
