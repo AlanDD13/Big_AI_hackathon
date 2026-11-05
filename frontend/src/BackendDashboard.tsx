@@ -64,7 +64,7 @@ export default function BackendDashboard({ view }: { view: 'objects' | 'fleet' }
       <section className="panel backend-boundary"><h2>{useFixtures ? 'Fixture context' : 'Connected operations'}</h2><p>{useFixtures ? 'This scenario contains no robot or mission records.' : store ? `${store.robots.length} robots · ${store.missions.length} missions reported by the backend.` : 'Robot and mission status are unavailable.'} Mission dispatch and live manual control are awaiting their API integration.</p><button className="button secondary" disabled>Dispatch unavailable</button></section>
     </div><aside className="backend-detail-column">
       <section className="panel backend-detail" aria-label="Object details"><div className="panel-heading"><h2>Object details</h2><span className="badge neutral">Read-only</span></div>{object ? <ObjectDetails key={`${store?.backendBootId}:${object.objectId}`} object={object}/> : <div className="empty-message">{selected ? 'This object is no longer present in the current snapshot.' : 'Select an object or alert to inspect its evidence.'}</div>}</section>
-      <CameraWidget/>
+      <CameraWidget enabled={!useFixtures && Boolean(connection.store)} onRefreshSession={() => client.current?.retry()}/>
     </aside></div>
     <footer className="page-footer"><span>{useFixtures ? 'Labelled contract fixture · no live observations' : 'Backend data only · no simulated robot telemetry'}</span><span>ROVR / OPERATIONS CONSOLE</span></footer>
   </div>;
