@@ -149,51 +149,21 @@ def ask_grok(opener, key, jpeg, status):
         method="POST",
         headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
     )
-    for attempt in range(3):
-        try:
-            with opener.open(request, timeout=30) as response:
-                data = json.loads(response.read(500_000))
-        except Exception as exc:
-            if attempt < 2:
-                time.sleep(1.0 * (attempt + 1))
-                continue
-            raise
-
-        choice = data["choices"][0]
-        msg = choice["message"]
-        thought = msg.get("reasoning") or msg.get("reasoning_content") or msg.get("content") or ""
-        if not thought and msg.get("reasoning_details"):
-            for rd in msg["reasoning_details"]:
-                if rd.get("type") == "reasoning.text" and rd.get("text"):
-                    thought += rd["text"]
-
-        calls = msg.get("tool_calls") or []
-        if len(calls) >= 1:
-            function = calls[0]["function"]
-            raw_args = function["arguments"]
-            args = raw_args if isinstance(raw_args, dict) else json.loads(raw_args)
-            return function["name"], args, data.get("id"), thought
-
-        # Fallback: check if content contains a JSON tool call
-        content = msg.get("content") or ""
-        if "{" in content and "}" in content:
-            try:
-                start = content.index("{")
-                end = content.rindex("}") + 1
-                cand = json.loads(content[start:end])
-                if "name" in cand:
-                    args = cand.get("arguments") or cand.get("parameters") or {}
-                    if isinstance(args, str):
-                        args = json.loads(args)
-                    return cand["name"], args, data.get("id"), thought
-            except Exception:
-                pass
-
-        if attempt < 2:
-            time.sleep(0.5)
-            continue
-        print("DEBUG FULL DATA:", json.dumps(data), flush=True)
-        raise RuntimeError(f"no_tool_call_in_response: {content[:100]}")
+    # A provider timeout or malformed response is an uncertain paid request.
+    # Never retry it or reinterpret explanatory text as actuator authority.
+    with opener.open(request, timeout=30) as response:
+        data = json.loads(response.read(500_000))
+    msg = data["choices"][0]["message"]
+    thought = msg.get("reasoning") or msg.get("reasoning_content") or msg.get("content") or ""
+    calls = msg.get("tool_calls") or []
+    if not isinstance(calls, list) or len(calls) != 1:
+        raise RuntimeError("exactly_one_tool_call_required")
+    function = calls[0]["function"]
+    raw_args = function["arguments"]
+    args = raw_args if isinstance(raw_args, dict) else json.loads(raw_args)
+    if not isinstance(args, dict):
+        raise RuntimeError("tool_arguments_must_be_object")
+    return function["name"], args, data.get("id"), thought
 
 
 def update_brain_monitor(step, max_steps, name, args, outcome, steps):
@@ -345,9 +315,9 @@ def main():
 
                 # 3. Ask Grok to decide (with 1500 max tokens)
                 print(f"\n[STEP {step}/{MAX_STEPS}] Querying Grok with photo...", flush=True)
+                calls += 1  # Count attempted requests, including uncertain failures.
                 try:
                     name, args, request_id, thought = ask_grok(opener, key, jpeg, status)
-                    calls += 1
                 except Exception as exc:
                     print("GROK_ERROR", type(exc).__name__, str(exc)[:160], flush=True)
                     result = "GROK_ERROR"

@@ -87,30 +87,6 @@ class StableYOLOTracker:
     def update(self, img, tof_mm=None, gripper_state="open"):
         now = time.monotonic()
         if gripper_state == "close":
-            if img is None or getattr(img, "size", 0) == 0:
-                return {
-                    "detected": False,
-                    "detectionFresh": False,
-                    "canHeldInClaws": None,
-                    "gripperState": "close",
-                    "infraredDistanceMm": int(tof_mm) if tof_mm is not None else None,
-                }
-            model = self._ensure_model()
-            has_detection = False
-            if model is not None and model is not False:
-                try:
-                    res = model.predict(img, conf=0.05, verbose=False)
-                    has_detection = bool(res and len(res) > 0 and len(res[0].boxes) > 0)
-                except Exception:
-                    pass
-            if not has_detection and self.track is None:
-                return {
-                    "detected": False,
-                    "detectionFresh": False,
-                    "canHeldInClaws": None,
-                    "gripperState": "close",
-                    "infraredDistanceMm": int(tof_mm) if tof_mm is not None else None,
-                }
             return {
                 "detected": False,
                 "detectionFresh": False,

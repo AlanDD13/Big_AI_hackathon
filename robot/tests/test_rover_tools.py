@@ -73,10 +73,14 @@ class T(unittest.TestCase):
     def test_tool_names_match_dispatch(self):
         for tool in rt.TOOLS: self.assertIn(tool["function"]["name"], ("drive_chassis", "turn_degrees", "move_arm", "control_gripper", "stop_robot", "grasp_can"))
     def test_closed_gripper_is_not_holding_evidence_or_transport_authority(self):
-        tracker = rt.StableYOLOTracker().update(None, gripper_state="close")
-        self.assertIsNone(tracker["canHeldInClaws"])
-        self.assertFalse(tracker["holdingVerified"])
-        self.assertFalse(tracker["detectionFresh"])
+        tracker = rt.StableYOLOTracker()
+        tracker.track = {"box": [300, 200, 340, 300]}
+        for image in (None, type("Image", (), {"size": 10})()):
+            with patch.object(tracker, "_ensure_model", side_effect=AssertionError("must not infer holding")):
+                result = tracker.update(image, gripper_state="close")
+            self.assertIsNone(result["canHeldInClaws"])
+            self.assertFalse(result["holdingVerified"])
+            self.assertFalse(result["detectionFresh"])
         self.t.gripper("close")
         before = list(self.r.chassis.cmds)
         for action in (lambda: self.t.drive(.04), lambda: self.t.turn(15)):
