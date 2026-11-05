@@ -22,21 +22,23 @@ operator-supervised window is required before enabling physical writes.
 - There is no clock correction: grant clock skew >200 ms blocks control. Timing
   must be checked on target hosts before physical acceptance.
 
-Verification:35 frontend tests and production build pass, including lower caps,
-boot change, lost ACK/no replay, priority release, late grant/ACK, stale telemetry,
-lease expiry, UNKNOWN and explicit re-arm. Actual browser acceptance against
-main47d89ae backend and P4 fake HTTP server is initially BLOCKED: backend returns
-503 MANUAL_UNAVAILABLE on its first status. Owner test reproduces on Windows:
+Verification:35 frontend tests and production build pass. Actual Windows browser
+lifecycle passes against the backend and the robot owner's fake-output HTTP
+server: status, explicit grant, held forward with nonzero tuples, release and
+confirmed IDLE, global stop and confirmed STOPPED, explicit re-arm to IDLE without
+restoring authority/motion. Held Space+W+Tab moving focus to a same-page control
+also releases to IDLE. Tested lead focus patch e92e26c plus a narrow blur guard:
+disabling the Re-arm button must not cancel its own pending re-arm request.
+The guard retains held-key/workspace focus cleanup. Physical mode stays disabled.
 
-    BACKEND_P4_FIXTURE_ROOT=<repository checkout>
-    python -m unittest backend.tests.test_manual_bridge_integration -v
-
-The first status assertion fails (503 expected200). Local initialization of a
-fresh httpx.AsyncClient(trust_env=False) measured460/301/252 ms, exceeding the
-backend250 ms enclosing budget before a request. Reported to backend owner in
-board6655485359/6655505511; no backend file or deadline was changed here.
-Zero nonzero fake outputs were produced before this blocker. This is NOT a
-passing browser-to-P4 lifecycle or physical acceptance claim.
+Backend fix278f0a3 (merged35a93bd) passes all four Windows client-lifetime and
+actual fake-P4 HTTP tests. It resolves the original constructor budget failure
+without extending the transport deadline. The fixture uses real request-time
+wall clock, avoiding future issuedAt values from a quantized telemetry clock.
+Initial failures and fixes are recorded in board6655485359/6655505511/6655731071.
+Browser timing stalls can still expire an intent and latch STOPPED, as observed
+during automation; no automatic reacquisition/replay occurs. This synthetic pass
+is not a physical timing/network acceptance or shared-database admission test.
 
 Repeatable isolated fixture (no DB, SDK, camera, model or live robot):
 
@@ -47,3 +49,7 @@ callback returning false and the robot owner's fake output server. This bypasses
 DB admission only inside this clearly labelled local test fixture, never normal
 backend startup. Generated credentials remain in memory. Open the printed URL,
 select Connected then Manual. Write quit to the printed control file to clean up.
+
+For an isolated exported backend branch, ROVR_BACKEND_FIXTURE_ROOT may point at
+its source root; normal use tests the current checkout. The fixture never persists
+operator/peer tokens or configures a physical bridge URL.

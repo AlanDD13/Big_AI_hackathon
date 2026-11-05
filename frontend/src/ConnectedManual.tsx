@@ -62,6 +62,7 @@ export default function ConnectedManual({ ready, onRefresh }: { ready: boolean; 
     { name: 'Turn right', icon: RotateCw, strafe: 0, forward: 0, turn: 1 },
   ];
   return <section className="backend-workspace connected-manual" ref={workspace} tabIndex={-1} aria-label="Connected manual control" onBlurCapture={e => {
+    if (!client.current?.getState().lease && keys.current.size === 0) return;
     const next = e.relatedTarget;
     // Window blur does not fire when focus moves to another part of this page.
     // Held keyboard input must lose authority when its workspace loses focus.

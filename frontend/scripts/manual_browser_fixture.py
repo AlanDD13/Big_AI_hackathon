@@ -22,6 +22,8 @@ OUT.mkdir(parents=True, exist_ok=True)
 CONTROL = OUT / 'control.txt'
 CONTROL.write_text('run', encoding='utf-8')
 sys.path.insert(0, str(REPO))
+if os.environ.get('ROVR_BACKEND_FIXTURE_ROOT'):
+    sys.path.insert(0, str(Path(os.environ['ROVR_BACKEND_FIXTURE_ROOT']).resolve()))
 from backend.app import create_app
 from backend.manual_proxy import ManualProxy
 import uvicorn
@@ -30,7 +32,19 @@ spec = importlib.util.spec_from_file_location('offline_bridge_fixture', REPO / '
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 fixture = module.BridgeTests()
-bridge, clock, writes = fixture._make_bridge()
+class LiveClock(module.FakeClock):
+    # Request timestamps must use wall time at the actual HTTP call, not the
+    # previous telemetry sample (which may be50ms old). Monotonic test time
+    # still advances explicitly for synthetic stationary evidence.
+    @property
+    def wall(self):
+        return time.time()
+
+    @wall.setter
+    def wall(self, value):
+        pass
+
+bridge, clock, writes = fixture._make_bridge(LiveClock())
 assert bridge.physical is False and isinstance(writes, list)
 fixture._ready(bridge, clock)
 clock.wall = time.time()
@@ -63,7 +77,7 @@ def telemetry():
             velocity = bridge.controller.status()['requestedVelocity']
             bridge.controller.observe(*velocity, sample_id=sample)
         bridge.controller.tick()
-        (OUT / 'evidence.json').write_text(json.dumps({'synthetic': True, 'physical': bridge.physical, 'outputCount': len(writes), 'nonzeroOutputs': sum(any(v) for v in writes), 'lastOutput': writes[-1] if writes else None, 'stage': bridge.manual_status('rover-1')[1].get('stage')}), encoding='utf-8')
+        (OUT / 'evidence.json').write_text(json.dumps({'synthetic': True, 'physical': bridge.physical, 'outputCount': len(writes), 'nonzeroOutputs': sum(any(v) for v in writes), 'lastOutput': writes[-1] if writes else None, 'stage': bridge.manual_status('rover-1')[1].get('stage'), 'reason': bridge.controller.status()['reason']}), encoding='utf-8')
         time.sleep(.05)
 threading.Thread(target=telemetry, daemon=True).start()
 env = dict(os.environ, BACKEND_URL=f'http://127.0.0.1:{bp}', OPERATOR_TOKEN=operator)
