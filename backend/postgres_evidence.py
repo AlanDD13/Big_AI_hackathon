@@ -16,6 +16,16 @@ if TYPE_CHECKING:
     from psycopg import Connection
 
 
+def normalize_classification(data: Mapping[str, object]) -> dict[str, object]:
+    """Read both current flat classifications and the original Vision envelope."""
+    if "classification" not in data:
+        return dict(data)
+    nested = data.get("classification")
+    normalized = dict(nested) if isinstance(nested, dict) else {}
+    normalized["provider"] = data.get("classificationProvider")
+    return normalized
+
+
 class PostgresEvidenceStore:
     def __init__(self, connect: Callable[[], Connection]) -> None:
         self._connect = connect
@@ -140,6 +150,8 @@ class PostgresEvidenceStore:
 
         revision, profile, status, classification, samples = row
         typed_classification = None
+        if status is not None:
+            classification = normalize_classification(classification)
         if status is not None and (
             not require_classification_provider or classification.get("provider") in ("grok", "fixture")
         ):
