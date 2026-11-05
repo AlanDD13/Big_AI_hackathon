@@ -30,6 +30,19 @@ class ManualFailure(Exception):
         self.code = code
 
 
+class PostgresManualGate:
+    def __init__(self, connect):
+        self._connect = connect
+
+    def __call__(self, rover_id):
+        with self._connect() as connection:
+            return connection.execute(
+                """SELECT EXISTS(SELECT 1 FROM rover_backend.missions
+                   WHERE rover_id = %s AND state IN ('dispatching','running','holding','unknown'))""",
+                (rover_id,),
+            ).fetchone()[0]
+
+
 @dataclass(repr=False)
 class Lease:
     session: str

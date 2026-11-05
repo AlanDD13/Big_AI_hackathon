@@ -25,7 +25,7 @@ from backend.evidence import EvidenceConflict, InvalidEvidence, parse_evidence
 from backend.mission_http import (
     IDEMPOTENCY_KEY_RE, MISSION_ERRORS, FixtureMapping, UnavailableMapping, parse_mission_request,
 )
-from backend.manual_proxy import ManualFailure, ManualProxy
+from backend.manual_proxy import ManualFailure, ManualProxy, PostgresManualGate
 from backend.manual_requests import InvalidManualRequest, StaleManualIntent
 from backend.evidence import ID_RE
 from backend.postgres_collection import PostgresCollectionStore
@@ -438,13 +438,7 @@ def app_from_env() -> FastAPI:
 
             return psycopg.connect(database_url)
 
-        def manual_active(rover_id):
-            with connect() as connection:
-                return connection.execute(
-                    """SELECT EXISTS(SELECT 1 FROM rover_backend.missions
-                       WHERE rover_id = %s AND state IN ('dispatching','running','holding','unknown'))""",
-                    (rover_id,),
-                ).fetchone()[0]
+        manual_active = PostgresManualGate(connect)
 
         observation_log = PostgresObservationLog(connect)
         vision_log = PostgresVisionLog(connect)

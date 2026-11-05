@@ -134,3 +134,9 @@ and records velocity tuples in a Python list. It covers status, grant, drive,
 release/UNKNOWN/IDLE, stop/STOPPED, and rearm with no resumed motion. Without the
 variable it skips. Physical bench results remain P4's evidence; P1->P3->P4
 supervised acceptance is still required after frontend is wired.
+
+Verified with P4 `2c6b6c9`: the complete integrated backend suite passed all 93
+tests with disposable PostgreSQL 18 using the scoped runtime role, including
+the P4 fake-output HTTP lifecycle; all four SQL smoke scripts passed. No shared
+database or physical bridge was used. Camera routes merged in main are covered
+by the same run.
