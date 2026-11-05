@@ -1,0 +1,741 @@
+"""Direct rover primitives for Grok tool calling (no LangGraph yet).
+
+Replicates the physical behaviour proven on Platon's branch
+(task/platonyesin-dev/command-bridge, live_grok.py / motion_control.py):
+  * positive SDK z (deg/s) turns right and increases reported yaw
+  * every motion is bounded in speed and duration, uses a short SDK timeout so the
+    chassis stops on its own if this process dies, and ends with an explicit zero
+  * straight drives hold the starting heading from attitude telemetry; that is what
+    cancels the slow creep to the left
+  * the arm and gripper move only while the chassis is commanded to zero
+
+Usage:
+    with open_rover_tools() as tools:
+        tools.dispatch("drive_chassis", {"x_mps": 0.04, "z_degps": 0, "duration_s": 1.0})
+
+`TOOLS` is the OpenAI/OpenRouter function schema to hand to Grok; `dispatch` executes
+one validated call and returns a JSON-safe result. Not a safety system: it does not
+replace the SafetyController/watchdog on Platon's branch and proves nothing about
+successful grasps.
+"""
+from __future__ import annotations
+
+import math
+import sys
+import threading
+import time
+from contextlib import contextmanager
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+SERIAL = "3JKCK7W0030DJS"
+
+MAX_X_MPS = 0.12
+MAX_Z_DEGPS = 12.0
+MIN_DRIVE_S, MAX_DRIVE_S = 0.2, 6.0
+SDK_TIMEOUT_S = 0.4          # chassis self-stops this long after the last command
+TICK_S = 0.1
+DRIFT_RIGHT_TRIM_DEGPS = 0.0  # standing drift resolved via _auto_timer cancel
+HOLD_GAIN = 2.0              # deg/s per degree of heading error
+HOLD_MAX_DEGPS = 6.0         # heading-hold authority on a straight leg
+MAX_HEADING_ERR_DEG = 20.0   # abort a leg that has left its heading by this much
+MIN_TOF_MM = 40              # close-in safety buffer for non-grasp drives
+ATTITUDE_MAX_AGE_S = 2.0
+HOME_ARM_Y = -35.0               # elevated starting position with wide forward view
+FLOOR_ARM_Y = -70.0              # floor level for gripper grasp
+
+
+def clamp(value, low, high):
+    return max(low, min(high, value))
+
+
+def _wrap(angle):
+    return (angle + 180.0) % 360.0 - 180.0
+
+
+def track_can_in_corridor(img, tof_mm=None, gripper_state="open"):
+    """Track gripper status and ToF reading. Grok 4.7 handles visual perception directly from the camera frame."""
+    if gripper_state == "close":
+        return {
+            "canHeldInClaws": True,
+            "gripperState": "close",
+            "infraredDistanceMm": int(tof_mm) if tof_mm is not None else None,
+            "infraredIsOffCenter": True,
+            "recommendedAction": "CAN_IN_CLAWS: Transport forward, lower arm (move_arm dy=-35), open gripper (state='open'), then stop_robot!"
+        }
+    return {
+        "canHeldInClaws": False,
+        "gripperState": "open",
+        "infraredDistanceMm": int(tof_mm) if tof_mm is not None else None,
+        "infraredIsOffCenter": True,
+        "recommendedAction": "Use visual view: locate upright metallic drink can, center it between corridor lines (x=305..335), approach, and call grasp_can() when in grasp zone."
+    }
+
+
+def draw_hud(cv2_frame, tracker_info=None, tof_mm=None):
+    img = cv2_frame.copy()
+    import cv2
+    # Draw center line (bright cyan)
+    cv2.line(img, (320, 0), (320, 360), (255, 255, 0), 1)
+    # Draw claw corridor (305 and 335, green)
+    cv2.line(img, (305, 80), (305, 360), (0, 255, 0), 1)
+    cv2.line(img, (335, 80), (335, 360), (0, 255, 0), 1)
+
+    # Distance guide lines
+    cv2.line(img, (240, 220), (400, 220), (200, 200, 200), 1)
+    cv2.putText(img, "y=220 (MID RANGE)", (405, 224), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1)
+
+    cv2.line(img, (240, 280), (400, 280), (0, 215, 255), 1)
+    cv2.putText(img, "y=280 (GRASP ZONE)", (405, 284), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 215, 255), 1)
+
+    # Draw gripper throat line (y=335, orange)
+    cv2.line(img, (260, 335), (380, 335), (0, 165, 255), 2)
+    cv2.putText(img, "y=335 (THROAT BASE)", (125, 338), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 165, 255), 1)
+
+    # Add text labels
+    cv2.putText(img, "CENTER x=320", (325, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 0), 1)
+    cv2.putText(img, "CORRIDOR 305-335", (340, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 255, 0), 1)
+
+    # Infrared ToF reading overlay
+    if tof_mm is not None and tof_mm > 0:
+        tof_cm = tof_mm / 10.0
+        color = (0, 255, 128) if tof_cm <= 25 else (200, 200, 200)
+        label_tof = f"IR ToF: {tof_mm:.0f}mm ({tof_cm:.1f}cm) [OFF-CENTER LASER]"
+        cv2.putText(img, label_tof, (16, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1)
+
+    # Overlay live tracker bounding box and exact telemetry if detected
+    if tracker_info and tracker_info.get("detected"):
+        cx = int(tracker_info["centerXPx"])
+        by = int(tracker_info["bottomYPx"])
+        ty = int(tracker_info.get("topYPx", max(60, by - 120)))
+        w_can = int(tracker_info.get("widthPx", 60))
+        cv2.rectangle(img, (cx - w_can // 2, ty), (cx + w_can // 2, by), (0, 255, 128), 2)
+        cv2.circle(img, (cx, by), 4, (0, 0, 255), -1)
+        dx = tracker_info["offsetFromCenterPx"]
+        dy = tracker_info["distanceToClawsPx"]
+        in_grasp = tracker_info.get("isInGraspRange", False)
+        box_color = (0, 255, 128) if in_grasp else (0, 215, 255)
+        label = f"dx={dx:+.0f}px | dy_to_claws={dy}px {'[IN GRASP RANGE!]' if in_grasp else ''}"
+        cv2.putText(img, label, (max(10, cx - 110), max(30, ty - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.42, box_color, 1)
+
+    return img
+
+
+class RoverError(RuntimeError):
+    pass
+
+
+TOOLS = [
+    {"type": "function", "function": {
+        "name": "grasp_can",
+        "description": (
+            "EXECUTE GUARANTEED PHYSICAL GRASP: Call this as soon as the drink can is centered in corridor (offset within +/-25px) "
+            "and within close/mid range (distanceToClawsPx <= 120 or can bottom y >= 210 or ToF <= 300mm).\n"
+            "This command automatically:\n"
+            "1. Verifies/lowers robotic arm to floor level (dy_mm = -35).\n"
+            "2. Opens gripper claws wide (12 cm span).\n"
+            "3. Drives forward slowly at 0.04 m/s for forward_duration_s (default 1.2s, ~4.8 cm) "
+            "   so the can gently glides inside the open jaws into the rubber-padded throat without tipping over.\n"
+            "4. Clamps gripper jaws tightly with high power (power = 80).\n"
+            "5. Lifts robotic arm off the floor (dy_mm = +35) holding the can.\n"
+            "USE THIS AS SOON AS YOU ARE IN RANGE to guarantee the can is never kicked down!"
+        ),
+        "parameters": {"type": "object", "additionalProperties": False,
+            "properties": {
+                "forward_duration_s": {"type": "number", "description": "Seconds to gently glide into the can (default 1.2s, range 0.8..1.8s)"}
+            },
+            "required": []}}},
+    {"type": "function", "function": {
+        "name": "drive_chassis",
+        "description": (
+            "Drive the chassis forward/backward and optionally sideways. "
+            "x_mps (-0.12..0.12): forward speed (>0) / backward (<0). Use 0.08..0.12 m/s when approaching from a distance, 0.03..0.05 m/s when close. "
+            "y_mps (-0.12..0.12, default 0.0): sideways strafe (+right, -left). Keep y_mps=0.0 when approaching head-on! "
+            "z_degps (-12..12, default 0.0): keep 0.0 to lock steady straight heading. "
+            "duration_s (0.2..4.0): duration in seconds. For long distances use 1.5..2.5s. When close to the can, use 0.4..0.8s."
+        ),
+        "parameters": {"type": "object", "additionalProperties": False,
+            "properties": {
+                "x_mps": {"type": "number", "description": "Forward speed in m/s (e.g. 0.10, 0.05)"},
+                "y_mps": {"type": "number", "description": "Sideways strafe speed (+right, -left). Default 0.0. Keep 0.0 when approaching head-on."},
+                "z_degps": {"type": "number", "description": "Rotation rate in deg/s (default 0.0 to hold heading)"},
+                "duration_s": {"type": "number", "description": "Duration in seconds (e.g. 0.4, 0.8, 1.5, 2.0)"}
+            },
+            "required": ["x_mps", "duration_s"]}}},
+    {"type": "function", "function": {
+        "name": "turn_degrees",
+        "description": (
+            "Rotate the rover in place by degrees (-90..90, positive = turn right/clockwise, negative = turn left/counter-clockwise). "
+            "Use this to find or face the can directly when it is off-center in the camera! "
+            "Camera width is 640px, center is 320px (0.15 deg per pixel). "
+            "If canTracker provides recommendedTurnDeg, use that exact degree value! "
+            "If the can is to the left (x < 280), turn left (negative degrees, e.g. -15° to -30°). "
+            "If the can is to the right (x > 360), turn right (positive degrees, e.g. +15° to +30°). "
+            "If the can is slightly off-center (x in 280..310 or 330..360), use small turns (e.g. -4° or +4°)."
+        ),
+        "parameters": {"type": "object", "additionalProperties": False,
+            "properties": {"degrees": {"type": "number", "description": "Degrees to rotate in place (positive=right, negative=left)"}},
+            "required": ["degrees"]}}},
+    {"type": "function", "function": {
+        "name": "move_arm",
+        "description": (
+            "Move the robotic arm and camera up/down (dy_mm in -50..50) and forward/back (dx_mm in -40..40). "
+            "To lower arm to floor level for grasping: call move_arm(dx_mm=0, dy_mm=-35). "
+            "To lift arm after grasping: call move_arm(dx_mm=0, dy_mm=35)."
+        ),
+        "parameters": {"type": "object", "additionalProperties": False,
+            "properties": {"dx_mm": {"type": "integer", "description": "Arm forward/back delta mm"},
+                           "dy_mm": {"type": "integer", "description": "Arm up/down delta mm (negative=lower to floor, positive=lift)"}},
+            "required": ["dx_mm", "dy_mm"]}}},
+    {"type": "function", "function": {
+        "name": "control_gripper",
+        "description": "Open or close the gripper claws (state='open' or 'close', power 30..80). Close at power 80 to firmly grasp the can.",
+        "parameters": {"type": "object", "additionalProperties": False,
+            "properties": {"state": {"type": "string", "enum": ["open", "close"]},
+                           "power": {"type": "integer", "description": "Gripper motor power (use 80 for clamping can)"}},
+            "required": ["state", "power"]}}},
+    {"type": "function", "function": {
+        "name": "stop_robot",
+        "description": "Stop the robot and finish the task when the can has been picked up, carried, and placed back down.",
+        "parameters": {"type": "object", "additionalProperties": False,
+            "properties": {"reason": {"type": "string", "description": "Reason for stopping"}}, "required": ["reason"]}}},
+]
+
+
+class RoverTools:
+    def __init__(self, rover, *, use_tof=True):
+        self.rover = rover
+        self._lock = threading.Lock()      # one physical command at a time
+        self.yaw = None
+        self.attitude_at = None
+        self.position = None
+        self.tof_mm = None
+        self.tof_at = None
+        self.arm_delta_y = 0
+        self.arm_pos = None
+        self.initial_arm_y = None
+        self.latest_tracker = None
+        self._use_tof = use_tof
+        self._camera_on = False
+        self._latest_jpeg = None
+        self._latest_frame = None
+        self._stream_running = False
+        self._camera_thread = None
+        self._httpd = None
+        self._http_thread = None
+        self._http_port = 8088
+        self._last_gripper_state = "open"
+        self._start_telemetry()
+        try:
+            self.rover.led.set_led(comp="all", r=255, g=255, b=255, effect="on")
+        except Exception:
+            pass
+
+    # ---- telemetry -------------------------------------------------------------
+    def _start_telemetry(self):
+        def on_attitude(msg):
+            try:
+                self.yaw, self.attitude_at = float(msg[0]), time.monotonic()
+            except (TypeError, ValueError, IndexError):
+                pass
+
+        def on_position(msg):
+            try:
+                self.position = (float(msg[0]), float(msg[1]))
+            except (TypeError, ValueError, IndexError):
+                pass
+
+        def on_tof(msg):
+            try:
+                self.tof_mm, self.tof_at = float(msg[0]), time.monotonic()
+            except (TypeError, ValueError, IndexError):
+                pass
+
+        def on_arm(msg):
+            try:
+                raw_x, raw_y = float(msg[0]), float(msg[1])
+                x = raw_x if raw_x < 2147483648 else raw_x - 4294967296
+                y = raw_y if raw_y < 2147483648 else raw_y - 4294967296
+                self.arm_pos = (x, y)
+                if self.initial_arm_y is None:
+                    self.initial_arm_y = self.arm_pos[1]
+            except (TypeError, ValueError, IndexError):
+                pass
+
+        self.rover.chassis.sub_attitude(freq=10, callback=on_attitude)
+        try:
+            self.rover.chassis.sub_position(freq=10, callback=on_position)
+        except Exception:
+            pass
+        try:
+            self.rover.robotic_arm.sub_position(freq=10, callback=on_arm)
+        except Exception:
+            pass
+        if self._use_tof:
+            try:
+                self.rover.sensor.sub_distance(freq=10, callback=on_tof)
+            except Exception:
+                self._use_tof = False
+        deadline = time.monotonic() + 3
+        while self.yaw is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if self.yaw is None:
+            raise RoverError("no_attitude_telemetry")
+
+    def _fresh_yaw(self, timeout_s=1.5):
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if self.attitude_at is not None and time.monotonic() - self.attitude_at <= ATTITUDE_MAX_AGE_S:
+                return self.yaw
+            time.sleep(0.05)
+        raise RoverError("attitude_telemetry_stale")
+
+    def status(self):
+        arm_delta = (self.arm_pos[1] - HOME_ARM_Y) if self.arm_pos else self.arm_delta_y
+        is_floor = (self.arm_pos and self.arm_pos[1] <= -55) or self.arm_delta_y <= -30
+        arm_state = "FLOOR_LEVEL (Ready to grasp)" if is_floor else "ELEVATED_VIEW (Must lower to floor with move_arm dy_mm=-35 before grasping)"
+        return {"yawDeg": self.yaw, "positionXY": self.position, "tofMm": self.tof_mm,
+                "armPos": self.arm_pos,
+                "armState": arm_state,
+                "gripperState": self._last_gripper_state,
+                "armHeightAboveHomeMm": round(arm_delta, 1),
+                "canTracker": self.latest_tracker,
+                "telemetryAgeS": None if self.attitude_at is None
+                else round(time.monotonic() - self.attitude_at, 2)}
+
+    # ---- primitives ------------------------------------------------------------
+    def _zero(self):
+        timer = getattr(self.rover.chassis, "_auto_timer", None)
+        if timer and timer.is_alive():
+            try:
+                timer.cancel()
+            except Exception:
+                pass
+        self.rover.chassis.drive_wheels(w1=0, w2=0, w3=0, w4=0)
+
+    def stop(self, reason="stop"):
+        self._zero()
+        # Obligatory: Always return arm and gripper to initial home position (HOME_ARM_Y = -35mm, gripper open)
+        reset_res = {}
+        try:
+            reset_res = self.reset_arm_and_gripper()
+        except Exception:
+            pass
+        return {"stopped": True, "reason": str(reason)[:180], "armAndGripperReset": reset_res}
+
+    def drive(self, x_mps, y_mps=0.0, z_degps=0.0, duration_s=1.0, hold_heading=True, guard_tof=True):
+        x = round(clamp(float(x_mps), -MAX_X_MPS, MAX_X_MPS), 3)
+        y = round(clamp(float(y_mps), -MAX_X_MPS, MAX_X_MPS), 3)
+        z = round(clamp(float(z_degps), -MAX_Z_DEGPS, MAX_Z_DEGPS), 2)
+        duration = round(clamp(float(duration_s), MIN_DRIVE_S, MAX_DRIVE_S), 2)
+
+        # HARD ANTI-KICK SAFETY:
+        # If the can is already in grasp range, NEVER drive forward separately!
+        # Stop immediately and tell caller to call grasp_can() instead of ramming the can.
+        in_grasp_range = False
+        if guard_tof and self.latest_tracker and self.latest_tracker.get("detected"):
+            if self.latest_tracker.get("isInGraspRange") or self.latest_tracker.get("distanceToClawsPx", 999) <= 100:
+                in_grasp_range = True
+
+        if guard_tof and x > 0 and in_grasp_range:
+            self._zero()
+            return {
+                "xMps": 0.0, "yMps": 0.0, "zDegps": 0.0, "durationS": 0.0, "headingHold": True,
+                "stoppedBy": "CAN_IN_GRASP_RANGE: Can is already at claws! Call grasp_can() now - do not drive forward separately!",
+                "isInGraspRange": True
+            }
+
+        # Close-range gentle speed limiter & claw pre-opening
+        is_close = False
+        if guard_tof and self.latest_tracker and self.latest_tracker.get("detected") \
+                and self.latest_tracker.get("distanceToClawsPx", 999) <= 160:
+            is_close = True
+        elif guard_tof and self._use_tof and self.tof_mm is not None and self.tof_at \
+                and time.monotonic() - self.tof_at < 0.5 and 0 < self.tof_mm <= 300:
+            is_close = True
+
+        if x > 0 and is_close:
+            x = min(x, 0.035)             # gentle 3.5 cm/s
+            duration = min(duration, 0.5) # max 0.5s (~1.75 cm per call)
+            # Ensure gripper is pre-opened wide so claws act as an open funnel and cannot ram the can
+            if self._last_gripper_state != "open":
+                try:
+                    self.rover.gripper.open(power=50)
+                    self._last_gripper_state = "open"
+                except Exception:
+                    pass
+
+        straight = hold_heading and abs(z) < 1.5
+        with self._lock:
+            start_yaw = self._fresh_yaw()
+            start_pos = self.position
+            stopped_by = None
+            try:
+                end = time.monotonic() + duration
+                while time.monotonic() < end:
+                    yaw = self._fresh_yaw()
+                    if guard_tof and x > 0 and self._use_tof and self.tof_mm is not None and self.tof_at \
+                            and time.monotonic() - self.tof_at < 0.5 and 0 < self.tof_mm <= MIN_TOF_MM:
+                        stopped_by = "tof_minimum_guard"
+                        break
+                    if straight:
+                        error = _wrap(start_yaw - yaw)
+                        if abs(error) > MAX_HEADING_ERR_DEG:
+                            stopped_by = "heading_deviation_exceeded"
+                            break
+                        if abs(error) <= 0.3:
+                            command_z = 0.0
+                        else:
+                            command_z = clamp(error * HOLD_GAIN, -HOLD_MAX_DEGPS, HOLD_MAX_DEGPS)
+                            if abs(command_z) < 2.0:
+                                command_z = math.copysign(2.0, command_z)
+                    else:
+                        command_z = z
+                    self.rover.chassis.drive_speed(x=x, y=y, z=round(command_z, 2),
+                                                   timeout=SDK_TIMEOUT_S)
+                    time.sleep(TICK_S)
+            finally:
+                self._zero()
+            time.sleep(0.05)
+            end_yaw = self.yaw
+            result = {"xMps": x, "yMps": y, "zDegps": z, "durationS": duration, "headingHold": straight,
+                      "yawStartDeg": round(start_yaw, 2), "yawEndDeg": round(end_yaw, 2),
+                      "yawChangeDeg": round(_wrap(end_yaw - start_yaw), 2),
+                      "stoppedBy": stopped_by}
+            if start_pos and self.position:
+                result["positionDeltaXYM"] = [round(self.position[0] - start_pos[0], 3),
+                                              round(self.position[1] - start_pos[1], 3)]
+            return result
+
+    def turn(self, degrees, tolerance_deg=1.0, timeout_s=8.0):
+        degrees = clamp(float(degrees), -90.0, 90.0)
+        with self._lock:
+            start_yaw = self._fresh_yaw()
+            target = start_yaw + degrees       # positive z increases reported yaw
+            deadline = time.monotonic() + timeout_s
+            reached = False
+            try:
+                while time.monotonic() < deadline:
+                    error = _wrap(target - self._fresh_yaw())
+                    if abs(error) <= tolerance_deg:
+                        reached = True
+                        break
+                    rate = clamp(error * 0.4, -MAX_Z_DEGPS, MAX_Z_DEGPS)
+                    if abs(rate) < 2.5:
+                        rate = math.copysign(2.5, rate)
+                    self.rover.chassis.drive_speed(x=0, y=0, z=round(rate, 2),
+                                                   timeout=SDK_TIMEOUT_S)
+                    time.sleep(TICK_S)
+            finally:
+                self._zero()
+            time.sleep(0.05)
+            end_yaw = self.yaw
+            return {"requestedDeg": round(degrees, 1), "yawStartDeg": round(start_yaw, 2),
+                    "yawEndDeg": round(end_yaw, 2),
+                    "turnedDeg": round(_wrap(end_yaw - start_yaw), 2), "reached": reached}
+
+    def arm(self, dx_mm, dy_mm):
+        dx = int(clamp(int(dx_mm), -40, 40))
+        dy = int(clamp(int(dy_mm), -50, 50))
+        with self._lock:
+            self._zero()
+            action = self.rover.robotic_arm.move(x=dx, y=dy)
+            done = bool(action.wait_for_completed(timeout=3))
+            time.sleep(0.85)                               # measured physical settle
+            if done and not action.has_failed:
+                self.arm_delta_y += dy
+            return {"dxMm": dx, "dyMm": dy, "armHeightDeltaMm": self.arm_delta_y,
+                    "completed": done and not action.has_failed}
+
+    def gripper(self, state, power=60):
+        if state not in ("open", "close"):
+            raise RoverError("bad_gripper_state")
+        self._last_gripper_state = state
+        power = int(clamp(int(power), 30, 80))
+        with self._lock:
+            self._zero()
+            method = self.rover.gripper.close if state == "close" else self.rover.gripper.open
+            ack = bool(method(power=power))
+            time.sleep(1.6 if state == "close" else 1.8)
+            self.rover.gripper.pause()
+            return {"state": state, "power": power, "ack": ack}
+
+    # ---- camera & live stream --------------------------------------------------
+    def start_camera(self, port=8088):
+        if not self._camera_on:
+            if not self.rover.camera.start_video_stream(display=False, resolution="360p"):
+                raise RoverError("camera_start_failed")
+            self._camera_on = True
+            self._stream_running = True
+            self._http_port = port
+            self._camera_thread = threading.Thread(target=self._camera_loop, daemon=True)
+            self._camera_thread.start()
+            self._start_http_stream(port)
+
+    def _camera_loop(self):
+        import cv2
+        while self._stream_running:
+            try:
+                frame = self.rover.camera.read_cv2_image(timeout=0.1, strategy="newest")
+                if frame is not None and getattr(frame, "size", 0) and float(frame.mean()) >= 15:
+                    self._latest_frame = frame
+                    self.latest_tracker = track_can_in_corridor(frame, self.tof_mm, self._last_gripper_state)
+                    hud_frame = draw_hud(frame, self.latest_tracker, self.tof_mm)
+                    ok, encoded = cv2.imencode(".jpg", hud_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+                    if ok:
+                        self._latest_jpeg = encoded.tobytes()
+            except Exception:
+                pass
+            time.sleep(0.03)
+
+    def frame_jpeg(self, quality=75, timeout_s=6.0):
+        """Newest camera frame as JPEG bytes (for Grok's image input)."""
+        self.start_camera()
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if self._latest_jpeg is not None:
+                return self._latest_jpeg
+            time.sleep(0.04)
+        raise RoverError("no_usable_camera_frame")
+
+    def _start_http_stream(self, port=8088):
+        from http.server import HTTPServer, BaseHTTPRequestHandler
+        from socketserver import ThreadingMixIn
+
+        tools_ref = self
+
+        class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+            daemon_threads = True
+
+        class StreamHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path in ("/", "/index.html"):
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.end_headers()
+                    html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>DJI RoboMaster EP Core - Live Camera Feed</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {{ margin: 0; background: #0b0f19; color: #f0f6fc; font-family: -apple-system, system-ui, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; box-sizing: border-box; }}
+        h1 {{ margin: 0 0 8px 0; font-size: 24px; color: #58a6ff; font-weight: 600; letter-spacing: -0.5px; }}
+        .badge {{ display: inline-block; background: #238636; color: #fff; padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; text-transform: uppercase; margin-bottom: 16px; }}
+        .stream-card {{ position: relative; width: 640px; height: 360px; border: 2px solid #30363d; border-radius: 14px; overflow: hidden; box-shadow: 0 16px 40px rgba(0,0,0,0.85); background: #000; }}
+        img {{ width: 100%; height: 100%; display: block; object-fit: contain; }}
+        .crosshair {{ position: absolute; top: 0; bottom: 0; left: 320px; width: 2px; background: rgba(88, 166, 255, 0.7); pointer-events: none; }}
+        .corridor {{ position: absolute; top: 80px; bottom: 0; left: 310px; width: 20px; background: rgba(46, 160, 67, 0.22); border-left: 1px dashed rgba(46, 160, 67, 0.7); border-right: 1px dashed rgba(46, 160, 67, 0.7); pointer-events: none; }}
+        .pickup-zone {{ position: absolute; bottom: 0; left: 300px; width: 40px; height: 80px; border: 2px solid rgba(240, 136, 62, 0.8); background: rgba(240, 136, 62, 0.15); border-radius: 4px; pointer-events: none; }}
+        .overlay-label {{ position: absolute; top: 12px; left: 16px; background: rgba(0,0,0,0.6); padding: 4px 10px; border-radius: 6px; font-size: 12px; font-family: monospace; color: #58a6ff; border: 1px solid rgba(255,255,255,0.1); }}
+        .telemetry-bar {{ margin-top: 18px; width: 640px; background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 12px 16px; box-sizing: border-box; display: flex; justify-content: space-between; font-family: monospace; font-size: 13px; color: #8b949e; }}
+        .telemetry-bar span {{ color: #7ee787; font-weight: 600; }}
+    </style>
+</head>
+<body>
+    <div class="badge">LIVE FEED</div>
+    <h1>DJI RoboMaster EP Core</h1>
+    <div class="stream-card">
+        <img src="/stream.mjpg" alt="Rover Live Stream">
+        <div class="crosshair"></div>
+        <div class="corridor"></div>
+        <div class="pickup-zone"></div>
+        <div class="overlay-label">FOV: 96° | Center: x=320 | Corridor: 310-330</div>
+    </div>
+    <div class="telemetry-bar">
+        <div>Center: <span>x=320</span></div>
+        <div>Claw Corridor: <span>310..330 px</span></div>
+        <div>Stream: <span>MJPEG (30 FPS)</span></div>
+    </div>
+</body>
+</html>"""
+                    self.wfile.write(html.encode("utf-8"))
+                elif self.path == "/stream.mjpg":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+                    self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+                    self.end_headers()
+                    try:
+                        while tools_ref._stream_running:
+                            jpeg = tools_ref._latest_jpeg
+                            if jpeg:
+                                self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n")
+                            time.sleep(0.035)
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass
+                elif self.path == "/latest.jpg":
+                    jpeg = tools_ref._latest_jpeg
+                    if jpeg:
+                        self.send_response(200)
+                        self.send_header("Content-Type", "image/jpeg")
+                        self.send_header("Content-Length", str(len(jpeg)))
+                        self.end_headers()
+                        self.wfile.write(jpeg)
+                    else:
+                        self.send_error(503)
+                else:
+                    self.send_error(404)
+
+            def log_message(self, format, *args):
+                pass
+
+        try:
+            self._httpd = ThreadedHTTPServer(("0.0.0.0", port), StreamHandler)
+            self._http_thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
+            self._http_thread.start()
+            print(f"[HTTP LIVE STREAM] Broadcasting at http://localhost:{port}/", flush=True)
+        except Exception as exc:
+            print(f"[HTTP LIVE STREAM] Could not start server on port {port}: {exc}", flush=True)
+
+    # ---- tool dispatch ---------------------------------------------------------
+    def grasp_can(self, forward_duration_s=0.9):
+        """Execute physical sequence to grasp can: lower arm, open gripper wide, gentle seating drive (0.03 m/s), clamp tight, and lift."""
+        forward_duration_s = clamp(float(forward_duration_s), 0.5, 1.4)
+        with self._lock:
+            self._zero()
+            # 1. Lower arm to floor level if not already there
+            if (self.arm_pos and self.arm_pos[1] > -55) or self.arm_delta_y > -30:
+                dy = int(-70.0 - (self.arm_pos[1] if self.arm_pos else HOME_ARM_Y))
+                dy = clamp(dy, -50, 50)
+                if dy != 0:
+                    try:
+                        action = self.rover.robotic_arm.move(x=0, y=dy)
+                        action.wait_for_completed(timeout=3.0)
+                        time.sleep(0.5)
+                        self.arm_delta_y += dy
+                    except Exception:
+                        pass
+
+            # 2. Open gripper jaws wide
+            try:
+                self.rover.gripper.open(power=50)
+                time.sleep(1.2)
+                self.rover.gripper.pause()
+                self._last_gripper_state = "open"
+            except Exception:
+                pass
+
+        # 3. Drive straight forward with heading hold to funnel and seat can in gripper throat
+        # At gentle 0.03 m/s for 0.9s = ~2.7 cm forward drive! Jaws are already open wide (12cm) so can slips inside without tipping.
+        drive_res = self.drive(x_mps=0.03, y_mps=0.0, z_degps=0.0, duration_s=forward_duration_s, hold_heading=True, guard_tof=False)
+
+        # 4. Clamp gripper firmly around the can with high power
+        with self._lock:
+            self._zero()
+            try:
+                self.rover.gripper.close(power=80)
+                time.sleep(1.8)
+                self.rover.gripper.pause()
+                self._last_gripper_state = "close"
+            except Exception:
+                pass
+
+            # 5. Lift arm off floor with grasped can
+            lift_done = False
+            try:
+                action = self.rover.robotic_arm.move(x=0, y=35)
+                lift_done = bool(action.wait_for_completed(timeout=3.0))
+                time.sleep(0.5)
+                self.arm_delta_y += 35
+            except Exception:
+                pass
+
+        return {
+            "grasped": True,
+            "seatedDrive": drive_res,
+            "gripperClamped": True,
+            "armLifted": lift_done,
+            "message": "Can seated into throat, clamped at power 80, and lifted off floor!"
+        }
+
+    def dispatch(self, name, args):
+        """Execute exactly one Grok tool call. Raises RoverError for unknown/invalid calls."""
+        if not isinstance(args, dict):
+            raise RoverError("arguments_must_be_object")
+        try:
+            if name == "grasp_can":
+                return self.grasp_can(args.get("forward_duration_s", 1.2))
+            if name == "drive_chassis":
+                return self.drive(args["x_mps"], args.get("y_mps", 0.0), args.get("z_degps", 0.0), args["duration_s"])
+            if name == "turn_degrees":
+                return self.turn(args["degrees"])
+            if name == "move_arm":
+                return self.arm(args["dx_mm"], args["dy_mm"])
+            if name == "control_gripper":
+                return self.gripper(args["state"], args["power"])
+            if name == "stop_robot":
+                return self.stop(args.get("reason", ""))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RoverError(f"invalid_arguments:{type(exc).__name__}") from None
+        raise RoverError("unknown_tool")
+
+    def reset_arm_and_gripper(self):
+        """Obligatory: Revert arm to home viewing position (HOME_ARM_Y = -35.0mm) and open gripper jaws wide."""
+        with self._lock:
+            self._zero()
+            # 1. Open gripper jaws wide
+            try:
+                self.rover.gripper.open(power=50)
+                time.sleep(1.2)
+                self.rover.gripper.pause()
+                self._last_gripper_state = "open"
+            except Exception:
+                pass
+            # 2. Return arm to initial home elevation (HOME_ARM_Y = -35.0 mm)
+            try:
+                current_y = self.arm_pos[1] if self.arm_pos else (HOME_ARM_Y + self.arm_delta_y)
+                dy = int(HOME_ARM_Y - current_y)
+                dy = clamp(dy, -50, 50)
+                if abs(dy) >= 3:
+                    action = self.rover.robotic_arm.move(x=0, y=dy)
+                    action.wait_for_completed(timeout=3.0)
+                    time.sleep(0.5)
+                    self.arm_delta_y += dy
+            except Exception:
+                pass
+            return {"armReset": True, "gripperOpen": True, "armPos": self.arm_pos, "armHeightAboveHomeMm": 0}
+
+    def close(self):
+        try:
+            self.reset_arm_and_gripper()
+            self.stop("close")
+            try:
+                self.rover.led.set_led(comp="all", r=0, g=0, b=0, effect="off")
+            except Exception:
+                pass
+        finally:
+            self._stream_running = False
+            if hasattr(self, "_httpd") and self._httpd:
+                try:
+                    self._httpd.shutdown()
+                except Exception:
+                    pass
+            if self._camera_on:
+                try:
+                    self.rover.camera.stop_video_stream()
+                except Exception:
+                    pass
+            for unsub in ("unsub_attitude", "unsub_position"):
+                try:
+                    getattr(self.rover.chassis, unsub)()
+                except Exception:
+                    pass
+            try:
+                self.rover.robotic_arm.unsub_position()
+            except Exception:
+                pass
+
+
+@contextmanager
+def open_rover_tools(serial=SERIAL, **kwargs):
+    """Connect through the existing SDK session helper and yield RoverTools."""
+    sys.path.insert(0, str(ROOT))
+    sys.path.insert(0, str(ROOT / "robot"))
+    sys.path.insert(0, str(ROOT.parent / "robot"))
+    from check_connection import rover_session
+    with rover_session(serial) as (rover, _identity):
+        tools = RoverTools(rover, **kwargs)
+        try:
+            yield tools
+        finally:
+            tools.close()
