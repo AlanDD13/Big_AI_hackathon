@@ -19,6 +19,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from psycopg import Error as PostgresError
 
+from backend.camera_proxy import CameraConfig, CameraProxy, CameraStreamingResponse, CameraUnavailable
 from backend.collection import CollectionStore, MappingClient, admit_collection
 from backend.evidence import EvidenceConflict, InvalidEvidence, parse_evidence
 from backend.mission_http import (
@@ -71,6 +72,7 @@ def create_app(
     collection_store: CollectionStore | None = None,
     mapping_client: MappingClient | None = None,
     manual_proxy: ManualProxy | None = None,
+    camera_proxy: CameraProxy | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Rover backend", version="0.1.0")
     app.state.operator_token = operator_token
@@ -99,6 +101,7 @@ def create_app(
         url="", peer_token="", now=collection_now,
     )
     mapping = mapping_client if mapping_client is not None else UnavailableMapping()
+    camera = camera_proxy if camera_proxy is not None else CameraProxy(CameraConfig())
 
     def cookie_session(request: Request) -> str | None:
         session_id = request.cookies.get("session")
@@ -232,6 +235,37 @@ def create_app(
                 await manual.end_session(session_id)
             return _error(exc.status, exc.code, "Manual control request was not accepted")
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/camera/status")
+    def camera_status(request: Request) -> Response:
+        if cookie_session(request) is None:
+            return _error(401, "UNAUTHORIZED", "Operator session is missing or expired")
+        return JSONResponse(
+            {"configured": camera.config.configured, "captureFreshness": "unverified"},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/api/camera/feed")
+    async def camera_feed(request: Request) -> Response:
+        session_id = cookie_session(request)
+        if session_id is None:
+            return _error(401, "UNAUTHORIZED", "Operator session is missing or expired")
+        try:
+            feed = await camera.open()
+        except CameraUnavailable:
+            response = _error(503, "CAMERA_UNAVAILABLE", "Camera feed is unavailable")
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        if not app.state.backend.session_open(session_id):
+            await feed.close()
+            return _error(401, "UNAUTHORIZED", "Operator session is missing or expired")
+        headers = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
+        if feed.media_type == "image/jpeg":
+            await feed.close()
+            return Response(feed.prefix, media_type="image/jpeg", headers=headers)
+        return CameraStreamingResponse(
+            feed, lambda: app.state.backend.session_open(session_id), headers=headers,
+        )
 
     @app.post("/api/missions", status_code=202)
     async def create_mission(request: Request) -> Response:
@@ -435,6 +469,11 @@ def app_from_env() -> FastAPI:
             autonomous_active=manual_active,
             now=time.time,
         ),
+        camera_proxy=CameraProxy(CameraConfig(
+            url=os.environ.get("BACKEND_CAMERA_URL", ""),
+            authorization=os.environ.get("BACKEND_CAMERA_AUTHORIZATION", ""),
+            ca_cert=os.environ.get("BACKEND_CAMERA_CA_CERT", ""),
+        )),
     )
 
 

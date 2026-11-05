@@ -110,7 +110,10 @@ class PostgresObservationLog:
                 ).fetchall()
         except Exception as exc:
             raise StorageUnavailable("Classification storage is unavailable") from exc
+        from backend.postgres_evidence import normalize_classification
+
         fields = ("category", "subject_kind", "carrying", "confidence", "description", "reason", "provider")
+        rows = [(*row[:4], normalize_classification(row[4])) for row in rows]
         return [
             (
                 f"{camera_id}:{session_id}:{track_id}",

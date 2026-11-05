@@ -22,6 +22,7 @@ class Settings:
     device: str = "mps"
     max_objects: int = 500
     max_pending_classifications: int = 16
+    automatic_classification: bool = True
     local_sources: dict = field(default_factory=dict)
     rover_bridge_url: str | None = None
     rover_camera_id: str = "rover-1"
@@ -37,6 +38,9 @@ class Settings:
         token = os.getenv("VISION_TOKEN", "")
         if not token or len(token) < 16:
             raise ValueError("Set VISION_TOKEN to an unpredictable value of at least 16 characters")
+        automatic = os.getenv('VISION_AUTOMATIC_CLASSIFICATION', 'true').strip().lower()
+        if automatic not in {'true', 'false'}:
+            raise ValueError('VISION_AUTOMATIC_CLASSIFICATION must be true or false')
         camera_text = os.getenv("VISION_CAMERAS", "phone-1:FIXED,phone-2:FIXED,mac-1:FIXED,rover-1:ROVER")
         cameras = {}
         for item in camera_text.split(","):
@@ -52,6 +56,7 @@ class Settings:
         if os.getenv("ROVER_BRIDGE_URL") and cameras.get(rover_id) != "ROVER":
             raise ValueError("ROVER_CAMERA_ID must identify a configured ROVER camera")
         return cls(token=token, cameras=cameras, local_sources=sources,
+                   automatic_classification=automatic == 'true',
                    rover_bridge_url=os.getenv("ROVER_BRIDGE_URL") or None, rover_camera_id=rover_id,
                    mapping_url=os.getenv("MAPPING_URL") or None,
                    backend_url=os.getenv("BACKEND_URL") or None,

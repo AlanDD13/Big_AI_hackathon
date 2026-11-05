@@ -15,6 +15,10 @@ class CameraKind(StrEnum):
     ROVER = "ROVER"
 
 
+class CameraGrokControl(WireModel):
+    enabled: bool = Field(strict=True)
+
+
 _ASCII_ID = r"^[A-Za-z0-9_-]+$"
 # Closed vocabulary from mapping review. Unknown is the only extension point.
 INVALID_MAPPING_REASONS = frozenset({

@@ -74,6 +74,8 @@ class VisionService:
         self.events: deque[Event] = deque(maxlen=512)
         self.subscribers: set[asyncio.Queue] = set()
         self.classification_tasks: set[asyncio.Task] = set()
+        self.classification_task_cameras: dict[asyncio.Task, str] = {}
+        self.grok_enabled = {camera_id: settings.automatic_classification for camera_id in settings.cameras}
         self.pending_frames = {}
         self.wake = asyncio.Event()
         self.sequence = 0
@@ -87,6 +89,22 @@ class VisionService:
         self.mapping_receipts = OrderedDict()
         self.active_confirmations = 0
         self.camera_online = {}
+
+    async def set_grok_enabled(self, camera_id, enabled):
+        self.grok_enabled[camera_id] = enabled
+        if not enabled:
+            tasks = [task for task, camera in self.classification_task_cameras.items() if camera == camera_id]
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            for state in self.objects.values():
+                if state.camera_id == camera_id and state.classification_status == 'PENDING':
+                    state.classification_attempt = -1
+
+    def _classification_done(self, task):
+        self.classification_tasks.discard(task)
+        self.classification_task_cameras.pop(task, None)
 
     def emit(self, event_type, payload):
         self.sequence += 1
@@ -186,7 +204,12 @@ class VisionService:
         if processed and processed[:2] == context[:2] and context[2] <= processed[2]:
             return
         detections = await asyncio.to_thread(self.detector.detect, frame.jpeg)
-        if self.now() - frame.received_at > self.settings.stale_seconds or not self._same_epoch(frame):
+        # A full-resolution tiled pass often takes longer than the one-second
+        # evidence window. Publish the boxes on this exact frame anyway.
+        # Eligibility still requires last_seen within stale_seconds, so a late
+        # result cannot become a pickup target. A changed session or geometry
+        # still drops the result.
+        if not self._same_epoch(frame):
             return
         # Any malformed box invalidates that frame rather than accidentally hiding a person.
         if any(len(d.bbox) != 4 or not all(math.isfinite(v) for v in d.bbox)
@@ -228,14 +251,16 @@ class VisionService:
                            "bboxPx": list(state.box), "contactPointPx": update.detection.contact_point,
                            "motionState": state.motion_state, "pixelStationarySeconds": state.pixel_static_s,
                            "exclusionReason": state.excluded_reason})
-            if (state.kind == "FIXED" and state.motion_state == "STATIONARY" and
+            if (self.grok_enabled.get(state.camera_id, False) and
+                    state.kind == "FIXED" and state.motion_state == "STATIONARY" and
                     not state.excluded_reason and state.classification_attempt != state.revision and
                     len(self.classification_tasks) < self.settings.max_pending_classifications):
                 state.classification_attempt = state.revision
                 state.classification_status = "PENDING"
                 task = asyncio.create_task(self._classify(state.object_id, state.revision, frame))
                 self.classification_tasks.add(task)
-                task.add_done_callback(self.classification_tasks.discard)
+                self.classification_task_cameras[task] = state.camera_id
+                task.add_done_callback(self._classification_done)
         for key, state in list(self.objects.items()):
             if state.camera_id == frame.camera_id and key not in current and state.status != "LOST":
                 self.invalidate(state, "TRACK_LOST")
@@ -327,7 +352,7 @@ class VisionService:
 
     async def _classify(self, object_id, revision, frame):
         state = self.objects.get(object_id)
-        if not state or state.revision != revision:
+        if not state or state.revision != revision or not self.grok_enabled.get(state.camera_id, False):
             return
         crop, context = self._images(frame, state.box)
         async def pickup_advisory():
@@ -336,15 +361,22 @@ class VisionService:
             # Full context is still used by classify for living/carrying checks;
             # pose, approach clearance and size remain independently unverified.
             return await method(crop, crop) if method else None
-        result, advisory = await asyncio.gather(self.classifier.classify(crop, context),
-                                               pickup_advisory(), return_exceptions=True)
+        try:
+            result, advisory = await asyncio.gather(self.classifier.classify(crop, context),
+                                                   pickup_advisory(), return_exceptions=True)
+        except asyncio.CancelledError:
+            state = self.objects.get(object_id)
+            if state and state.revision == revision:
+                state.classification_attempt = -1
+            raise
         if isinstance(result, Exception):
             result = None
         if isinstance(advisory, Exception):
             advisory = None
         status = "COMPLETED" if result is not None else "UNAVAILABLE"
         state = self.objects.get(object_id)
-        if (not state or state.revision != revision or state.status == "LOST" or
+        if (not state or not self.grok_enabled.get(state.camera_id, False) or
+                state.revision != revision or state.status == "LOST" or
                 self.now() - state.last_seen > self.settings.stale_seconds):
             return
         latest = self.frames.latest(state.camera_id)

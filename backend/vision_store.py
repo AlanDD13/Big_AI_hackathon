@@ -64,7 +64,7 @@ class PostgresVisionLog:
                                (id, camera_id, session_id, track_id, state)
                            VALUES (gen_random_uuid(), %s, %s, %s, %s::jsonb)
                            ON CONFLICT (camera_id, session_id, track_id)
-                           DO UPDATE SET state = EXCLUDED.state,
+                           DO UPDATE SET state = rover_backend.objects.state || EXCLUDED.state,
                                          revision = rover_backend.objects.revision + 1""",
                         (camera_id, session_id, track_id, json.dumps(public, allow_nan=False)),
                     )
@@ -82,8 +82,8 @@ class PostgresVisionLog:
                                 status,
                                 json.dumps(
                                     {
-                                        "classification": public.get("classification"),
-                                        "classificationProvider": public.get("classificationProvider"),
+                                        **(public.get("classification") or {}),
+                                        "provider": public.get("classificationProvider"),
                                     },
                                     allow_nan=False,
                                 ),

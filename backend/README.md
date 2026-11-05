@@ -64,6 +64,13 @@ mission queue/dispatch. See [MANUAL_PROXY.md](MANUAL_PROXY.md) for configuration
 authority limits, sample payloads and fake/P4-loopback checks. Navigation,
 pickup and end-to-end physical UI acceptance are not provided by this slice.
 
+Dashboard camera transport is optional and disabled until `BACKEND_CAMERA_URL`
+is set in the backend environment. Operator-session routes are
+`GET /api/camera/feed` (JPEG/MJPEG) and `GET /api/camera/status` (configuration
+only, freshness always unverified). Upstream authentication stays server-side.
+See [CAMERA_PROXY.md](CAMERA_PROXY.md) for configuration, limits, errors and
+offline tests. Real capture freshness and live source acceptance remain pending.
+
 ```powershell
 python -m unittest discover -s backend/tests -v
 ```

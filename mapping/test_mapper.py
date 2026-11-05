@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import unittest
 
-from grid_mapper import get_consensus_sector, sector_to_coordinates, waypoint_from_burst
+from grid_mapper import (
+    GRID_CONVENTION,
+    get_consensus_sector,
+    pixel_to_sector,
+    sector_to_coordinates,
+    waypoint_from_burst,
+)
 
 
 class ConsensusTests(unittest.TestCase):
@@ -31,9 +37,11 @@ class ConsensusTests(unittest.TestCase):
 
 
 class CoordinateTests(unittest.TestCase):
-    def test_sector_centres_are_half_metre_offsets(self) -> None:
-        self.assertEqual(sector_to_coordinates("A1"), (0.5, 0.5))
-        self.assertEqual(sector_to_coordinates("B2"), (1.5, 1.5))
+    def test_half_metre_sector_centres(self) -> None:
+        self.assertEqual(sector_to_coordinates("A1"), (-0.75, 1.75))
+        self.assertEqual(sector_to_coordinates("B2"), (-0.25, 1.25))
+        self.assertEqual(sector_to_coordinates("C2"), (-0.25, 0.75))
+        self.assertEqual(sector_to_coordinates("D4"), (0.75, 0.25))
 
     def test_hyphenated_name_uses_the_same_cell(self) -> None:
         self.assertEqual(sector_to_coordinates("A-1"), sector_to_coordinates("A1"))
@@ -41,6 +49,40 @@ class CoordinateTests(unittest.TestCase):
     def test_unknown_sector_fails(self) -> None:
         with self.assertRaises(ValueError):
             sector_to_coordinates("trash")
+
+    def test_sector_outside_the_room_fails(self) -> None:
+        with self.assertRaises(ValueError):
+            sector_to_coordinates("A5")
+        with self.assertRaises(ValueError):
+            sector_to_coordinates("E1")
+
+
+class PixelSectorTests(unittest.TestCase):
+    def test_row_a_is_the_top_strip(self) -> None:
+        self.assertEqual(GRID_CONVENTION, "ROW_A_TOP")
+        self.assertEqual(pixel_to_sector(855, 10, 1920, 1080), "A2")
+        self.assertEqual(pixel_to_sector(855, 1070, 1920, 1080), "D2")
+
+    def test_paper_centre_on_the_phone_frame_is_b2(self) -> None:
+        self.assertEqual(pixel_to_sector(855, 423, 1920, 1080), "B2")
+        self.assertEqual(sector_to_coordinates("B2"), (-0.25, 1.25))
+
+    def test_frame_corners_use_the_outer_cells(self) -> None:
+        self.assertEqual(pixel_to_sector(0, 0, 1920, 1080), "A1")
+        self.assertEqual(pixel_to_sector(1919, 1079, 1920, 1080), "D4")
+        self.assertNotEqual(sector_to_coordinates("A1"), (0.0, 0.0))
+
+    def test_cell_boundaries_belong_to_the_next_cell(self) -> None:
+        self.assertEqual(pixel_to_sector(480, 270, 1920, 1080), "B2")
+        self.assertEqual(pixel_to_sector(479, 269, 1920, 1080), "A1")
+
+    def test_point_outside_the_frame_fails(self) -> None:
+        with self.assertRaises(ValueError):
+            pixel_to_sector(-1, 423, 1920, 1080)
+        with self.assertRaises(ValueError):
+            pixel_to_sector(855, 1081, 1920, 1080)
+        with self.assertRaises(ValueError):
+            pixel_to_sector(1920, 1080, 1920, 1080)
 
 
 def _detection(frame_index: int, sector: str | None, contact: list[float] | None = None) -> dict:
@@ -70,7 +112,7 @@ class BurstPayloadTests(unittest.TestCase):
             waypoint_from_burst(payload),
             {
                 "sector": "B2",
-                "demoPointM": [1.5, 1.5],
+                "demoPointM": [-0.25, 1.25],
                 "mapId": "demo-grid",
                 "calibrated": False,
             },
