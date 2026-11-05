@@ -34,8 +34,8 @@ export function manualVelocity(strafe: number, forward: number, turn: number, ca
   return { xMps: forward / length * Math.min(.15, caps.maxAbsXMps), yMps: strafe / length * Math.min(.15, caps.maxAbsYMps), zDegps: Math.max(-1, Math.min(1, turn)) * Math.min(15, caps.maxAbsZDegps) };
 }
 
-// Simulator-only checkpoint. Physical writes require a separate supervised handoff.
-export function createManualClient(rover: string, update: (state: ManualState) => void, deps: Dependencies = { fetch: (input, init) => globalThis.fetch(input, init), now: Date.now }) {
+// Physical writes require an explicit per-view opt-in and low bench caps.
+export function createManualClient(rover: string, update: (state: ManualState) => void, deps: Dependencies = { fetch: (input, init) => globalThis.fetch(input, init), now: Date.now }, options: { allowPhysical?: boolean } = {}) {
   let state: ManualState = { status: null, lease: null, pending: false, uncertain: false, message: 'Checking manual bridge…', receivedAt: 0 };
   let epoch = 0, sequence = 0, closed = false, driveBusy = false, pollBusy = false;
   let leaseDeadline = 0;
@@ -51,12 +51,13 @@ export function createManualClient(rover: string, update: (state: ManualState) =
     }
     return record(await response.json());
   }
-  function simulator() {
-    return !closed && state.status?.executionMode === 'simulator' && state.status.manualBootFence === 'bridgeBootId-v1';
+  function admitted() {
+    return !closed && Boolean(state.status && (state.status.executionMode === 'simulator' || (options.allowPhysical && state.status.executionMode === 'physical' && state.status.caps.maxAbsXMps <= .05 && state.status.caps.maxAbsYMps <= .05 && state.status.caps.maxAbsZDegps <= 5)) && state.status.manualBootFence === 'bridgeBootId-v1');
   }
-  const fresh = () => simulator() && state.status?.telemetryFresh === true && deps.now() - state.receivedAt < 1500 && deps.now() >= state.receivedAt;
+  const operatorWritesAllowed = () => !closed && Boolean(state.status && (state.status.executionMode === 'simulator' || (options.allowPhysical && state.status.executionMode === 'physical')));
+  const fresh = () => admitted() && state.status?.telemetryFresh === true && deps.now() - state.receivedAt < 1500 && deps.now() >= state.receivedAt;
   async function stop() {
-    const allowed = simulator(); ++epoch; leaseDeadline = 0;
+    const allowed = operatorWritesAllowed(); ++epoch; leaseDeadline = 0;
     emit({ lease: null, pending: false, uncertain: true, message: allowed ? 'Stop requested · stationary confirmation pending.' : 'Physical control disabled in this checkpoint.' });
     if (!allowed) return;
     try { await call('stop', { roverId: rover, reason: 'operator_stop' }, true); }
@@ -65,7 +66,7 @@ export function createManualClient(rover: string, update: (state: ManualState) =
   async function lose(message: string) {
     const hadAuthority = Boolean(state.lease || state.pending);
     ++epoch; leaseDeadline = 0; emit({ lease: null, pending: false, uncertain: true, message });
-    if (hadAuthority && simulator()) { try { await call('stop', { roverId: rover, reason: 'operator_stop' }, true); } catch { /* stop remains unconfirmed */ } }
+    if (hadAuthority && operatorWritesAllowed()) { try { await call('stop', { roverId: rover, reason: 'operator_stop' }, true); } catch { /* stop remains unconfirmed */ } }
   }
   async function poll() {
     if (closed || pollBusy) return;
@@ -75,11 +76,11 @@ export function createManualClient(rover: string, update: (state: ManualState) =
       if (closed || gen !== epoch) return;
       const lease = state.lease;
       const lost = lease && (status.bridgeBootId !== lease.bridgeBootId || status.leaseId !== lease.leaseId || status.leaseGeneration !== lease.leaseGeneration ||
-        !status.telemetryFresh || !['MANUAL_IDLE', 'MANUAL_DRIVING'].includes(status.stage) || status.backendStopLocked || status.executionMode !== 'simulator');
+        !status.telemetryFresh || !['MANUAL_IDLE', 'MANUAL_DRIVING'].includes(status.stage) || status.backendStopLocked || !admitted());
       emit({ status, receivedAt: deps.now() });
       if (lost) { await lose('Control authority changed. Stop unconfirmed; take control again only after reconciliation.'); return; }
       if (!state.lease && !state.pending) emit({ uncertain: !(status.stationaryConfirmed && ['IDLE','STOPPED'].includes(status.stage)), message:
-        status.executionMode === 'physical' ? 'Physical bridge detected · controls disabled pending supervised acceptance.' : status.stage === 'UNKNOWN' ? 'Stop confirmation pending · no drive authority.' : status.backendStopLocked || status.stage === 'STOPPED' ? 'Stop latched · explicit re-arm required.' : 'Simulator bridge ready · take control explicitly.' });
+        status.executionMode === 'physical' && !admitted() ? 'Physical bridge detected · opt-in and low bench caps required.' : status.stage === 'UNKNOWN' ? 'Stop confirmation pending · no drive authority.' : status.backendStopLocked || status.stage === 'STOPPED' ? 'Stop latched · explicit re-arm required.' : `${status.executionMode === 'physical' ? 'Physical' : 'Simulator'} bridge ready · take control explicitly.` });
     } catch (error) { if (!closed && gen === epoch) await lose(error instanceof Error ? error.message : 'Manual status unavailable.'); }
     finally { pollBusy = false; }
   }
@@ -90,8 +91,9 @@ export function createManualClient(rover: string, update: (state: ManualState) =
       const lease = parseManualLease(await call('lease', { roverId: rover, requestedTtlMs: 2000 }), rover);
       if (closed || gen !== epoch) return; // backend priority stop reconciles cancelled grants
       if (lease.bridgeBootId !== boot || Math.abs(lease.issuedAt - deps.now() / 1000) > .2 || lease.caps.maxIntentTtlMs < 100 || lease.caps.watchdogTimeoutMs < 200) throw new Error('Lease identity, clock or timing limits unsupported.');
+      if (state.status?.executionMode === 'physical' && (lease.caps.maxAbsXMps > .05 || lease.caps.maxAbsYMps > .05 || lease.caps.maxAbsZDegps > 5)) throw new Error('Physical grant exceeds supervised bench limits.');
       sequence = 0; leaseDeadline = deps.now() + (lease.expiresAt - lease.issuedAt) * 1000;
-      emit({ lease, pending: false, uncertain: false, message: 'Simulator control held · hold an input to drive.' });
+      emit({ lease, pending: false, uncertain: false, message: `${state.status?.executionMode === 'physical' ? 'Physical' : 'Simulator'} control held · hold an input to drive.` });
     } catch (error) { if (!closed && gen === epoch) await lose(error instanceof Error ? error.message : 'Lease unavailable.'); }
   }
   async function release(reason: ReleaseReason = 'user_release') {
@@ -101,7 +103,7 @@ export function createManualClient(rover: string, update: (state: ManualState) =
     try {
       const result = await call('release', { ...binding(lease), reason }, true);
       if (!identity(result, rover) || result.bridgeBootId !== lease.bridgeBootId || result.stage !== 'UNKNOWN') throw new Error();
-    } catch { emit({ message: 'Release unconfirmed · no drive authority.' }); if (simulator()) { try { await call('stop', { roverId: rover, reason: 'operator_stop' }, true); } catch { /* unconfirmed */ } } }
+    } catch { emit({ message: 'Release unconfirmed · no drive authority.' }); if (operatorWritesAllowed()) { try { await call('stop', { roverId: rover, reason: 'operator_stop' }, true); } catch { /* unconfirmed */ } } }
   }
   async function tick(strafe: number, forward: number, turn: number) {
     const lease = state.lease;
