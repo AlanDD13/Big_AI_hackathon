@@ -66,7 +66,9 @@ _OBJECT_REQUIRED = {
     "eligibilityReason",
     "frameRef",
 }
-_OBJECT_OPTIONAL = {"visualPickupStatus", "visualPickupAdvisory", "recoveryStep", "classificationModel"}
+_OBJECT_OPTIONAL = {
+    "visualPickupStatus", "visualPickupAdvisory", "demoSector", "recoveryStep", "classificationModel",
+}
 _STATUSES = {"OBSERVING", "STATIC_PENDING_REVIEW", "POTENTIAL_TARGET", "EXCLUDED", "LOST"}
 _MOTION = {"OBSERVING", "MOVING", "STATIONARY", "EXCLUDED", "UNKNOWN"}
 _CLASS_STATUS = {"PENDING", "COMPLETED", "UNAVAILABLE"}
@@ -245,6 +247,18 @@ def _object_projection(
     ):
         status = "OBSERVING"
 
+    bbox = _bbox(body["bboxPx"])
+    demo_sector = _demo_sector(body["demoSector"], bbox) if "demoSector" in body else None
+    if not (
+        classification_status == "COMPLETED"
+        and classification is not None
+        and classification["category"] == "TRASH"
+        and classification["subject_kind"] == "INANIMATE"
+        and classification["carrying"] == "NO"
+        and classification["confidence"] in {"MEDIUM", "HIGH"}
+    ):
+        demo_sector = None
+
     mapping = _mapping(body["mapping"])
     advisory_present = "visualPickupAdvisory" in body
     status_present = "visualPickupStatus" in body
@@ -283,7 +297,8 @@ def _object_projection(
         "receivedAt": received_at,
         "lastSeenAt": _number(body["lastSeenAt"], "lastSeenAt", minimum=0),
         "cameraKind": _enum(body["cameraKind"], "cameraKind", {"FIXED", "ROVER"}),
-        "bboxPx": _bbox(body["bboxPx"]),
+        "bboxPx": bbox,
+        "demoSector": demo_sector,
         "detectorLabel": _text(body["detectorLabel"], "detectorLabel", 128),
         "detectorScore": _score(body["detectorScore"]),
         "grokConfidence": grok_confidence,
@@ -420,6 +435,31 @@ def _classification(value: object) -> dict[str, object] | None:
         "confidence": confidence,
         "description": _text(value["description"], "description", 500),
         "reason": _text(value["reason"], "reason", 500),
+    }
+
+
+def _demo_sector(value: object, bbox: list[float]) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise InvalidVision("demoSector must be an object")
+    _exact_keys(value, {"mapId", "calibrated", "convention", "grid", "sector", "bboxCenterPx"})
+    if (value["mapId"] != "demo-grid" or value["calibrated"] is not False
+            or value["convention"] != "ROW_A_TOP" or value["grid"] != "convex-floor-0.5m"):
+        raise InvalidVision("demoSector has invalid map metadata")
+    sector = value["sector"]
+    if not isinstance(sector, str) or re.fullmatch(r"[A-D][1-4]", sector) is None:
+        raise InvalidVision("demoSector sector must be A1-D4")
+    center = value["bboxCenterPx"]
+    if not isinstance(center, list) or len(center) != 2:
+        raise InvalidVision("demoSector bboxCenterPx must contain two numbers")
+    center = [_number(item, "bboxCenterPx", minimum=0) for item in center]
+    if any(abs(actual - expected) > 1 for actual, expected in zip(
+        center, ((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2)
+    )):
+        raise InvalidVision("demoSector bboxCenterPx must match bboxPx center")
+    return {
+        "mapId": "demo-grid", "calibrated": False, "convention": "ROW_A_TOP",
+        "grid": "convex-floor-0.5m", "sector": sector,
+        "bboxCenterPx": center,
     }
 
 
