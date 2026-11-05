@@ -25,6 +25,9 @@ from backend.evidence import EvidenceConflict, InvalidEvidence, parse_evidence
 from backend.mission_http import (
     IDEMPOTENCY_KEY_RE, MISSION_ERRORS, FixtureMapping, UnavailableMapping, parse_mission_request,
 )
+from backend.manual_proxy import ManualFailure, ManualProxy, PostgresManualGate
+from backend.manual_requests import InvalidManualRequest, StaleManualIntent
+from backend.evidence import ID_RE
 from backend.postgres_collection import PostgresCollectionStore
 from backend.postgres_evidence import PostgresEvidenceStore
 from backend.postgres_projection import PostgresObservationLog, StorageUnavailable
@@ -68,6 +71,7 @@ def create_app(
     vision_log: PostgresVisionLog | None = None,
     collection_store: CollectionStore | None = None,
     mapping_client: MappingClient | None = None,
+    manual_proxy: ManualProxy | None = None,
     camera_proxy: CameraProxy | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Rover backend", version="0.1.0")
@@ -93,6 +97,9 @@ def create_app(
                 state.ingest_vision(parse_vision_event(canonical, ACCEPTED), persist=False)
     app.state.backend = state
     collection_now = now if now is not None else time.time
+    manual = manual_proxy if manual_proxy is not None else ManualProxy(
+        url="", peer_token="", now=collection_now,
+    )
     mapping = mapping_client if mapping_client is not None else UnavailableMapping()
     camera = camera_proxy if camera_proxy is not None else CameraProxy(CameraConfig())
 
@@ -139,8 +146,10 @@ def create_app(
         return response
 
     @app.delete("/api/session", status_code=204)
-    def close_session(request: Request) -> Response:
-        app.state.backend.close_session(request.cookies.get("session"))
+    async def close_session(request: Request) -> Response:
+        session_id = request.cookies.get("session")
+        app.state.backend.close_session(session_id)
+        await manual.end_session(session_id)
         response = Response(status_code=204)
         response.delete_cookie(
             "session",
@@ -179,6 +188,53 @@ def create_app(
         if session_id is None:
             return _error(401, "UNAUTHORIZED", "Operator session is missing or expired")
         return _error(404, "EVIDENCE_UNAVAILABLE", "The exact frame is gone")
+
+    @app.get("/api/manual/status")
+    async def manual_status(request: Request) -> Response:
+        session_id = cookie_session(request)
+        if session_id is None:
+            await manual.end_session(request.cookies.get("session"))
+            return _error(401, "UNAUTHORIZED", "Operator session is missing or expired")
+        rover_id = request.query_params.get("roverId", "")
+        if ID_RE.fullmatch(rover_id) is None:
+            return _error(422, "VALIDATION_ERROR", "A valid roverId is required")
+        if rover_id != manual.rover_id:
+            return _error(404, "UNKNOWN_ROVER", "Rover is not configured")
+        try:
+            result = await manual.status()
+        except ManualFailure as exc:
+            return _error(exc.status, exc.code, "Manual control request was not accepted")
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/manual/{action}")
+    async def manual_action(action: str, request: Request) -> Response:
+        session_id = cookie_session(request)
+        if session_id is None:
+            await manual.end_session(request.cookies.get("session"))
+            return _error(401, "UNAUTHORIZED", "Operator session is missing or expired")
+        if action not in {"lease", "drive", "release", "stop", "rearm"}:
+            return _error(404, "NOT_FOUND", "Manual action was not found")
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > 65536:
+                return _error(422, "VALIDATION_ERROR", "Manual request exceeds 64 KiB")
+        try:
+            payload = json.loads(body)
+            result = await manual.execute(
+                action, session_id, payload, lambda: app.state.backend.session_open(session_id),
+            )
+        except StaleManualIntent:
+            await manual.end_session(session_id)
+            return _error(409, "STALE_INTENT", "Manual intent is stale")
+        except (ValueError, InvalidManualRequest):
+            await manual.end_session(session_id)
+            return _error(422, "VALIDATION_ERROR", "Manual request does not match the contract")
+        except ManualFailure as exc:
+            if exc.code in {"STALE_INTENT", "LEASE_EXPIRED", "BRIDGE_BOOT_MISMATCH"}:
+                await manual.end_session(session_id)
+            return _error(exc.status, exc.code, "Manual control request was not accepted")
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/camera/status")
     def camera_status(request: Request) -> Response:
@@ -369,6 +425,7 @@ def app_from_env() -> FastAPI:
     observation_log = None
     vision_log = None
     collection_store = None
+    manual_active = None
     mapping_client = (
         FixtureMapping(time.time) if os.environ.get("BACKEND_MISSION_FIXTURE_MAPPING") == "1" else None
     )
@@ -380,6 +437,8 @@ def app_from_env() -> FastAPI:
             import psycopg
 
             return psycopg.connect(database_url)
+
+        manual_active = PostgresManualGate(connect)
 
         observation_log = PostgresObservationLog(connect)
         vision_log = PostgresVisionLog(connect)
@@ -397,6 +456,13 @@ def app_from_env() -> FastAPI:
         vision_log=vision_log,
         collection_store=collection_store,
         mapping_client=mapping_client,
+        manual_proxy=ManualProxy(
+            url=os.environ.get("ROBOT_BRIDGE_URL", "") or os.environ.get("ROVER_BRIDGE_URL", ""),
+            peer_token=peer_token,
+            rover_id=os.environ.get("BACKEND_MANUAL_ROVER_ID", "rover-1"),
+            autonomous_active=manual_active,
+            now=time.time,
+        ),
         camera_proxy=CameraProxy(CameraConfig(
             url=os.environ.get("BACKEND_CAMERA_URL", ""),
             authorization=os.environ.get("BACKEND_CAMERA_AUTHORIZATION", ""),

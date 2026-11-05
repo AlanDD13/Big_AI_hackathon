@@ -58,6 +58,12 @@ assessment and is never graspable. When an advisory is present,
 
 ## Test
 
+Optional operator-session manual chassis forwarding uses `/api/manual/*`, a
+fixed server-side bridge, and the agreed boot fence. It remains separate from
+mission queue/dispatch. See [MANUAL_PROXY.md](MANUAL_PROXY.md) for configuration,
+authority limits, sample payloads and fake/P4-loopback checks. Navigation,
+pickup and end-to-end physical UI acceptance are not provided by this slice.
+
 Dashboard camera transport is optional and disabled until `BACKEND_CAMERA_URL`
 is set in the backend environment. Operator-session routes are
 `GET /api/camera/feed` (JPEG/MJPEG) and `GET /api/camera/status` (configuration
