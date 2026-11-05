@@ -12,6 +12,7 @@ Flow:
    g. Repeat until stop_robot
 3. Generate visual summary.html and report.json for in-depth post-run analysis.
 """
+import argparse
 import base64
 import json
 import os
@@ -22,6 +23,7 @@ from pathlib import Path
 from urllib.request import HTTPSHandler, HTTPRedirectHandler, Request, build_opener
 
 import rover_tools as rt
+from route_mission import run_route_mission
 
 def load_env_config():
     config = {}
@@ -46,18 +48,14 @@ ENV = load_env_config()
 
 # Model configured dynamically from environment / .env file
 MODEL = (
-    sys.argv[2].strip() if len(sys.argv) > 2 and sys.argv[2].strip()
-    else os.environ.get("ROVER_MODEL")
+    os.environ.get("ROVER_MODEL")
     or ENV.get("ROVER_MODEL")
     or ENV.get("OPENROUTER_FAST_MODEL")
     or ENV.get("OPENROUTER_VISION_MODEL")
 )
-if not MODEL:
-    raise RuntimeError("missing_model_in_env: please set ROVER_MODEL in your .env file")
-
-MAX_STEPS = int(sys.argv[1]) if len(sys.argv) > 1 else 20
+MAX_STEPS = 20
 LOG = Path("/tmp/pavia-robot/logs") / f"tools-{time.time_ns()}"
-BRAIN_DIR = Path("/Users/alandd/.gemini/antigravity-cli/brain/dd744dcc-2fe5-4c81-8537-0ceabfe0ca93")
+BRAIN_DIR = Path(os.environ.get("ROVER_MONITOR_DIR", str(LOG / "monitor")))
 
 SYSTEM = (
     "You are the autonomous pilot of a DJI RoboMaster EP Core rover equipped with omnidirectional mecanum wheels, "
@@ -173,6 +171,12 @@ def ask_grok(opener, key, jpeg, status):
         or os.environ.get("ROVER_ALLOW_TRANSPORT", "false").lower() in ("1", "true", "yes")
         else SYSTEM
     )
+    if status.get("pickupOnly"):
+        system_content = SYSTEM + (
+            "\nA fixed route controller owns the return journey. Call grasp_can to pick up "
+            "and lift the can, then control returns immediately to that controller. "
+            "Do not transport, place, release, or close the gripper separately."
+        )
     payload = {
         "model": MODEL,
         "max_tokens": int(ENV.get("ROVER_MAX_TOKENS", 800)),
@@ -316,16 +320,115 @@ def generate_html_summary(log_dir, steps, result, calls):
     (BRAIN_DIR / "summary.html").write_text(html, encoding="utf-8")
 
 
+def run_grok_loop(tools, opener, key, *, pickup_only=False):
+    """Run in an already-open rover session, optionally yielding after grasp."""
+    steps, past_actions = [], []
+    result, calls, last_outcome = "INCOMPLETE", 0, None
+    for step in range(1, MAX_STEPS + 1):
+        # 1. Take photo
+        jpeg = tools.frame_jpeg(quality=65)
+        (LOG / f"step-{step:02d}.jpg").write_bytes(jpeg)
+        # Mirror to brain directory for user viewing
+        (BRAIN_DIR / "latest_rover_frame.jpg").write_bytes(jpeg)
+        (BRAIN_DIR / f"rover_step_{step:02d}.jpg").write_bytes(jpeg)
+
+        # 2. Build context
+        current_tof = tools.tof_mm
+        current_tracker = tools.latest_tracker
+        status = {
+            "step": step,
+            "maxSteps": MAX_STEPS,
+            "allowTransport": getattr(tools, "allow_transport", False),
+            "pickupOnly": pickup_only,
+            "robotStatus": tools.status(),
+            "lastActionOutcome": last_outcome,
+            "pastActionsSummary": past_actions[-4:],
+        }
+
+        # 3. Ask Grok to decide (with 1500 max tokens)
+        print(f"\n[STEP {step}/{MAX_STEPS}] Querying Grok with photo...", flush=True)
+        calls += 1  # Count attempted requests, including uncertain failures.
+        try:
+            name, args, request_id, thought = ask_grok(opener, key, jpeg, status)
+        except Exception as exc:
+            print("GROK_ERROR", type(exc).__name__, str(exc)[:160], flush=True)
+            result = "GROK_ERROR"
+            break
+
+        if thought:
+            print(f"[STEP {step}/{MAX_STEPS}] Grok Reasoning: {thought.strip()[:180]}...", flush=True)
+        print(f"[STEP {step}/{MAX_STEPS}] Grok decided: {name}({json.dumps(args)}) [req: {request_id}]", flush=True)
+
+        # 4. Execute decision on robot
+        try:
+            exec_res = tools.dispatch(name, args)
+            if pickup_only and name == "grasp_can":
+                if not (exec_res.get("gripperCloseCommanded") is True
+                        and exec_res.get("gripperClamped") is True
+                        and exec_res.get("armLifted") is True
+                        and isinstance(exec_res.get("seatedDrive"), dict)
+                        and not exec_res["seatedDrive"].get("stoppedBy")):
+                    raise rt.RoverError("pickup_macro_incomplete")
+            last_outcome = {"tool": name, "result": exec_res}
+        except rt.RoverError as exc:
+            last_outcome = {"tool": name, "error": str(exc)}
+            if pickup_only:
+                result = "HARDWARE_ERROR"
+                break
+        except Exception as exc:
+            last_outcome = {"tool": name, "error": type(exc).__name__}
+            step_record = {
+                "step": step, "tool": name, "args": args, "outcome": last_outcome,
+                "thought": thought, "reqId": request_id, "infraredLightMm": current_tof,
+                "infraredLightCm": round(current_tof / 10.0, 1) if current_tof is not None else None,
+                "yoloPosition": current_tracker, "screenshotFile": f"step-{step:02d}.jpg"
+            }
+            steps.append(step_record)
+            print("HARDWARE_ERROR", last_outcome, flush=True)
+            result = "HARDWARE_ERROR"
+            break
+
+        past_actions.append(f"{name}({json.dumps(args)})")
+        step_record = {
+            "step": step, "tool": name, "args": args, "outcome": last_outcome,
+            "thought": thought, "reqId": request_id, "infraredLightMm": current_tof,
+            "infraredLightCm": round(current_tof / 10.0, 1) if current_tof is not None else None,
+            "yoloPosition": current_tracker, "screenshotFile": f"step-{step:02d}.jpg"
+        }
+        steps.append(step_record)
+        print(f"[STEP {step}/{MAX_STEPS}] Executed: {json.dumps(last_outcome)}", flush=True)
+
+        # Update live monitor in brain
+        update_brain_monitor(step, MAX_STEPS, name, args, last_outcome, steps)
+
+        # The fixed route owns transport after grasp; no further model calls.
+        if pickup_only and name == "grasp_can":
+            result = "PICKUP_COMMANDED"
+            break
+
+        # 5. Check if finished
+        if name == "stop_robot":
+            result = "STOPPED_BY_GROK"
+            print("\n🎉 Grok called stop_robot. Mission complete!", flush=True)
+            break
+    return {"result": result, "grokCalls": calls, "steps": steps}
+
+
 def main():
+    global MODEL, MAX_STEPS
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("steps", nargs="?", type=int, default=MAX_STEPS)
+    parser.add_argument("model", nargs="?", default=MODEL)
+    parser.add_argument("--route-return", action="store_true",
+                        help="30cm forward, right 90deg, 154cm forward, Grok pickup, return and place")
+    args = parser.parse_args()
+    if args.steps < 1 or not args.model:
+        parser.error("positive steps and a model (argument or ROVER_MODEL) are required")
+    MAX_STEPS, MODEL = args.steps, args.model
     LOG.mkdir(parents=True)
     BRAIN_DIR.mkdir(parents=True, exist_ok=True)
     key = load_key()
     opener = build_opener(HTTPSHandler(context=ssl.create_default_context()), NoRedirect())
-    steps = []
-    past_actions = []
-    result = "INCOMPLETE"
-    calls = 0
-
     print(f"Loaded model from .env: {MODEL}", flush=True)
     print("Opening rover tools session...", flush=True)
     with rt.open_rover_tools(allow_transport=True) as tools:
@@ -343,88 +446,28 @@ def main():
         print("📺 LIVE STREAM BROADCASTING AT: http://localhost:8088", flush=True)
         print("="*60 + "\n", flush=True)
 
-        last_outcome = None
+        loop_report = {}
+        def pickup(recorded_tools):
+            nonlocal loop_report
+            loop_report = run_grok_loop(recorded_tools, opener, key, pickup_only=True)
+            return loop_report
+
         try:
-            for step in range(1, MAX_STEPS + 1):
-                # 1. Take photo
-                jpeg = tools.frame_jpeg(quality=65)
-                (LOG / f"step-{step:02d}.jpg").write_bytes(jpeg)
-                # Mirror to brain directory for user viewing
-                (BRAIN_DIR / "latest_rover_frame.jpg").write_bytes(jpeg)
-                (BRAIN_DIR / f"rover_step_{step:02d}.jpg").write_bytes(jpeg)
-
-                # 2. Build context
-                current_tof = tools.tof_mm
-                current_tracker = tools.latest_tracker
-                status = {
-                    "step": step,
-                    "maxSteps": MAX_STEPS,
-                    "allowTransport": getattr(tools, "allow_transport", False),
-                    "robotStatus": tools.status(),
-                    "lastActionOutcome": last_outcome,
-                    "pastActionsSummary": past_actions[-4:],
-                }
-
-                # 3. Ask Grok to decide (with 1500 max tokens)
-                print(f"\n[STEP {step}/{MAX_STEPS}] Querying Grok with photo...", flush=True)
-                calls += 1  # Count attempted requests, including uncertain failures.
-                try:
-                    name, args, request_id, thought = ask_grok(opener, key, jpeg, status)
-                except Exception as exc:
-                    print("GROK_ERROR", type(exc).__name__, str(exc)[:160], flush=True)
-                    result = "GROK_ERROR"
-                    break
-
-                if thought:
-                    print(f"[STEP {step}/{MAX_STEPS}] Grok Reasoning: {thought.strip()[:180]}...", flush=True)
-                print(f"[STEP {step}/{MAX_STEPS}] Grok decided: {name}({json.dumps(args)}) [req: {request_id}]", flush=True)
-
-                # 4. Execute decision on robot
-                try:
-                    exec_res = tools.dispatch(name, args)
-                    last_outcome = {"tool": name, "result": exec_res}
-                except rt.RoverError as exc:
-                    last_outcome = {"tool": name, "error": str(exc)}
-                except Exception as exc:
-                    last_outcome = {"tool": name, "error": type(exc).__name__}
-                    step_record = {
-                        "step": step, "tool": name, "args": args, "outcome": last_outcome,
-                        "thought": thought, "reqId": request_id, "infraredLightMm": current_tof,
-                        "infraredLightCm": round(current_tof / 10.0, 1) if current_tof is not None else None,
-                        "yoloPosition": current_tracker, "screenshotFile": f"step-{step:02d}.jpg"
-                    }
-                    steps.append(step_record)
-                    print("HARDWARE_ERROR", last_outcome, flush=True)
-                    result = "HARDWARE_ERROR"
-                    break
-
-                past_actions.append(f"{name}({json.dumps(args)})")
-                step_record = {
-                    "step": step, "tool": name, "args": args, "outcome": last_outcome,
-                    "thought": thought, "reqId": request_id, "infraredLightMm": current_tof,
-                    "infraredLightCm": round(current_tof / 10.0, 1) if current_tof is not None else None,
-                    "yoloPosition": current_tracker, "screenshotFile": f"step-{step:02d}.jpg"
-                }
-                steps.append(step_record)
-                print(f"[STEP {step}/{MAX_STEPS}] Executed: {json.dumps(last_outcome)}", flush=True)
-
-                # Update live monitor in brain
-                update_brain_monitor(step, MAX_STEPS, name, args, last_outcome, steps)
-
-                # 5. Check if finished
-                if name == "stop_robot":
-                    result = "STOPPED_BY_GROK"
-                    print("\n🎉 Grok called stop_robot. Mission complete!", flush=True)
-                    break
-
+            if args.route_return:
+                report = run_route_mission(tools, pickup)
+            else:
+                report = run_grok_loop(tools, opener, key)
+        except Exception as exc:
+            report = {**loop_report, "result": "MISSION_ABORTED",
+                      "error": str(exc)[:180], "holdingVerified": False}
         finally:
-            try:
-                tools.reset_arm_and_gripper()
-            except Exception:
-                pass
+            # Preserve any held can, including on failure. Release is explicit.
             tools.stop("loop_finished")
 
-    report = {"result": result, "grokCalls": calls, "steps": steps, "log": str(LOG)}
+    result = report["result"]
+    steps = report.get("steps", [])
+    calls = report.get("grokCalls", 0)
+    report.update(log=str(LOG))
     (LOG / "report.json").write_text(json.dumps(report, indent=2))
     (BRAIN_DIR / "report.json").write_text(json.dumps(report, indent=2))
 
@@ -458,7 +501,7 @@ def main():
     generate_html_summary(LOG, steps, result, calls)
     print(f"\nFINAL RESULT: {result} | Grok calls: {calls} | Saved report to {LOG}/report.json", flush=True)
     print(f"📊 Visual post-mortem analysis generated at: {LOG}/summary.html", flush=True)
-    os._exit(0 if result == "STOPPED_BY_GROK" else 1)
+    return 0 if result in ("STOPPED_BY_GROK", "RETURNED_AND_RELEASED") else 1
 
 
 if __name__ == "__main__":
