@@ -135,11 +135,29 @@ def create_app(settings=None, detector=None, classifier=None, run_workers=True):
 
     @app.get("/camera")
     async def phone_page():
-        return FileResponse(web / "camera.html", media_type="text/html")
+        return FileResponse(web / "camera.html", media_type="text/html", headers={"Cache-Control": "no-store"})
 
     @app.get("/camera.js")
     async def phone_script():
-        return FileResponse(web / "camera.js", media_type="application/javascript")
+        return FileResponse(web / "camera.js", media_type="application/javascript", headers={"Cache-Control": "no-store"})
+
+    def grok_camera_state(camera_id, authorization):
+        check_token(authorization, camera_id)
+        if camera_id not in settings.cameras:
+            raise HTTPException(404, "Camera is not configured")
+        return {"cameraId": camera_id, "enabled": service.grok_enabled[camera_id],
+                "includePickup": True, "pickupVerified": False}
+
+    @app.get("/api/cameras/{camera_id}/grok")
+    async def get_camera_grok(camera_id: str, authorization: str | None = Header(default=None)):
+        return grok_camera_state(camera_id, authorization)
+
+    @app.put("/api/cameras/{camera_id}/grok")
+    async def set_camera_grok(camera_id: str, payload: CameraGrokControl,
+                              authorization: str | None = Header(default=None)):
+        grok_camera_state(camera_id, authorization)
+        await service.set_grok_enabled(camera_id, payload.enabled)
+        return grok_camera_state(camera_id, authorization)
 
     def grok_camera_state(camera_id, authorization):
         check_token(authorization, camera_id)
@@ -163,6 +181,7 @@ def create_app(settings=None, detector=None, classifier=None, run_workers=True):
     async def cameras():
         actual = {item["camera_id"]: item for item in service.frames.list_cameras()}
         return {"cameras": [{"cameraId": key, "cameraKind": kind,
+                             "grokEnabled": service.grok_enabled[key],
                              "active": key in actual, "stream": actual.get(key),
                              "processed": ({"sessionId": service._processed[key][0],
                                             "geometryVersion": service._processed[key][1],

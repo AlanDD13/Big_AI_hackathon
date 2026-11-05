@@ -66,6 +66,21 @@ function halt(message = 'Stopped') {
   gridOverlay.width = 0; gridOverlay.height = 0;
   status.textContent = message;
 }
+async function openCamera(video) {
+  // iPad Safari rejects an unbounded resolution and drops the user gesture
+  // if anything is awaited first. Try the requested mode, then a plain rear camera.
+  const attempts = [video];
+  if (!video.deviceId) {
+    attempts.push({facingMode: {ideal: 'environment'}, width: {ideal: 1920}, height: {ideal: 1080}, frameRate: {ideal: 15}});
+    attempts.push({facingMode: {ideal: 'environment'}});
+  }
+  let failure;
+  for (const candidate of attempts) {
+    try { return await navigator.mediaDevices.getUserMedia({video: candidate, audio: false}); }
+    catch (error) { failure = error; }
+  }
+  throw failure || new Error('Camera access failed');
+}
 stop.addEventListener('click', () => halt());
 start.addEventListener('click', async () => {
   if (running || start.disabled) return;
@@ -74,16 +89,16 @@ start.addEventListener('click', async () => {
   if (!window.isSecureContext) { status.textContent = 'HTTPS is required.'; return; }
   start.disabled = true; lens.disabled = true;
   const current = ++generation;
+  const selected = lens.value;
+  const video = {width: {ideal: 3840}, height: {ideal: 2160}, frameRate: {ideal: 15, max: 30},
+    ...(selected ? {deviceId: {exact: selected}} : {facingMode: {ideal: 'environment'}})};
   try {
+    let acquired = await openCamera(video);
+    if (generation !== current) { acquired.getTracks().forEach(track => track.stop()); return; }
+    stream = acquired;
     grokCamera = {id, secret};
     await syncGrok();
     if (generation !== current) return;
-    const selected = lens.value;
-    const video = {width: {ideal: 99999}, height: {ideal: 99999}, frameRate: {ideal: 15, max: 30},
-      ...(selected ? {deviceId: {exact: selected}} : {facingMode: {ideal: 'environment'}})};
-    let acquired = await navigator.mediaDevices.getUserMedia({video, audio: false});
-    if (generation !== current) { acquired.getTracks().forEach(track => track.stop()); return; }
-    stream = acquired;
     // Labels become available after camera permission. Do not guess a lens from device order.
     let devices = [];
     try { devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput'); } catch (_) {}
@@ -93,10 +108,15 @@ start.addEventListener('click', async () => {
     lens.value = selected;
     const ultra = !selected && devices.find(d => isUltraWide(d.label) && !/front|facetime|user/i.test(d.label));
     if (ultra && ultra.deviceId !== stream.getVideoTracks()[0].getSettings().deviceId) {
-      stream.getTracks().forEach(track => track.stop());
-      acquired = await navigator.mediaDevices.getUserMedia({video: {...video, deviceId: {exact: ultra.deviceId}}, audio: false});
-      if (generation !== current) { acquired.getTracks().forEach(track => track.stop()); return; }
-      stream = acquired;
+      try {
+        const next = await openCamera({width: video.width, height: video.height, frameRate: video.frameRate, deviceId: {exact: ultra.deviceId}});
+        if (generation !== current) { next.getTracks().forEach(track => track.stop()); return; }
+        stream.getTracks().forEach(track => track.stop());
+        acquired = next;
+        stream = acquired;
+      } catch (error) {
+        cameraDetails.textContent = `Ultra-wide lens did not open (${error.message}). Using the camera that started.`;
+      }
     }
     const track = stream.getVideoTracks()[0];
     const caps = track.getCapabilities?.() || {};
@@ -129,7 +149,11 @@ start.addEventListener('click', async () => {
       try {
         const w = preview.videoWidth, h = preview.videoHeight;
         if (!w || !h) throw new Error('Camera is not ready');
-        if (w < h) throw new Error('Turn the phone to landscape and restart capture.');
+        if (w < h) {
+          status.textContent = 'Turn the phone to landscape. The preview stays on and capture resumes automatically.';
+          if (running && generation === current) timer = setTimeout(send, 400);
+          return;
+        }
         if (w * h > 16000000) throw new Error('Camera video exceeds the 16MP limit. Choose another lens.');
         drawDemoGrid(w, h);
         const size = `${w}x${h}:${screen.orientation?.angle ?? window.orientation ?? 0}:${track.getSettings().zoom ?? ''}`;
@@ -160,5 +184,5 @@ start.addEventListener('click', async () => {
       if (running && generation === current) timer = setTimeout(send, Math.max(0, 1000 / 3 - (performance.now() - begin)));
     };
     status.textContent = 'Starting camera…'; send();
-  } catch (_) { if (generation === current) halt('Camera access failed. Check permissions and HTTPS.'); }
+  } catch (error) { if (generation === current) halt(error.message || 'Camera access failed. Check permissions and HTTPS.'); }
 });

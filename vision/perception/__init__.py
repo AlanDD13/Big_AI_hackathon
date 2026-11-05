@@ -40,8 +40,9 @@ _LIVING = {'person', 'people', 'human', 'man', 'woman', 'child', 'baby', 'boy', 
            'giraffe', 'animal', 'pet', 'rabbit', 'mouse', 'rat', 'deer', 'monkey',
            'goat', 'pig', 'chicken', 'duck', 'fish', 'turtle', 'insect', 'hand', 'hands'}
 
-# A targeted vocabulary is more useful than the prompt-free long tail for this
-# floor demo. Safety classes stay present even when users supply custom prompts.
+# The optional paper profile is a closed prompt list. Live detection uses the
+# prompt-free model: YOLO only proposes objects. Grok classifies them.
+# Safety classes stay present even when users supply custom prompts.
 PAPER_CLASSES = ('crumpled paper', 'paper ball', 'sheet of paper', 'tissue',
                  'plastic bottle', 'can', 'cup', 'cardboard box')
 SAFETY_CLASSES = ('person', 'hand', 'animal', 'dog', 'cat', 'bird')
@@ -244,16 +245,16 @@ class YoloDetector:
         self.model_name = model
         self.device = resolve_device(device)
         self.confidence = confidence
-        self.min_confidence = _env_float('VISION_MIN_CONFIDENCE', .25 if paper else .45) if min_confidence is None else min_confidence
-        self.min_area_frac = _env_float('VISION_MIN_AREA_FRAC', .0003 if paper else .002) if min_area_frac is None else min_area_frac
+        self.min_confidence = _env_float('VISION_MIN_CONFIDENCE', .25) if min_confidence is None else min_confidence
+        self.min_area_frac = _env_float('VISION_MIN_AREA_FRAC', .0003) if min_area_frac is None else min_area_frac
         self.max_area_frac = _env_float('VISION_MAX_AREA_FRAC', .4) if max_area_frac is None else max_area_frac
-        self.max_objects = int(_env_float('VISION_MAX_OBJECTS', 6)) if max_objects is None else max_objects
-        self.image_size = image_size or int(os.getenv('VISION_IMAGE_SIZE', '960' if paper else '640'))
+        self.max_objects = int(_env_float('VISION_MAX_OBJECTS', 12)) if max_objects is None else max_objects
+        self.image_size = image_size or int(os.getenv('VISION_IMAGE_SIZE', '960'))
         if not 256 <= self.image_size <= 1536:
             raise ValueError('VISION_IMAGE_SIZE must be between 256 and 1536')
-        self.paper_tiles = paper and os.getenv('VISION_PAPER_TILES', '1') == '1'
-        # These are low-confidence proposals for Grok review, never target
-        # approval. All non-paper thresholds and semantic/metric gates remain.
+        # Zoomed tiles find small objects. They do not decide what the object is.
+        self.paper_tiles = os.getenv('VISION_PAPER_TILES', '1') == '1'
+        # Paper-only low thresholds are proposals for Grok, never target approval.
         self.label_thresholds = ({label: .10 for label in PAPER_CLASSES[:4]} if paper else {})
         self._model = None
 
@@ -270,28 +271,39 @@ class YoloDetector:
             size = image.size
             detections = self._predict_image(image)
             if self.paper_tiles:
-                # Four overlapping views improve small-object proposals while
-                # keeping the full-frame person/animal detections for exclusion.
-                # Only paper proposals are accepted from the zoomed views.
+                # Four overlapping views improve small-object proposals.
+                # Every label is kept: YOLO only locates objects. Grok classifies
+                # them. The full image still supplies living-object exclusions.
                 width, height = size
                 tile_w, tile_h = math.ceil(width * .6), math.ceil(height * .6)
-                for x in (0, width - tile_w):
-                    for y in (0, height - tile_h):
-                        tile = image.crop((x, y, x + tile_w, y + tile_h))
-                        detections.extend(self._predict_image(tile, x, y, paper_only=True))
+                offsets = [(x, y) for x in (0, width - tile_w)
+                           for y in (0, height - tile_h)]
+                tiles = [image.crop((x, y, x + tile_w, y + tile_h)) for x, y in offsets]
+                if self.device == 'mps':
+                    # Equal-size tiles keep the same rectangular preprocessing.
+                    detections.extend(self._predict_images(tiles, offsets))
+                else:
+                    for tile, (x, y) in zip(tiles, offsets):
+                        detections.extend(self._predict_image(tile, x, y))
         return curate(detections, size[0], size[1], self.min_confidence, self.min_area_frac,
                       self.max_area_frac, self.max_objects, self.label_thresholds)
 
-    def _predict_image(self, image, offset_x=0, offset_y=0, paper_only=False):
+    def _predict_image(self, image, offset_x=0, offset_y=0):
+        return self._predict_images([image], [(offset_x, offset_y)])
+
+    def _predict_images(self, images, offsets):
         threshold = min(self.confidence, .10) if self.label_thresholds else self.confidence
-        results = self._model.predict(source=image, device=self.device, conf=threshold,
+        source = images[0] if len(images) == 1 else images
+        results = self._model.predict(source=source, device=self.device, conf=threshold,
                                       imgsz=self.image_size, verbose=False)
+        if len(results) != len(images):
+            raise ValueError('Detector result count does not match source images')
         detections = []
-        for result in results:
-            for box in result.boxes:
+        for result, image, (offset_x, offset_y) in zip(results, images, offsets):
+            # Copy boxes only, once per image; per-scalar MPS reads synchronize
+            # the accelerator repeatedly. Segmentation masks are not consumed.
+            for box in result.boxes.cpu():
                 label = result.names[int(box.cls[0])]
-                if paper_only and label not in self.label_thresholds:
-                    continue
                 raw = tuple(float(v) for v in box.xyxy[0].tolist())
                 if not (0 <= raw[0] < raw[2] <= image.width and
                         0 <= raw[1] < raw[3] <= image.height):
