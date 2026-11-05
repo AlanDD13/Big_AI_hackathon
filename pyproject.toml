@@ -13,6 +13,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+recovery = ["langgraph==1.2.19"]
 # P2 Vision (AlanDD13) & P5 Mapping (Tezqx) — local YOLOE-26s + OpenCV camera/homography
 vision = [
   "ultralytics>=8.4.0,<9.0.0",
@@ -39,6 +40,7 @@ test = [
   "jsonschema>=4.23.0,<5.0.0",
 ]
 all = [
+  "langgraph==1.2.19",
   "ultralytics>=8.4.0,<9.0.0",
   "torch>=2.6.0,<3.0.0",
   "opencv-python>=4.10.0,<5.0.0",
@@ -52,7 +54,7 @@ all = [
 
 [tool.pytest.ini_options]
 addopts = "--import-mode=importlib"
-testpaths = ["vision/tests", "backend/tests", "mapping/test_mapper.py", "tests"]
+testpaths = ["vision/tests", "backend/tests", "mapping/test_mapper.py", "tests", "integration/recovery/tests"]
 pythonpath = [".", "vision", "backend", "mapping"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
