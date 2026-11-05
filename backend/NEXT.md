@@ -1,41 +1,41 @@
 # Next backend slice
 
-Finish or leave pull request #11 alone. Do not reimplement observation persistence. If `main` has moved and the PR no longer merges, rebase only after the human asks, then push the same branch.
+Do not start a new feature. Mission HTTP, vision ingest, vision persistence, the camera proxy, and manual forwarding are already on `origin/main` at `96e7b0f`. The old instruction to branch `task/zekihxh/mission-http` is finished.
 
-## Start the next task from current main
+## What is already in review
 
-After #11 is merged, fetch and branch from `origin/main`:
+Leave these branches alone unless a review comment asks for a backend change. If it does, commit on that same branch. Do not open a second pull request for the same fix.
 
-`task/zekihxh/mission-http`
+- PR #33 (`task/zekihxh/demo-sector`, `2040e8d`): display-only `demoSector`. Not an observation. `dispatchEligible` stays false.
+- PR #36 (`task/zekihxh/manual-gate-latency`, `88cb374`): per-drive exclusion check on one reused connection, and `409 INTENT_EXPIRED` when the tick dies during that check. The lease stays. The sequence cannot be replayed.
+- PR #35 (`task/zekihxh/board-tests`, `18fccd2`): Windows `tests/test_board.py` only.
+- PR #34 is Alan's 100 ms clock allowance. Do not edit `backend/manual_requests.py` or `robot/safety.py`.
 
-Own `backend/**` only. One task on that branch.
+`frontend/src/manualBackend.ts` still drops a hold on any rejection and on a round trip over 250 ms. That is LcyShox's file. A held direction stays one nudge until that client treats `INTENT_EXPIRED` as a missed tick.
 
-The checkpoint is the first section of `backend/FIRST_SLICE_PROPOSAL.md`: one accepted mapped observation can become one queued collection mission through HTTP, using the existing `admit_collection` library and a fake mapping client. The fake robot records zero commands at this checkpoint.
+## Still refused
 
-Keep these rules:
+- A new `/api/manual/*` action, pickup, recovery HTTP, or any route that sends a robot command.
+- Calling port `8004`, the vision server, or a DJI SDK session. Starting or reloading `192.168.5.126:8000`.
+- Wiring PR #19's simulator loop, or the physical adapter, into this process.
+- Treating `POST /api/missions`, a snapshot, Grok advice, a command ACK, or `visualPickupAdvisory` as permission to drive or pick up.
+- Accepting `mapId demo-grid` with `calibrated: false` on `POST /api/observations`.
+- Implementing `task/AlanDD13/route-pickup-return`. That is `robot/**`.
+- Reporting or storing command `STOPPED` while the chassis stage is `UNKNOWN`.
+- Resending `404 UNKNOWN_COMMAND`.
+- A new migration, a shared-database write during a test, or a committed secret.
+- Restarting the Cursor board watcher.
 
-- `POST /api/observations` still accepts only `MappingEvidence`. Demo sector bodies stay 422.
-- `dispatchEligible` stays false until `mission_policy.collection_rejection` passes. Stationarity alone does not authorize dispatch.
-- Persist the mission with the existing Postgres collection store when `BACKEND_DATABASE_URL` is set. Without that variable, an in-memory fake is enough for the unit test.
-- Replay the same idempotency key and body. A different body for that key returns 409. Do not reserve an object twice.
-- Do not call a rover, `:8004`, or the vision GPU. Do not add `/api/manual/*`.
-- Do not apply migrations again. If the mission route needs a schema change, add a new migration file and stop before running it on the shared Supabase project. Ask Alan on the board first.
-- Do not commit `.env`. Do not post tokens or connection strings.
+## When a real slice starts
 
-## Tests required before the pull request
-
-From the checkout root:
+Fetch `origin/main` and branch `task/zekihxh/<short-task>` from it. Unset any upstream that points at `origin/main`. One task on that branch. Run:
 
 ```powershell
 & "C:\Users\Nurbol Karimov\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" -m unittest discover -s backend/tests -v
 ```
 
-Add HTTP tests for the queue checkpoint in `FIRST_SLICE_PROPOSAL.md` section 4: valid request, duplicate key, conflicting key, missing or stale object, and a second request racing the same object. Existing tests must stay green. Postgres tests stay skipped unless `BACKEND_TEST_DATABASE_URL` points at a disposable database.
-
-## After the tests pass
-
-Commit, push `task/zekihxh/mission-http`, open a pull request to `main`, and post one board note:
+Postgres tests stay skipped unless `BACKEND_TEST_DATABASE_URL` points at a disposable database. Commit with the `Noxardi` author environment, push `HEAD:task/zekihxh/<short-task>`, open a pull request to `main`, and post one board note:
 
 `[zekihxh's Codex] READY: ... @AlanDD13 <PR url>`
 
-Include the branch, commit, paths, tests, and that no robot call was made. Then stop. Manual chassis HTTP waits for a live bridge URL from `@platonyesin-dev` and for Alan's manual contract to be on the branch you implement.
+Include the branch, commit, paths, tests, and that no robot call was made. Alan merges.

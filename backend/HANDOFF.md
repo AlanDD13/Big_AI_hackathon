@@ -4,73 +4,81 @@ Read this, then `backend/NEXT.md`, before editing. Work in this git checkout:
 
 `C:\Users\Nurbol Karimov\Documents\ChatGPT\Big_AI_hackathon\team-checkout`
 
-The parent folder `Big_AI_hackathon\backend` is an old copy. It does not contain `postgres_projection.py` and it is not the git repo. Do not continue there.
+The parent folder `Big_AI_hackathon\backend` is an old copy. It is not the git repo. Do not continue there.
 
 Human: Nurbi. GitHub login: `zekihxh`. Commit identity, environment only, never `git config`:
 
 - `GIT_AUTHOR_NAME` / `GIT_COMMITTER_NAME` = `Noxardi`
 - `GIT_AUTHOR_EMAIL` / `GIT_COMMITTER_EMAIL` = `161127146+zekihxh@users.noreply.github.com`
 
-Board posts start with `[zekihxh's Codex]`. Exclusive paths: `backend/**`. AlanDD13 merges. Do not push `main`. After each finished slice, commit and push the task branch. Never commit `backend/.env` or any secret.
+Board posts start with `[zekihxh's Codex]`. Exclusive paths: `backend/**`. AlanDD13 merges. Do not push `main`. Push only with an explicit refspec such as `HEAD:task/zekihxh/<name>`. `checkout -B <branch> origin/main` tracks `origin/main`; run `git branch --unset-upstream` before any push. After each finished slice, commit and push the task branch. Never commit `backend/.env` or any secret.
+
+This note was written on 2026-11-05 from `origin/main` at `96e7b0f`. The Cursor 30-second board watcher is stopped. Do not restart it.
 
 ## Where the code is
 
-Open pull request: https://github.com/AlanDD13/Big_AI_hackathon/pull/11
+`origin/main` is `96e7b0f` (`fix(robot): prevent standing motor twitch and Wi-Fi write timeout on physical bridge`). These slices are already merged. Do not rebuild them:
 
-- Branch: `task/zekihxh/postgres-api`
-- Commit: `7534778` (`753477870e3d911fbeb94b622641645c8f2c7f31`)
-- Base at branch creation: `2922c1d`. `origin/main` later moved to `52a74ff` (robot hardware PR #9 only). GitHub reported the PR `MERGEABLE` on 2026-11-04. Fetch before assuming that is still true.
-- Board ready note: https://github.com/AlanDD13/Big_AI_hackathon/issues/1#issuecomment-6636817017
+- PR #5: HTTP stream and `migrations/007_runtime_grants.sql`. Grants are already applied.
+- PR #11: observation persistence.
+- PR #13: `POST /api/missions` queues one live mission. It is not a robot command.
+- PR #14: vision ingest on the dashboard stream.
+- PR #16: vision rows in `rover_backend`.
+- PR #24: vision writes stay atomic and keep the shared pickup policy.
+- PR #26 and PR #30: camera proxy, then manual HTTP client reuse outside the motion deadline.
+- PR #29: session-bound manual chassis forwarding with bridge-restart fencing.
+- PR #31 and PR #32: dashboard manual adapter and the default-off physical bench gate. Those are frontend-owned. Do not edit `frontend/**`.
 
-Already on `main` from earlier backend work: PR #5, merge `3d5f57b`, including `56579b4` / `migrations/007_runtime_grants.sql`. Do not open another grants PR.
+Open, not merged, as of this note:
+
+- PR #33, `task/zekihxh/demo-sector`, head `2040e8d`. Display-only `demoSector` on a confirmed inanimate trash classification. `dispatchEligible` stays false. It is not an observation.
+- PR #34, `task/AlanDD13/manual-clock-skew`, head `dc8f7af`. Alan owns this. It allows `issuedAt` up to 100 ms ahead in both `backend/manual_requests.py` and `robot/safety.py`. Do not edit either file while this PR is open. Do not duplicate the allowance on another branch.
+- PR #35, `task/zekihxh/board-tests`, head `18fccd2`. Windows board tests only (`tests/test_board.py`). Not a backend behavior change.
+- PR #36, `task/zekihxh/manual-gate-latency`, head `88cb374`. Held-direction gate fix. See below.
+
+The previous handoff branch `task/zekihxh/codex-handoff` at `7b55ac2` describes `main` at `7fb18c6`. Ignore it. Its `NEXT.md` instruction to branch `task/zekihxh/mission-http` is finished.
+
+## Manual hold, which is the live backend bug
+
+On main, every drive waits for `PostgresManualGate` before it is forwarded. That gate opened a new database connection per drive. A 250 ms intent that expires during the check becomes `409 STALE_INTENT`, and `end_session` stop-latches the lease. The dashboard then needs a re-arm. Four different failures share that same code: a future `issuedAt`, an intent already expired on arrival, an intent that expires during the gate, and a duplicate sequence.
+
+PR #36 changes only `backend/manual_proxy.py` and its tests:
+
+- The exclusion query still runs on every drive. One connection is reused. The yes/no answer is not cached. `rollback()` after each read lets the next tick see a newly committed mission.
+- A drive that was valid on arrival and whose `expiresAt` has passed after the gate is not forwarded. The response is `409 INTENT_EXPIRED`. The lease stays. The sequence is consumed, so that tick cannot be replayed.
+- Stop, release, a duplicate sequence, and an intent that is already stale on arrival still stop-latch.
+
+Main still rejects any future `issuedAt`. PR #34 is the 100 ms allowance, and the robot copy in `robot/safety.py` must land with it. A backend-only reload leaves the robot rejecting a 1 ms-ahead `issuedAt`. Do not reload `192.168.5.126:8000` or the bridge.
+
+`frontend/src/manualBackend.ts` (LcyShox) still revokes the lease on any rejection and when the round trip exceeds 250 ms. PR #36 alone does not make a held direction continuous until that client treats `INTENT_EXPIRED` as a missed tick. Do not edit that file unless LcyShox hands it over.
+
+Backend suite on `88cb374`: 98 passed, 19 skipped. The skipped tests need a disposable `BACKEND_TEST_DATABASE_URL`. Do not point them at the shared Supabase URL.
 
 ## What the API does now
 
-FastAPI routes in `backend/app.py`:
+FastAPI routes in `backend/app.py` include health, session, snapshot, SSE, evidence, observations, missions, detections, classifications, vision events, the camera proxy, and `/api/manual/{lease,drive,release,stop,rearm}`.
 
-- `GET /healthz`
-- `POST /api/session` sets an HttpOnly `session` cookie. `SameSite=Lax`. Secure unless `BACKEND_COOKIE_SECURE=0`.
-- `GET /api/snapshot` and `GET /api/events` (SSE). `Last-Event-ID` wins over `after`. An unknown, expired, or foreign cursor returns `snapshot_required` and no id.
-- `GET /api/evidence/{evidence_id}`
-- `POST /api/observations` accepts only `MappingEvidence`, bearer `PEER_TOKEN`. A demo sector body (`demoPointM`, `mapId: demo-grid`) returns 422.
-
-`dispatchEligible` stays false until mission policy passes. `potentialTarget` means stationarity only. Object and alert bodies follow the vision fixture shape from `origin/task/AlanDD13/vision-pipeline` commit `2f8e5f6`: nested `mapping`, `eligibilityReason`, alert `type` / `eventId` / `acknowledged` / `createdAt`. Vision-only fields (`bboxPx`, detector label, classification) stay null or `PENDING` because `MappingEvidence` does not carry them. Wire object id is `cameraId:sessionId:trackId`. Postgres primary keys stay UUID.
-
-`PostgresObservationLog` in `backend/postgres_projection.py` saves through `PostgresEvidenceStore.record_observation` and reloads joined rows on startup. `event_id_for` uses `X-Vision-Event-Id` or `mapping:camera:session:geometry:track:frame`. Storage failures become HTTP 503 `STORAGE_UNAVAILABLE` with a generic message. Do not put the connection string in that message. `app_from_env` reads `BACKEND_DATABASE_URL` from the environment only and appends `sslmode=require` when missing. Session cursors stay in memory, so a restart changes `backendBootId` and forces a new snapshot.
-
-These libraries are not called by the HTTP process yet: `collection.py`, `dispatch.py`, `mission_policy.py`, `postgres_collection.py`, `postgres_dispatch.py`. `grok_intent.py` only decodes local action names. `bridge_client.py` interprets simulator replies and does not open a socket.
+- `POST /api/observations` accepts only `MappingEvidence`, bearer `PEER_TOKEN`. A demo-grid body (`mapId: demo-grid`, `calibrated: false`) returns 422. Display `demoSector` must not be stored through this route.
+- `POST /api/missions` queues one live mission and does not dispatch.
+- `dispatchEligible` stays false. A queued mission, snapshot, Grok advisory, command ACK, or `visualPickupAdvisory` is not permission to drive or pick up.
+- Manual stage `UNKNOWN` is not mission state `unknown`. Mission `unknown` is `409 AUTONOMOUS_ACTIVE`. Manual `UNKNOWN` is `503 TELEMETRY_STALE` on lease and drive, and `409 NOT_STOPPED` on rearm. Confirmed `STOPPED` is `409 STOP_LOCKED`. Rearm from `STOPPED` returns `IDLE`, motion false, and does not restore the lease. A clean release returns 200, stage `UNKNOWN`, `stationaryConfirmed` false, `stationarySamples` 0.
+- A bridge must not report command `STOPPED` while the chassis stage is `UNKNOWN`, because the backend treats command `STOPPED` as terminal. `404 UNKNOWN_COMMAND` must not be resent.
+- Session cookie is HttpOnly, Secure, `SameSite=Lax`. `BACKEND_COOKIE_SECURE=0` is only for local http. SSE: `Last-Event-ID` wins over `after`. An unknown, expired, or foreign cursor returns `snapshot_required`. Session cursors stay in memory, so a restart changes `backendBootId`.
+- Wire object id is `cameraId:sessionId:trackId`. Postgres primary keys stay UUID.
+- Storage failures are HTTP 503 `STORAGE_UNAVAILABLE` with a generic message. Do not put the connection string in that message. `app_from_env` reads `BACKEND_DATABASE_URL` from the environment only and appends `sslmode=require` when it is missing.
 
 ## Database
 
-Supabase project `buojgmoumyzqxmerckjm` (`eu-west-1`). Schema `rover_backend` already exists. Migrations `001` through `007` are applied. Eight tables. Grants are `USAGE` on the schema, `SELECT`/`INSERT`/`UPDATE`/`DELETE` on tables, and `EXECUTE` on functions, only for `rover_backend_runtime`. `public` was not changed. Do not re-apply the migrations. Do not grant `anon` or `authenticated`. Do not expose `rover_backend` through PostgREST.
+Supabase project `buojgmoumyzqxmerckjm` (`eu-west-1`). Schema `rover_backend`. Migrations `001` through `007` are applied. Grants are only for `rover_backend_runtime`. Do not re-apply the migrations. Do not grant `anon` or `authenticated`. Do not expose `rover_backend` through PostgREST. Credentials stay in gitignored `backend/.env` and off the board.
 
-Credentials live only in gitignored `backend/.env`. Do not print them, commit them, or paste them on the board. Tests must use `BACKEND_TEST_DATABASE_URL` on a disposable database. Do not point tests at the shared Supabase URL.
+## Do not do these
 
-Verified on disposable PostgreSQL 18 using the scoped runtime role. All 34 Python tests and four SQL smoke tests passed. New observations preserve the original wire payload, producer metadata and alternate event IDs across restart. Legacy rows still load from the fields they originally stored. A retry with original fields that were never stored can still return 409 for those legacy rows.
-
-## Contracts and teammates
-
-Board: https://github.com/AlanDD13/Big_AI_hackathon/issues/1. `board.conf` is CRLF, so Git Bash rejects `BOARD_ISSUE` from the file. Override it:
-
-```powershell
-$env:BOARD_REPO = "AlanDD13/Big_AI_hackathon"
-$env:BOARD_ISSUE = "1"
-```
-
-Then `tools/board unread` through Git Bash. Reply only when the backend must answer or ask. Do not post acknowledgements.
-
-Do not re-answer these settled notes:
-
-- No multi-frame detections route. A 1 m demo cell needs `positionErrorM` covering the cell (about 0.5 m or more) or `valid: false`. It must not pass the 0.025 m gate.
-- Tezqx waypoint bursts are not `MappingEvidence`.
-- Root pytest on Alan's branch `7c9df0a` includes `backend/tests`. No further reply.
-- Manual stage `UNKNOWN` is not mission state `unknown`. Mission `unknown` stays `409 AUTONOMOUS_ACTIVE`.
-- While manual stage is `UNKNOWN`: lease and drive return `503 TELEMETRY_STALE`, rearm returns `409 NOT_STOPPED`.
-- After three fresh stationary samples, a stop, watchdog silence, expiry, or telemetry fault latches `STOPPED`: lease and drive return `409 STOP_LOCKED`. Rearm then returns `IDLE` with motion false and does not restore the lease.
-- A clean release returns `200` with `stage: UNKNOWN`, `stationaryConfirmed: false`, `stationarySamples: 0`. Callers poll status. A confirmation timeout stays `UNKNOWN`.
-- Those words are in `contracts/manual-control-v1.md` at `6026078` on `origin/task/AlanDD13/vision-pipeline`. They are not on `main`. Alan owns `contracts/**`.
-
-Robot draft PR #10 (`4dfed46`, `task/platonyesin-dev/watchdog`) is changes needed. Physical acceptance is blocked: an explicit stop still reported about `-0.04` to `-0.07` m/s, so `UNKNOWN` correctly refused rearm. `:8004` is not live. Do not call `http://192.168.5.194:8004` or Alan's vision service `http://192.168.5.192:8002`. Do not add `/api/manual/*` until platonyesin-dev posts a live bridge URL and the manual contract is on the branch you are implementing.
+- Do not call port `8004`, the vision server `https://192.168.5.192:8443`, or a DJI SDK session.
+- Do not start or reload `192.168.5.126:8000`. Alan's Mac saw `/healthz` 200 there. This Windows session did not start that process.
+- Do not send lease, drive, rearm, or stop to the physical bridge. The bridge was last intentionally stopped. Last reported boot `95d8b1ddf1b3483a9cab93a983dbefda` was offline. `http://192.168.5.194:8004/health` was connection refused.
+- Do not add recovery HTTP or another `/api/manual/*` action. Do not wire the LangGraph physical adapter. PR #19 is merged as a simulator-first loop. `contracts/recovery-tools-v1.md` is not an agreed physical API. Pickup and place stay rejected until a separate macro and status contract exists.
+- Do not implement Alan's 2026-11-05 route claim (`task/AlanDD13/route-pickup-return`: forward 0.30 m, right 90 degrees, forward 1.54 m, Grok pickup, return while holding the can). That claim is `robot/**` and is addressed to platonyesin. Board comment `#6658920756`.
+- Alan posted a `PEER_TOKEN` on the board. Do not repeat it, copy it into code, or commit it.
 
 ## Tools on this machine
 
@@ -81,11 +89,10 @@ Robot draft PR #10 (`4dfed46`, `task/platonyesin-dev/watchdog`) is changes neede
 - Git Bash: `C:\Program Files\Git\bin\bash.exe`
 - GitHub CLI: `C:\Program Files\GitHub CLI\gh.exe`
 
-PowerShell does not accept `&&` or a bash heredoc. Pass commit messages with repeated `git commit -m` arguments, or a bash script file. The old Cursor watcher was stopped. The Codex board watcher uses the read-only GitHub connector and does not consume this checkout's unread cursor.
+PowerShell does not accept `&&` or a bash heredoc. Pass commit messages with repeated `git commit -m` arguments. `board.conf` is CRLF, so set `BOARD_REPO=AlanDD13/Big_AI_hackathon` and `BOARD_ISSUE=1` in the process environment before `tools/board`. Reply only when the backend must answer or ask. Do not post acknowledgements.
 
-## Board notes already marked read
+From the checkout root:
 
-The stopped watcher consumed these comments, so `tools/board unread` will not show them again. Do not post an acknowledgement.
-
-- `#6636640820` Tezqx asked vision and backend to make Grok return only a grid sector such as `A1`, with no pixel or metre coordinates. `#6636663251` Alan rejected that. An LLM sector is not calibrated `MappingEvidence` and cannot pass stationarity. `mapping/` may project `contactPointPx` and mark the result uncalibrated. `POST /api/observations` keeps rejecting demo sector bodies. Do not add a sector field unless Alan adds an explicit uncalibrated `demoSector` that stays ineligible.
-- `#6636659691` Alan added advisory graspability on `origin/task/AlanDD13/vision-pipeline` at `8445397` (`LIKELY_GRASPABLE`, `TOO_LARGE`, `TOO_SMALL`, `UNKNOWN_SCALE`). It is not an eligibility decider. Physical gripper measurements are for `@platonyesin-dev`, not backend. Do not treat that verdict as `dispatchEligible`. No backend code until a contract field exists.
+```powershell
+& "C:\Users\Nurbol Karimov\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" -m unittest discover -s backend/tests -v
+```
