@@ -186,36 +186,71 @@ def _fit_polygon(contour: np.ndarray) -> list[tuple[float, float]]:
     return [(float(x), float(y)) for x, y in ordered]
 
 
+def _floor_roi(height: int, width: int) -> np.ndarray:
+    """The phone is fixed. Drop the upper wall and the garage doors on the right."""
+    roi = np.zeros((height, width), dtype=np.uint8)
+    top = int(height * 0.22)
+    right = int(width * 0.80)
+    roi[top:, :right] = 255
+    return roi
+
+
 def _wood_floor_contour(image: np.ndarray) -> np.ndarray | None:
-    """Isolate the light wooden floor. Dark clothes, furniture, and screens stay out."""
+    """Isolate the light wooden floor. White walls and doors stay outside the hull."""
     height, width = image.shape[:2]
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
     hue, saturation, value = cv2.split(hsv)
     lightness = lab[:, :, 0]
     warmth = lab[:, :, 2]
-    wood = (
-        (hue >= 5)
-        & (hue <= 45)
-        & (saturation >= 8)
-        & (saturation <= 170)
-        & (value >= 85)
-        & (lightness >= 100)
-        & (warmth >= 128)
-    )
-    if int(wood.sum()) < 0.04 * height * width:
-        return None
-    median = np.median(lab[wood], axis=0)
+    white = (saturation <= 32) & (value >= 150)
+    y0, y1 = int(height * 0.68), int(height * 0.90)
+    x0, x1 = int(width * 0.28), int(width * 0.62)
+    patch = lab[y0:y1, x0:x1]
+    patch_hsv = hsv[y0:y1, x0:x1]
+    patch_sat = float(np.median(patch_hsv[:, :, 1])) if patch_hsv.size else 0.0
+    patch_warm = float(np.median(patch[:, :, 2])) if patch.size else 0.0
+    if patch.size and patch_sat >= 18 and patch_warm >= 132:
+        median = np.median(patch.reshape(-1, 3), axis=0)
+    else:
+        seed = (
+            (hue >= 8)
+            & (hue <= 36)
+            & (saturation >= 25)
+            & (saturation <= 140)
+            & (value >= 90)
+            & (value <= 220)
+            & (warmth >= 132)
+            & ~white
+        )
+        if int(seed.sum()) < 0.04 * height * width:
+            return None
+        median = np.median(lab[seed], axis=0)
     delta = lab.astype(np.int16) - median.reshape(1, 1, 3).astype(np.int16)
     chroma = np.sqrt(delta[:, :, 1].astype(np.float32) ** 2 + delta[:, :, 2].astype(np.float32) ** 2)
+    light_delta = np.abs(lightness.astype(np.int16) - int(median[0]))
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     activity = cv2.GaussianBlur(
         cv2.convertScaleAbs(cv2.Laplacian(gray, cv2.CV_16S, ksize=3)),
         (21, 21),
         0,
     )
-    keep = (chroma < 22) & (lightness >= 95) & (value >= 75) & (activity < 28)
+    keep = (
+        (chroma < 18)
+        & (light_delta < 40)
+        & (hue >= 8)
+        & (hue <= 36)
+        & (saturation >= 22)
+        & (saturation <= 140)
+        & (value >= 80)
+        & (value <= 230)
+        & (lightness >= 90)
+        & (warmth >= 132)
+        & (activity < 28)
+        & ~white
+    )
     mask = keep.astype(np.uint8) * 255
+    mask = cv2.bitwise_and(mask, _floor_roi(height, width))
     opened = cv2.morphologyEx(
         mask,
         cv2.MORPH_OPEN,
@@ -226,6 +261,7 @@ def _wood_floor_contour(image: np.ndarray) -> np.ndarray | None:
         cv2.MORPH_CLOSE,
         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25)),
     )
+    closed = cv2.bitwise_and(closed, _floor_roi(height, width))
     contour = _largest_contour(closed)
     if contour is None:
         return None

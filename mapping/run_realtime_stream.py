@@ -1,8 +1,10 @@
 """Stream the phone camera with the convex floor grid and confirmed trash labels.
 
 The desktop window and http://localhost:5051 open on startup. A capture thread
-keeps only the newest phone frame. The floor mask and detector run a few times
-a second, and every other frame redraws that last grid and those last boxes.
+keeps only the newest phone frame. The first frame asks for four floor corners.
+Those clicks lock a homography, and later frames only redraw that perspective
+grid, so a rover on the wood cannot move the sectors. The detector still runs
+a few times a second.
 Grok is asked only when a box appears away from a label already cached.
 Row A is the top of the detected floor. The metres are the uncalibrated
 demo-grid estimate and are not MappingEvidence. includePickup stays false.
@@ -31,10 +33,13 @@ import auto_dynamic_tracker as tracker
 import calibrate_and_test_new_photo as floor
 import test_live_ip_camera as live
 import test_trash_detection as trash
-from grid_mapper import sector_to_coordinates
+from grid_mapper import GRID_COLUMNS, GRID_ROWS, sector_to_coordinates
 
 VIDEO_URL = "http://192.168.5.146:8081/video"
 WINDOW = "Live Floor Grid & Trash Tracker"
+CALIBRATE_WINDOW = "Select 4 Floor Corners"
+CORNER_NAMES = ("Bottom-Left", "Bottom-Right", "Top-Right", "Top-Left")
+ARENA = 2000.0
 
 
 def _as_bool(value: str | None, default: bool) -> bool:
@@ -50,16 +55,46 @@ def _setting(name: str) -> str:
 USE_GROK = _as_bool(_setting("USE_GROK"), True)
 VIEWER_PORT = int(_setting("VIEWER_PORT") or "5051")
 PAGE_URL = f"http://localhost:{VIEWER_PORT}"
-CONF_THRESHOLD = 0.12
+CONF_THRESHOLD = 0.20
 BLACK_MEAN = 15.0
 TRACK_INTERVAL = 0.3
 MATCH_PX = 100.0
+# Local names only. Floor brightness blobs are not trash; Grok still confirms those.
+TRASH_WORDS = (
+    "bottle",
+    "can",
+    "tin",
+    "soda",
+    "beverage",
+    "drink",
+    "redbull",
+    "cup",
+    "mug",
+    "paper",
+    "tissue",
+    "wrapper",
+    "carton",
+    "cardboard",
+    "box",
+    "plastic",
+    "aluminum",
+    "aluminium",
+    "trash",
+    "garbage",
+    "litter",
+    "packet",
+    "crumpled",
+)
 
 _lock = threading.Lock()
 _stop = threading.Event()
 latest_frame: np.ndarray | None = None
 _latest_jpeg: bytes | None = None
 _points: list[tuple[float, float]] = []
+_locked_points: list[tuple[float, float]] | None = None
+_locked_matrix: np.ndarray | None = None
+_locked_inverse: np.ndarray | None = None
+_clicks: list[tuple[float, float]] = []
 _hits: list[dict[str, object]] = []
 _cache: list[dict[str, object]] = []
 _rejected: list[tuple[float, float, float]] = []
@@ -200,7 +235,7 @@ def _yolo_boxes(image: np.ndarray) -> list[dict[str, object]]:
         results = model.predict(
             source=image,
             conf=CONF_THRESHOLD,
-            imgsz=416,
+            imgsz=640,
             device=_device_once(),
             verbose=False,
         )
@@ -229,6 +264,31 @@ def _yolo_boxes(image: np.ndarray) -> list[dict[str, object]]:
     return boxes
 
 
+# The prompt-free model calls the dark floor can "remote". An upright box is a can.
+CAN_MISREAD = ("remote", "cell phone", "mobile phone", "flashlight", "battery")
+
+
+def _can_shaped(bbox: tuple[float, float, float, float], width: int, height: int) -> bool:
+    x1, y1, x2, y2 = bbox
+    box_w = x2 - x1
+    box_h = y2 - y1
+    if box_w < 12 or box_h < 28:
+        return False
+    if box_w > 0.16 * width or box_h > 0.35 * height:
+        return False
+    return 1.4 <= (box_h / box_w) <= 4.2
+
+
+def _looks_like_trash(label: str) -> bool:
+    """True when a detector name is a trash word. 'floor-blob' is never trash."""
+    text = label.lower()
+    if "floor-blob" in text or live._banned(text):
+        return False
+    if "red bull" in text:
+        return True
+    return any(re.search(rf"\b{re.escape(word)}\b", text) for word in TRASH_WORDS)
+
+
 def _label_name(classification: dict, source: str) -> str:
     """Name the object from the description, ignoring a later 'rather than' phrase."""
     head = str(classification.get("description") or "").lower().split("rather than", 1)[0]
@@ -239,9 +299,10 @@ def _label_name(classification: dict, source: str) -> str:
     return live._grok_name(classification, source)
 
 
-def _center(bbox: tuple[float, float, float, float]) -> tuple[float, float]:
-    x1, y1, x2, y2 = bbox
-    return (x1 + x2) / 2, (y1 + y2) / 2
+def _floor_contact(bbox: tuple[float, float, float, float]) -> tuple[float, float]:
+    """Bottom-centre of the box, the point that sits on the floor."""
+    x1, _y1, x2, y2 = bbox
+    return (x1 + x2) / 2, y2
 
 
 def _near(cx: float, cy: float, other_x: float, other_y: float) -> bool:
@@ -258,6 +319,82 @@ def _scale_box(item: dict[str, object], scale: float) -> dict[str, object]:
     return {**item, "bbox": (x1 * scale, y1 * scale, x2 * scale, y2 * scale)}
 
 
+def _on_corner(event: int, x: int, y: int, _flags: int, _param: object) -> None:
+    if event == cv2.EVENT_LBUTTONDOWN and len(_clicks) < 4:
+        _clicks.append((float(x), float(y)))
+
+
+def _select_corners(frame: np.ndarray) -> bool:
+    """Four clicks define the arena. Order: bottom-left, bottom-right, top-right, top-left."""
+    global _clicks, _locked_points, _locked_matrix, _locked_inverse
+    _clicks = []
+    preview = cv2.resize(frame, (1280, 720), interpolation=cv2.INTER_AREA)
+    scale_x = frame.shape[1] / 1280
+    scale_y = frame.shape[0] / 720
+    cv2.namedWindow(CALIBRATE_WINDOW, cv2.WINDOW_AUTOSIZE)
+    cv2.setMouseCallback(CALIBRATE_WINDOW, _on_corner)
+    print("Click Bottom-Left, Bottom-Right, Top-Right, Top-Left", flush=True)
+    while len(_clicks) < 4 and not _stop.is_set():
+        canvas = preview.copy()
+        cv2.putText(
+            canvas,
+            f"Click {CORNER_NAMES[len(_clicks)]} ({len(_clicks) + 1}/4)",
+            (24, 48),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.0,
+            (0, 255, 0),
+            2,
+            cv2.LINE_AA,
+        )
+        for index, (px, py) in enumerate(_clicks):
+            cv2.circle(canvas, (int(px), int(py)), 7, (0, 255, 0), -1)
+        if len(_clicks) >= 2:
+            chain = np.array(_clicks, dtype=np.int32).reshape(-1, 1, 2)
+            cv2.polylines(canvas, [chain], False, (0, 255, 0), 2)
+        cv2.imshow(CALIBRATE_WINDOW, canvas)
+        if cv2.waitKey(20) & 0xFF in {ord("q"), 27}:
+            cv2.destroyWindow(CALIBRATE_WINDOW)
+            return False
+    cv2.destroyWindow(CALIBRATE_WINDOW)
+    if len(_clicks) < 4:
+        return False
+    full = [(px * scale_x, py * scale_y) for px, py in _clicks]
+    source = np.float32(full)
+    destination = np.float32([[0, ARENA], [ARENA, ARENA], [ARENA, 0], [0, 0]])
+    _locked_points = full
+    _locked_matrix = cv2.getPerspectiveTransform(source, destination)
+    _locked_inverse = cv2.getPerspectiveTransform(destination, source)
+    print("floor_locked homography corners 4", flush=True)
+    print("calibrated false  mapId demo-grid  metres are a sector estimate", flush=True)
+    return True
+
+
+def _project(metric_points: list[list[float]]) -> np.ndarray:
+    pts = np.float32(metric_points).reshape(-1, 1, 2)
+    return cv2.perspectiveTransform(pts, _locked_inverse).reshape(-1, 2)
+
+
+def _sector_from_lock(cx: float, cy: float) -> str | None:
+    """Name the cell of a floor-contact point in the locked top-down arena."""
+    if _locked_points is None or _locked_matrix is None:
+        return None
+    polygon = np.float32(_locked_points).reshape(-1, 1, 2)
+    if cv2.pointPolygonTest(polygon, (float(cx), float(cy)), False) < 0:
+        return None
+    mapped = cv2.perspectiveTransform(np.float32([[[cx, cy]]]), _locked_matrix)
+    x = float(mapped[0, 0, 0])
+    y = float(mapped[0, 0, 1])
+    if not np.isfinite(x) or not np.isfinite(y):
+        return None
+    if x < -1 or y < -1 or x > ARENA + 1 or y > ARENA + 1:
+        return None
+    x = min(max(x, 0.0), ARENA - 1e-3)
+    y = min(max(y, 0.0), ARENA - 1e-3)
+    column = min(GRID_COLUMNS, int(x / (ARENA / GRID_COLUMNS)) + 1)
+    row = min(GRID_ROWS - 1, int(y / (ARENA / GRID_ROWS)))
+    return f"{chr(ord('A') + row)}{column}"
+
+
 def _proposals(image: np.ndarray, points: list[tuple[float, float]]) -> list[dict[str, object]]:
     height, width = image.shape[:2]
     small = _half(image)
@@ -265,8 +402,11 @@ def _proposals(image: np.ndarray, points: list[tuple[float, float]]) -> list[dic
     polygon = np.float32(small_points).reshape(-1, 1, 2)
     mask = np.zeros(small.shape[:2], dtype=np.uint8)
     cv2.fillPoly(mask, [polygon.astype(np.int32)], 255)
-    boxes = [_scale_box(item, 2.0) for item in _yolo_boxes(small)]
-    boxes.extend(_scale_box(item, 2.0) for item in live._floor_blobs(small, mask, polygon))
+    boxes = _yolo_boxes(image)
+    # Bright and dark patches are only sent to Grok. Without that check they
+    # were drawn on chairs, bags, and coats.
+    if USE_GROK:
+        boxes.extend(_scale_box(item, 2.0) for item in live._floor_blobs(small, mask, polygon))
     polygon = np.float32(points).reshape(-1, 1, 2)
     kept: list[dict[str, object]] = []
     for item in boxes:
@@ -275,18 +415,24 @@ def _proposals(image: np.ndarray, points: list[tuple[float, float]]) -> list[dic
         x1, y1, x2, y2 = item["bbox"]
         if score < CONF_THRESHOLD:
             continue
-        if item.get("source") != "yolo" and live._banned(label):
+        if item.get("source") == "yolo" and label.lower() in CAN_MISREAD and _can_shaped(item["bbox"], width, height):
+            label = "can"
+            item = {**item, "label": label}
+        if item.get("source") != "yolo":
+            if live._banned(label):
+                continue
+        elif not USE_GROK and not _looks_like_trash(label):
             continue
         if live._overlaps_overlay(item["bbox"], width, height):
             continue
-        if (x2 - x1) * (y2 - y1) > 0.04 * width * height:
+        if (x2 - x1) * (y2 - y1) > 0.18 * width * height:
             continue
-        if (x2 - x1) > 0.28 * width or (y2 - y1) > 0.28 * height:
+        if (x2 - x1) > 0.50 * width or (y2 - y1) > 0.50 * height:
             continue
-        cx, cy = _center(item["bbox"])
+        cx, cy = _floor_contact(item["bbox"])
         if cv2.pointPolygonTest(polygon, (float(cx), float(cy)), False) <= 0:
             continue
-        sector = tracker._floor_sector(points, polygon, cx, cy)
+        sector = _sector_from_lock(cx, cy)
         if sector is None:
             continue
         kept.append({**item, "sector": sector, "cx": cx, "cy": cy})
@@ -353,12 +499,10 @@ def _track_once(image: np.ndarray) -> None:
     """Move cached labels with the detector. Grok is only queued for a new center."""
     global _points, _hits, _cache
     started = time.monotonic()
-    points = [(x * 2, y * 2) for x, y in tracker._floor_polygon(_half(image))]
+    if _locked_points is None:
+        return
+    points = list(_locked_points)
     with _lock:
-        if len(points) < 3:
-            points = list(_points)
-        if len(points) < 3:
-            return
         _points = points
     proposals = _proposals(image, points)
     now = time.monotonic()
@@ -518,23 +662,65 @@ def _track_loop() -> None:
             return
 
 
+def _draw_perspective(canvas: np.ndarray, scale_x: float, scale_y: float) -> None:
+    """Project the flat 4x4 arena back into the camera. The outline stays the four clicks."""
+    if _locked_inverse is None or _locked_points is None:
+        return
+    grid_color = (255, 255, 0)
+    for index in range(GRID_COLUMNS + 1):
+        metric_x = index * ARENA / GRID_COLUMNS
+        start, end = _project([[metric_x, 0], [metric_x, ARENA]])
+        cv2.line(
+            canvas,
+            (int(start[0] * scale_x), int(start[1] * scale_y)),
+            (int(end[0] * scale_x), int(end[1] * scale_y)),
+            grid_color,
+            2,
+        )
+    for index in range(GRID_ROWS + 1):
+        metric_y = index * ARENA / GRID_ROWS
+        start, end = _project([[0, metric_y], [ARENA, metric_y]])
+        cv2.line(
+            canvas,
+            (int(start[0] * scale_x), int(start[1] * scale_y)),
+            (int(end[0] * scale_x), int(end[1] * scale_y)),
+            grid_color,
+            2,
+        )
+    polygon = np.array(
+        [[point[0] * scale_x, point[1] * scale_y] for point in _locked_points],
+        dtype=np.int32,
+    ).reshape(-1, 1, 2)
+    cv2.polylines(canvas, [polygon], True, (0, 255, 0), 3)
+    for row in range(GRID_ROWS):
+        for column in range(GRID_COLUMNS):
+            metric_x = (column + 0.5) * ARENA / GRID_COLUMNS
+            metric_y = (row + 0.5) * ARENA / GRID_ROWS
+            pixel = _project([[metric_x, metric_y]])[0]
+            tracker._draw_badge(
+                canvas,
+                f"{chr(ord('A') + row)}{column + 1}",
+                (int(pixel[0] * scale_x) - 28, int(pixel[1] * scale_y) + 8),
+                (255, 255, 255),
+            )
+
+
 def _annotate(
     frame: np.ndarray,
-    points: list[tuple[float, float]],
     hits: list[dict[str, object]],
+    scale_x: float,
+    scale_y: float,
 ) -> np.ndarray:
-    """Draw the last floor grid and the last boxes. No detector work here."""
-    if len(points) < 3:
-        return frame
-    polygon = np.float32(points).reshape(-1, 1, 2)
-    mask = np.zeros(frame.shape[:2], dtype=np.uint8)
-    cv2.fillPoly(mask, [polygon.astype(np.int32)], 255)
-    tracker._draw_floor(frame, points, polygon, mask)
+    """Draw the locked perspective grid and the last boxes. No detector work here."""
+    _draw_perspective(frame, scale_x, scale_y)
     for item in hits:
+        label = str(item["label"])
+        if "floor-blob" in label.lower():
+            continue
         x1, y1, x2, y2 = item["bbox"]
         p1 = (int(round(x1)), int(round(y1)))
         cv2.rectangle(frame, p1, (int(round(x2)), int(round(y2))), (0, 255, 0), 3)
-        tracker._draw_label(frame, f"[{item['sector']}] {item['label']}", (p1[0], p1[1] - 8))
+        tracker._draw_label(frame, f"[{item['sector']}] {label}", (p1[0], p1[1] - 8))
     return frame
 
 
@@ -592,6 +778,21 @@ def main() -> int:
     cv2.imshow(WINDOW, connecting)
     cv2.waitKey(1)
     threading.Thread(target=_capture_loop, daemon=True).start()
+    frame = None
+    while frame is None and not _stop.is_set():
+        with _lock:
+            frame = None if latest_frame is None else latest_frame.copy()
+        cv2.imshow(WINDOW, connecting)
+        if cv2.waitKey(30) & 0xFF in {ord("q"), 27}:
+            _stop.set()
+            cv2.destroyAllWindows()
+            return 0
+    if frame is None or not _select_corners(frame):
+        _stop.set()
+        cv2.destroyAllWindows()
+        return 0
+    with _lock:
+        _points = list(_locked_points or [])
     threading.Thread(target=_track_loop, daemon=True).start()
     if USE_GROK:
         threading.Thread(target=_grok_loop, daemon=True).start()
@@ -600,7 +801,6 @@ def main() -> int:
     while not _stop.is_set():
         with _lock:
             frame = None if latest_frame is None else latest_frame.copy()
-            points = list(_points)
             hits = list(_hits)
         if frame is None:
             shown = _status_frame("Connecting to phone camera...")
@@ -617,11 +817,7 @@ def main() -> int:
                         "bbox": (x1 * scale_x, y1 * scale_y, x2 * scale_x, y2 * scale_y),
                     }
                 )
-            shown = _annotate(
-                preview,
-                [(x * scale_x, y * scale_y) for x, y in points],
-                scaled_hits,
-            )
+            shown = _annotate(preview, scaled_hits, scale_x, scale_y)
         if time.monotonic() - _last_publish >= 0.08:
             _publish(shown)
         cv2.imshow(WINDOW, shown)
