@@ -20,8 +20,8 @@ def test_paper_profile_keeps_small_floor_objects_and_safety_classes():
             self.names = dict(enumerate(classes))
         def predict(self, **kwargs):
             self.calls.append(kwargs)
-            return [SimpleNamespace(names=self.names, boxes=[SimpleNamespace(
-                xyxy=[Array()], cls=[0], conf=[.32])])]
+            return [SimpleNamespace(names=self.names, boxes=SimpleNamespace(cpu=lambda: [SimpleNamespace(
+                xyxy=[Array()], cls=[0], conf=[.32])]))]
     data = BytesIO(); Image.new('RGB', (1000, 1000)).save(data, 'JPEG')
     with patch.dict('sys.modules', {'ultralytics': SimpleNamespace(YOLOE=Model)}):
         detector = YoloDetector(model='yoloe-26s-seg.pt', device='cpu', profile='paper')
@@ -74,7 +74,7 @@ def test_tiled_paper_proposals_keep_original_coordinates_and_living_exclusions()
             self.calls += 1
             label = 'person' if self.calls == 1 else 'paper ball'
             box = SimpleNamespace(xyxy=[Array()], cls=[list(self.names.values()).index(label)], conf=[.18])
-            return [SimpleNamespace(names=self.names, boxes=[box])]
+            return [SimpleNamespace(names=self.names, boxes=SimpleNamespace(cpu=lambda: [box]))]
     out = BytesIO(); Image.new('RGB', (640, 480)).save(out, 'JPEG')
     with patch.dict('sys.modules', {'ultralytics': SimpleNamespace(YOLOE=Model)}):
         detector = YoloDetector(model='yoloe-26s-seg.pt', profile='paper', device='cpu')
@@ -95,7 +95,7 @@ def test_zoom_tiles_propose_cans_and_bottles_not_only_paper(label):
             self.calls += 1
             boxes = [] if self.calls == 1 else [SimpleNamespace(
                 xyxy=[Array()], cls=[list(self.names.values()).index(label)], conf=[.7])]
-            return [SimpleNamespace(names=self.names, boxes=boxes)]
+            return [SimpleNamespace(names=self.names, boxes=SimpleNamespace(cpu=lambda: boxes))]
     out = BytesIO(); Image.new('RGB', (640, 480)).save(out, 'JPEG')
     with patch.dict('sys.modules', {'ultralytics': SimpleNamespace(YOLOE=Model)}):
         detector = YoloDetector(model='yoloe-26s-seg.pt', profile='paper', device='cpu')
@@ -116,7 +116,7 @@ def test_prompt_free_detector_boxes_any_object_without_a_class_list():
             self.calls += 1
             boxes = [] if self.calls == 1 else [SimpleNamespace(
                 xyxy=[Array()], cls=[0], conf=[.4])]
-            return [SimpleNamespace(names=self.names, boxes=boxes)]
+            return [SimpleNamespace(names=self.names, boxes=SimpleNamespace(cpu=lambda: boxes))]
     out = BytesIO(); Image.new('RGB', (640, 480)).save(out, 'JPEG')
     with patch.dict('sys.modules', {'ultralytics': SimpleNamespace(YOLOE=Model)}):
         detector = YoloDetector(model='yoloe-26s-seg-pf.pt', profile='default', device='cpu')

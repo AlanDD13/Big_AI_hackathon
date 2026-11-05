@@ -115,7 +115,7 @@ class DetectorTests(unittest.TestCase):
             def tolist(self):
                 return [10, 20, 110, 70]
         box = SimpleNamespace(xyxy=[Array()], cls=[0], conf=[.8])
-        result = SimpleNamespace(boxes=[box], names={0: 'bottle'})
+        result = SimpleNamespace(boxes=SimpleNamespace(cpu=lambda: [box]), names={0: 'bottle'})
         calls = []
         class FakeModel:
             def __init__(self, model):

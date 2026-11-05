@@ -276,20 +276,33 @@ class YoloDetector:
                 # them. The full image still supplies living-object exclusions.
                 width, height = size
                 tile_w, tile_h = math.ceil(width * .6), math.ceil(height * .6)
-                for x in (0, width - tile_w):
-                    for y in (0, height - tile_h):
-                        tile = image.crop((x, y, x + tile_w, y + tile_h))
+                offsets = [(x, y) for x in (0, width - tile_w)
+                           for y in (0, height - tile_h)]
+                tiles = [image.crop((x, y, x + tile_w, y + tile_h)) for x, y in offsets]
+                if self.device == 'mps':
+                    # Equal-size tiles keep the same rectangular preprocessing.
+                    detections.extend(self._predict_images(tiles, offsets))
+                else:
+                    for tile, (x, y) in zip(tiles, offsets):
                         detections.extend(self._predict_image(tile, x, y))
         return curate(detections, size[0], size[1], self.min_confidence, self.min_area_frac,
                       self.max_area_frac, self.max_objects, self.label_thresholds)
 
     def _predict_image(self, image, offset_x=0, offset_y=0):
+        return self._predict_images([image], [(offset_x, offset_y)])
+
+    def _predict_images(self, images, offsets):
         threshold = min(self.confidence, .10) if self.label_thresholds else self.confidence
-        results = self._model.predict(source=image, device=self.device, conf=threshold,
+        source = images[0] if len(images) == 1 else images
+        results = self._model.predict(source=source, device=self.device, conf=threshold,
                                       imgsz=self.image_size, verbose=False)
+        if len(results) != len(images):
+            raise ValueError('Detector result count does not match source images')
         detections = []
-        for result in results:
-            for box in result.boxes:
+        for result, image, (offset_x, offset_y) in zip(results, images, offsets):
+            # Copy boxes only, once per image; per-scalar MPS reads synchronize
+            # the accelerator repeatedly. Segmentation masks are not consumed.
+            for box in result.boxes.cpu():
                 label = result.names[int(box.cls[0])]
                 raw = tuple(float(v) for v in box.xyxy[0].tolist())
                 if not (0 <= raw[0] < raw[2] <= image.width and
