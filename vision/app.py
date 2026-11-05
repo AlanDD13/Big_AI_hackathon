@@ -10,7 +10,7 @@ import secrets
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
-from vision.models import MappingEvidence, TargetRequest
+from vision.models import MappingEvidence, TargetRequest, CameraGrokControl
 from vision.perception import _living
 from vision.publisher import Publisher
 from vision.service import VisionService
@@ -125,6 +125,9 @@ def create_app(settings=None, detector=None, classifier=None, run_workers=True):
                 "detectorProfile": getattr(service.detector, "profile", "default"),
                 "detectorModel": getattr(service.detector, "model_name", None),
                 "liveClassificationConfigured": bool(getattr(service.classifier, "_key", None)),
+                "automaticClassificationEnabled": any(service.grok_enabled.values()),
+                "automaticClassificationByCamera": dict(service.grok_enabled),
+                "pendingAutomaticClassifications": len(service.classification_tasks),
                 "delivery": {"delivered": publisher.delivered, "failed": publisher.failed,
                              "queued": publisher.queue.qsize(), "lastError": publisher.last_error}}
 
@@ -137,6 +140,24 @@ def create_app(settings=None, detector=None, classifier=None, run_workers=True):
     @app.get("/camera.js")
     async def phone_script():
         return FileResponse(web / "camera.js", media_type="application/javascript")
+
+    def grok_camera_state(camera_id, authorization):
+        check_token(authorization, camera_id)
+        if camera_id not in settings.cameras:
+            raise HTTPException(404, "Camera is not configured")
+        return {"cameraId": camera_id, "enabled": service.grok_enabled[camera_id],
+                "includePickup": True, "pickupVerified": False}
+
+    @app.get("/api/cameras/{camera_id}/grok")
+    async def get_camera_grok(camera_id: str, authorization: str | None = Header(default=None)):
+        return grok_camera_state(camera_id, authorization)
+
+    @app.put("/api/cameras/{camera_id}/grok")
+    async def set_camera_grok(camera_id: str, payload: CameraGrokControl,
+                              authorization: str | None = Header(default=None)):
+        grok_camera_state(camera_id, authorization)
+        await service.set_grok_enabled(camera_id, payload.enabled)
+        return grok_camera_state(camera_id, authorization)
 
     @app.get("/api/cameras", dependencies=[Depends(authorize)])
     async def cameras():
