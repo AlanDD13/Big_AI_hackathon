@@ -33,7 +33,7 @@ vision/.venv/bin/python -m vision --host 127.0.0.1 --port 8443
 Set VISION_MODEL to the local checkpoint path if it is already downloaded.
 The first inference may download weights; warm up before measuring performance.
 Grok uses XAI_API_KEY and optional GROK_VISION_MODEL (default grok-4.7). Without
-an xAI or OpenRouter API key classification is UNAVAILABLE, never simulated as a live result.
+a native xAI API key classification is UNAVAILABLE, never simulated as a live result.
 
 For identification testing, set `VISION_AUTOMATIC_CLASSIFICATION=false` before
 starting the server. Frames and local detection/tracking continue, but stationary
@@ -46,7 +46,7 @@ not disable explicit peer classification/confirmation requests.
 
 The `/camera` page has a **Grok identification + pickup estimate** switch.
 After Start, it reads the server-confirmed state for that camera. ON enables
-the existing stationary-object assessment (two provider calls per new eligible
+the existing stationary-object assessment (one joint provider call per new eligible
 episode); OFF prevents new automatic calls and cancels pending automatic tasks
 for that camera. Requests already received by the provider may still be billed.
 Completed assessments are reused for the same episode. Explicit stateless peer
@@ -79,5 +79,13 @@ an outbound peer or rover bridge requires PEER_TOKEN distinct from VISION_TOKEN.
 Cursor continuation: [handoff](../docs/CURSOR_HANDOFF.md) and
 [project skills/rules](../.cursor/README.md).
 
-Paper detection, Grok 4.7 over OpenRouter, live test results and the viewer's
+Paper detection, Grok 4.7 over native xAI API, live test results and the viewer's
 size calibration/pickup advisory are documented in [PAPER_TEST.md](PAPER_TEST.md).
+# Automatic camera-to-route demo
+
+See [camera-recovery-v1](../contracts/camera-recovery-v1.md) for the opt-in
+camera-independent trigger, 80% default grabbability estimate threshold, setup,
+failure reconciliation and frontend alerts. Configure `VISION_RECOVERY_CONFIG`
+using [camera-recovery.example.json](camera-recovery.example.json). It is
+disabled until the measured physical setup is explicitly confirmed. This runs
+the tested can route; arbitrary object positions need a different planned route.

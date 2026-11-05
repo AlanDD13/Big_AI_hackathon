@@ -277,9 +277,9 @@ There is intentionally no automatic journal reset/release or replay operation.
 
 ### Live Grok local hardware diagnostic
 
-`live_grok.py` uses the actual rover camera and telemetry, OpenRouter
-`x-ai/grok-4.7` with low reasoning, and one strictly validated `recovery_action`
-proposal. A key is read from `OPENROUTER_API_KEY` or a non-echoed prompt and is
+`live_grok.py` uses the actual rover camera and telemetry, native xAI API
+`grok-4.7` with low reasoning, and one strictly validated `recovery_action`
+proposal. A key is read from `XAI_API_KEY` or a non-echoed prompt and is
 never saved. TLS verification and redirect rejection remain enabled. There is
 no provider retry or model fallback. Explanatory prose is ignored; only a single
 validated tool with the bound target ID is considered.
@@ -335,8 +335,34 @@ An experimental opt-in tool-calling runner for supervised hardware work (3JKCK7W
 
 Run:
 ```bash
-python3 robot/grok_tool_loop.py 25 grok
+python3 robot/grok_tool_loop.py 25 grok-4.7
 ```
+
+Fixed measured route and return (same sole SDK session):
+```bash
+python3 robot/grok_tool_loop.py 25 grok-4.7 --route-return
+```
+
+`run_route_mission(tools, grok_loop)` advances the initial front-wheel line
+30 cm, turns right 90°, advances 154 cm, then invokes the existing Grok loop
+in pickup-only mode. Successful close/lift macro completion yields control
+immediately to deterministic return. It retraces odometry breadcrumbs including
+Grok's alignment, approach and grasp seating movement, restores the starting
+heading, lowers the arm 35 mm, opens the gripper at power 50, raises the empty
+arm 35 mm, and stops. Release occurs only after successful return and lowering;
+abort cleanup does not release the load. A failed motion/turn/grasp, stale pose, stalled odometry, or exhausted
+Grok budget stops in place without attempting an uncertain return.
+
+The route needs fresh wheel odometry and attitude; its 1 cm positional and 3°
+heading tolerances are in odometry, not guaranteed floor accuracy. Wheel slip,
+obstacles and independent evidence of a held can remain physical checks. The
+report explicitly retains `holdingVerified: false` and `placementVerified: false`:
+command completion alone does not establish successful grasp or placement. A
+completed return/release sequence reports `RETURNED_AND_RELEASED`. Use only in a supervised clear area with
+the manual bridge and other SDK sessions stopped. Live model requests are made
+only after the outbound route. Reports and live-monitor copies go to the run's
+`/tmp/pavia-robot/logs/tools-*/` directory (`ROVER_MONITOR_DIR` can override the
+monitor location).
 
 Unit tests:
 ```bash

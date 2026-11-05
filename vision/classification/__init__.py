@@ -5,6 +5,7 @@ import base64
 import io
 import json
 import os
+import re
 from collections.abc import Mapping
 import warnings
 from enum import Enum
@@ -85,6 +86,7 @@ class VisualPickupResult(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
     robot_grasp_estimate: Literal['LIKELY', 'UNLIKELY', 'UNKNOWN'] = 'UNKNOWN'
     estimate_confidence: Confidence = Confidence.LOW
+    grabbability_score: float | None = Field(default=None, ge=0, le=1, strict=True)
     assumptions: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(default_factory=list, max_length=5)
     required_checks: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(default_factory=list, max_length=5)
 
@@ -189,6 +191,11 @@ class GrokClassifier:
     def __init__(self, api_key: str | None = None, model: str = 'grok-4.7',
                  base_url: str = 'https://api.x.ai/v1', timeout: float = 20,
                  client: httpx.AsyncClient | None = None):
+        if not isinstance(model, str) or not re.fullmatch(r'grok-[A-Za-z0-9_.-]+', model):
+            raise ValueError('Native xAI requires a Grok model ID such as grok-4.7')
+        if base_url.rstrip('/') != 'https://api.x.ai/v1':
+            raise ValueError('Use the native xAI API endpoint')
+        self.last_model = None
         self._key = api_key
         self._model = model
         self._url = base_url.rstrip('/') + '/responses'
@@ -233,7 +240,11 @@ class GrokClassifier:
             'crumpled lightweight paper may offer a grasp surface. A can with unknown contents '
             'needs an empty/weight check. Do not claim dimensions or weight are measured from '
             'an uncalibrated photo, and arm travel does not prove current reachability. '
-            'Return estimate_confidence, assumptions and required_checks. Use UNKNOWN for '
+            'Return estimate_confidence and grabbability_score: a number from 0 to 1 estimating '
+            'whether this robot could grasp this target, or null when evidence is insufficient. '
+            'This score is a model estimate, not a calibrated probability or detector score. '
+            'Do not assign a high score when unresolved size, weight, shape or carrying checks '
+            'could change the grasp decision. Return assumptions and required_checks. Use UNKNOWN for '
             'ambiguous/borderline cases. Keep required checks explicit for a conditional LIKELY. '
             'Actual pickup requires independent physical and robot validation. '
             'Robot parameters (trusted configuration): ' + json.dumps(robot_profile_from_env())
@@ -253,6 +264,7 @@ class GrokClassifier:
             'and carrying conservatively. Do not infer ownership. In pickup describe '
             'object_form and visible suitability, then estimate whether this specific '
             'EP Core could grasp it: LIKELY, UNLIKELY or UNKNOWN, with confidence, explicit '
+            'grabbability_score (0 to 1, or null if unknown), '
             'assumptions and required_checks. Compare usable jaw opening, conservative '
             'payload, grip force and arm constraints from the trusted robot configuration. '
             'Use typical object knowledge only as an explicit assumption, never a measured '
@@ -262,7 +274,9 @@ class GrokClassifier:
             'carried objects are UNSUITABLE and UNLIKELY. Ambiguous or borderline cases '
             'are UNKNOWN. Arm travel does not prove current reachability. There is no '
             'measured object size/weight or robot pose here. These are estimates only, '
-            'never pickup authorization or verified success. Keep descriptions under 20 words, '
+            'never pickup authorization or verified success. The numeric score estimates grasp '
+            'feasibility, is not calibrated, and must stay low/unknown when unresolved checks '
+            'could change the result. Keep descriptions under 20 words, '
             'each reason under 25 words, and at most 3 assumptions/checks of 12 words each. '
             'Robot parameters: '
             + json.dumps(robot_profile_from_env())
@@ -282,7 +296,7 @@ class GrokClassifier:
         return _check_confirmation(result, safe_candidates)
 
     async def _request(self, instruction: str, images: list[dict], result_type: type[BaseModel]):
-        body = {'model': self._model, 'store': False, 'max_output_tokens': 600,
+        body = {'model': self._model, 'store': False, 'max_output_tokens': 1200, 'reasoning': {'effort': 'low'},
                 'input': [{'role': 'system', 'content': [{'type': 'input_text', 'text': _SYSTEM}]},
                           {'role': 'user', 'content': [{'type': 'input_text', 'text': instruction}, *images]}],
                 'text': {'format': {'type': 'json_schema', 'name': result_type.__name__,
@@ -292,6 +306,9 @@ class GrokClassifier:
             payload = json.loads(raw)
             if not isinstance(payload, dict) or payload.get('status') != 'completed' or payload.get('error'):
                 raise ClassificationUnavailable('Classification unavailable')
+            returned_model = payload.get('model', self._model)
+            if not isinstance(returned_model, str) or not re.fullmatch(r'grok-[A-Za-z0-9_.-]{1,120}', returned_model):
+                raise ClassificationInvalidResponse('Invalid classification model')
             output = payload.get('output')
             if not isinstance(output, list) or any(not isinstance(item, dict) or item.get('type') not in ('message', 'reasoning') for item in output):
                 raise ClassificationInvalidResponse('Invalid classification response')
@@ -309,7 +326,9 @@ class GrokClassifier:
             texts = [part['text'] for part in parts]
             if len(texts) != 1:
                 raise ClassificationUnavailable('Classification unavailable')
-            return result_type.model_validate_json(texts[0])
+            result = result_type.model_validate_json(texts[0])
+            self.last_model = returned_model
+            return result
         except (ClassificationUnavailable, ClassificationInvalidResponse):
             raise
         except (ValueError, TypeError, KeyError, AttributeError, RecursionError, ValidationError):
@@ -349,90 +368,12 @@ class GrokClassifier:
             return bytes(content)
 
 
-class OpenRouterGrokClassifier(GrokClassifier):
-    """Grok vision over OpenRouter, sharing xAI's input and transport bounds."""
-    transport = 'openrouter'
-
-    def __init__(self, api_key: str | None = None, model: str = 'x-ai/grok-4.7',
-                 base_url: str = 'https://openrouter.ai/api/v1', timeout: float = 30,
-                 client: httpx.AsyncClient | None = None):
-        if not isinstance(model, str) or not model.startswith('x-ai/grok-') or any(c.isspace() for c in model):
-            raise ValueError('OpenRouter vision requires an explicit Grok model')
-        super().__init__(api_key, model, base_url, timeout, client)
-        self._timeout = min(timeout, 30)
-        self._url = base_url.rstrip('/') + '/chat/completions'
-
-    async def _request(self, instruction: str, images: list[dict], result_type: type[BaseModel]):
-        # Chat image parts and strict JSON schema follow OpenRouter's API reference:
-        # https://openrouter.ai/docs/api/api-reference/chat/create-a-chat-completion
-        # https://openrouter.ai/docs/guides/features/structured-outputs
-        body = {
-            'model': self._model, 'max_tokens': 1200, 'stream': False,
-            'provider': {'require_parameters': True},
-            # Grok 4.7 requires reasoning; exclude its internal text from output.
-            'reasoning': {'effort': 'low', 'exclude': True},
-            'messages': [
-                {'role': 'system', 'content': _SYSTEM},
-                {'role': 'user', 'content': [
-                    {'type': 'text', 'text': instruction},
-                    *[{'type': 'image_url', 'image_url': {'url': image['image_url']}}
-                      for image in images],
-                ]},
-            ],
-            'response_format': {'type': 'json_schema', 'json_schema': {
-                'name': result_type.__name__, 'strict': True,
-                'schema': _strict_schema(result_type),
-            }},
-        }
-        raw = await self._send(body)
-        try:
-            payload = json.loads(raw)
-            if not isinstance(payload, dict):
-                raise ClassificationInvalidResponse('Invalid classification response')
-            if payload.get('error'):
-                raise ClassificationUnavailable('Classification unavailable')
-            # A returned non-Grok model must never masquerade as Grok evidence.
-            model = payload.get('model')
-            if model is not None and (not isinstance(model, str) or not model.startswith('x-ai/grok-')):
-                raise ClassificationInvalidResponse('Invalid classification response')
-            choices = payload.get('choices')
-            if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
-                raise ClassificationInvalidResponse('Invalid classification response')
-            choice = choices[0]
-            if choice.get('error') or choice.get('finish_reason') != 'stop':
-                raise ClassificationUnavailable('Classification unavailable')
-            message = choice.get('message')
-            if not isinstance(message, dict) or message.get('role') != 'assistant':
-                raise ClassificationInvalidResponse('Invalid classification response')
-            if message.get('refusal'):
-                raise ClassificationUnavailable('Classification unavailable')
-            if message.get('tool_calls') or message.get('function_call'):
-                raise ClassificationInvalidResponse('Invalid classification response')
-            content = message.get('content')
-            if not isinstance(content, str):
-                raise ClassificationInvalidResponse('Invalid classification response')
-            return result_type.model_validate_json(content)
-        except (ClassificationUnavailable, ClassificationInvalidResponse):
-            raise
-        except (ValueError, TypeError, KeyError, AttributeError, RecursionError, ValidationError):
-            raise ClassificationInvalidResponse('Invalid classification response') from None
-
-
 def build_classifier_from_env(env: Mapping[str, str] | None = None) -> GrokClassifier:
-    """Select a transport without borrowing unrelated application model settings."""
+    """Hackathon runtime uses the native xAI API only; no provider fallback."""
     values = os.environ if env is None else env
-    selected = values.get('GROK_VISION_PROVIDER', '').strip().lower()
-    if not selected:
-        selected = 'xai' if values.get('XAI_API_KEY') or not values.get('OPENROUTER_API_KEY') else 'openrouter'
-    if selected == 'openrouter':
-        legacy_model = values.get('GROK_VISION_MODEL', '')
-        model = values.get('OPENROUTER_VISION_MODEL') or (
-            legacy_model if legacy_model.startswith('x-ai/grok-') else 'x-ai/grok-4.7')
-        return OpenRouterGrokClassifier(values.get('OPENROUTER_API_KEY'), model)
-    if selected == 'xai':
-        return GrokClassifier(values.get('XAI_API_KEY'), values.get('GROK_VISION_MODEL') or 'grok-4.7')
-    raise ValueError('GROK_VISION_PROVIDER must be xai or openrouter')
-
+    if values.get('GROK_VISION_PROVIDER', 'xai').strip().lower() not in ('', 'xai'):
+        raise ValueError('Use native xAI: set GROK_VISION_PROVIDER=xai and XAI_API_KEY')
+    return GrokClassifier(values.get('XAI_API_KEY'), values.get('GROK_VISION_MODEL') or 'grok-4.7')
 
 
 class FixtureClassifier:

@@ -30,6 +30,11 @@ The vision producer's versioned interface is specified in
 [`contracts/vision-v1.md`](../contracts/vision-v1.md). Stateless peer
 classification for mapping is in
 [`contracts/vision-peer-classification-v1.md`](../contracts/vision-peer-classification-v1.md).
+The live two-camera operator console, authenticated notices/audio, completed
+route steps and model metadata are specified in
+[`contracts/operator-console-v1.md`](../contracts/operator-console-v1.md).
+Native xAI configuration and model usage evidence are documented in
+[`docs/GROK_MODELS.md`](GROK_MODELS.md); active OpenRouter transport is removed.
 Camera test control (implemented in merged PR #22): `GET/PUT /api/cameras/{cameraId}/grok`
 accepts that camera's scoped upload bearer or the vision master bearer, never
 another camera's scoped token or PEER_TOKEN. PUT requires exactly
@@ -43,6 +48,12 @@ completed assessments remain; explicit stateless peer calls are independent.
 Overrides are in-memory and restart from VISION_AUTOMATIC_CLASSIFICATION.
 This control does not authorize movement or pickup. Health exposes per-camera
 automaticClassificationByCamera and aggregate automaticClassificationEnabled.
+The separately armed measured-route integration is specified in
+[`contracts/camera-recovery-v1.md`](../contracts/camera-recovery-v1.md): any
+configured fixed camera, numeric grabbability estimate, supported can profile,
+durable scene/job deduplication, return/release, and frontend rejection/lifecycle
+alerts. Its explicit measured setup does not change generic mapped mission
+eligibility. Consumers must be upgraded before enabling its producer.
 Backend durable
 snapshot/SSE/session rules are in
 [`contracts/backend-stream-v1.md`](../contracts/backend-stream-v1.md).

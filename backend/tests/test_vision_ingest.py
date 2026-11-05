@@ -98,6 +98,36 @@ class VisionIngestTests(unittest.TestCase):
         self.assertEqual(len(objects), 1)
         return objects[0]
 
+    def test_pickup_rejection_persists_score_and_streams_one_frontend_alert(self):
+        self.sign_in()
+        before = self.snapshot()['cursor']
+        event = publication('alert.pickup_unavailable', 1, BOOT_A, entityVersion=1,
+            revision=1, reason='GRABBABILITY_LOW_OR_UNKNOWN', visualPickupStatus='COMPLETED',
+            visualPickupAdvisory=dict(object_form='OTHER', visual_suitability='UNCERTAIN',
+                reason='Unknown payload', advisory=True, pickupVerified=False,
+                sourceFrameId=11, grabbability_score=.42))
+        response = self.post_event(event)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.only_object()['visualPickupAdvisory']['grabbability_score'], .42)
+        self.assertFalse(self.only_object()['dispatchEligible'])
+        alerts = self.snapshot()['alerts']
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]['kind'], 'pickup_unavailable')
+        self.assertEqual(alerts[0]['reason'], 'GRABBABILITY_LOW_OR_UNKNOWN')
+        stream = parse_sse(self.client.get('/api/events', params={'after': before}).text)
+        self.assertIn('alert.pickup_unavailable', [e['event'] for e in stream])
+        self.assertEqual(self.post_event(event).status_code, 200)
+        self.assertEqual(len(self.snapshot()['alerts']), 1)
+
+    def test_grabbability_score_rejects_nonprobability_values(self):
+        for score in (True, '0.9', -1, 1.1, 10**400):
+            with self.subTest(score=score):
+                event = publication('object.classified', 1, BOOT_A, entityVersion=1,
+                    revision=1, visualPickupStatus='COMPLETED', visualPickupAdvisory=dict(
+                        object_form='OTHER', visual_suitability='POSSIBLE', reason='Shape only',
+                        advisory=True, pickupVerified=False, sourceFrameId=11, grabbability_score=score))
+                self.assertEqual(self.post_event(event).status_code, 422)
+
     def test_peer_token_required(self):
         event = publication("object.observed", 1, BOOT_A, entityVersion=1, revision=0)
         missing = self.client.post("/api/detections", json=event)

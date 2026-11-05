@@ -6,8 +6,10 @@ import unittest
 from fastapi.testclient import TestClient
 import httpx
 
+from psycopg import Error as PostgresError
+
 from backend.app import create_app
-from backend.manual_proxy import ManualProxy
+from backend.manual_proxy import ManualProxy, PostgresManualGate
 from backend.manual_proxy import ManualFailure
 from backend.tests.test_api import OPERATOR, PEER
 from backend.tests.test_manual_requests import intent
@@ -194,6 +196,31 @@ class ManualProxyTests(unittest.TestCase):
         self.proxy._autonomous_active = None
         self.assertEqual(self.post("lease", {"roverId": "rover-1", "requestedTtlMs": 2000}).json()["error"]["code"], "STORAGE_UNAVAILABLE")
 
+    def test_contradictory_lease_ack_cannot_grant_driving_authority(self):
+        for field, value in [("stage", "UNKNOWN"), ("stage", "STOPPED"),
+                             ("stage", "MANUAL_DRIVING"), ("telemetryFresh", False)]:
+            with self.subTest(field=field, value=value):
+                bridge = FakeBridge()
+                def handler(request):
+                    response = bridge(request)
+                    if request.url.path == "/manual/lease":
+                        response = httpx.Response(200, json={**response.json(), field: value})
+                    return response
+                proxy = ManualProxy(url="https://bridge.invalid", peer_token=PEER,
+                                    now=lambda: 100.05, autonomous_active=lambda _: False,
+                                    transport=httpx.MockTransport(handler))
+                app = create_app(operator_token=OPERATOR, peer_token=PEER, cookie_secure=False, manual_proxy=proxy)
+                with TestClient(app) as client:
+                    client.post("/api/session", json={"token": OPERATOR})
+                    response = client.post("/api/manual/lease", json={"roverId": "rover-1", "requestedTtlMs": 2000})
+                    self.assertEqual(response.status_code, 503)
+                    self.assertIsNone(proxy._lease)
+                    self.assertTrue(proxy._stop_latched)
+                    self.assertEqual(bridge.calls[-1].url.path, "/stop")
+                    response = client.post("/api/manual/drive", json=intent(xMps=0.03))
+                    self.assertEqual(response.status_code, 409)
+                    self.assertFalse(any(call.url.path == "/manual/drive" for call in bridge.calls))
+
     def test_logout_and_expiry_invalidate_authority_and_request_stop(self):
         self.lease()
         self.assertEqual(self.client.delete("/api/session").status_code, 204)
@@ -215,6 +242,52 @@ class ManualProxyTests(unittest.TestCase):
             response = self.post("drive", intent(xMps=0.03, sequence=sequence,
                                                 issuedAt=now - 0.01, expiresAt=now + 0.2))
             self.assertEqual(response.status_code, 200, response.text)
+
+    def test_gate_delay_drops_the_expired_tick_without_stopping_the_lease(self):
+        self.lease()
+        drives = sum(call.url.path == "/manual/drive" for call in self.bridge.calls)
+
+        def slow(_rover):
+            self.clock["now"] = 100.25
+            return False
+
+        self.proxy._autonomous_active = slow
+        expired = self.post("drive", intent(xMps=0.03))
+        self.assertEqual(expired.json()["error"]["code"], "INTENT_EXPIRED")
+        self.assertEqual(sum(call.url.path == "/manual/drive" for call in self.bridge.calls), drives)
+        self.assertIsNotNone(self.proxy._lease)
+        self.assertFalse(self.proxy._stop_latched)
+        self.proxy._autonomous_active = lambda _rover: False
+        self.clock["now"] = 100.30
+        continued = self.post("drive", intent(xMps=0.03, sequence=2, issuedAt=100.30, expiresAt=100.50))
+        self.assertEqual(continued.status_code, 200, continued.text)
+        replay = self.post("drive", intent(xMps=0.03, sequence=1, issuedAt=100.30, expiresAt=100.50))
+        self.assertEqual(replay.json()["error"]["code"], "STALE_INTENT")
+        self.assertEqual(self.bridge.calls[-1].url.path, "/stop")
+
+
+    def test_tick_expiring_at_final_transport_validation_retains_lease(self):
+        self.lease()
+        original_call = self.proxy._call
+        expire_next = True
+
+        async def delayed_call(method, path, body=None):
+            nonlocal expire_next
+            if path == "/manual/drive" and expire_next:
+                expire_next = False
+                self.clock["now"] = 100.25
+            return await original_call(method, path, body)
+
+        self.proxy._call = delayed_call
+        response = self.post("drive", intent(xMps=0.03))
+        self.assertEqual(response.json()["error"]["code"], "INTENT_EXPIRED")
+        self.assertIsNotNone(self.proxy._lease)
+        self.assertFalse(self.proxy._unknown)
+        self.assertFalse(self.proxy._stop_latched)
+        self.assertFalse(any(call.url.path in {"/manual/drive", "/stop"} for call in self.bridge.calls))
+        self.clock["now"] = 100.30
+        response = self.post("drive", intent(xMps=0.03, sequence=2, issuedAt=100.30, expiresAt=100.50))
+        self.assertEqual(response.status_code, 200, response.text)
 
 
 class ManualConcurrencyTests(unittest.IsolatedAsyncioTestCase):
@@ -256,6 +329,50 @@ class ManualConcurrencyTests(unittest.IsolatedAsyncioTestCase):
             await proxy.execute("lease", "session", {"roverId": "rover-1", "requestedTtlMs": 2000}, lambda: authorized["value"])
         self.assertEqual(rejected.exception.code, "UNAUTHORIZED")
         self.assertFalse(any(call.url.path == "/manual/lease" for call in bridge.calls))
+
+
+class PostgresManualGateReuseTests(unittest.TestCase):
+    def test_reuses_one_connection_and_rereads_every_call(self):
+        opened = []
+
+        class Connection:
+            def __init__(self, fail):
+                self.fail = fail
+                self.closed = False
+                self.queries = 0
+                self.query = ""
+
+            def execute(self, query, params):
+                if self.fail:
+                    raise PostgresError("connection dropped")
+                self.queries += 1
+                self.query = query
+                self.params = params
+                return self
+
+            def fetchone(self):
+                return (self.queries > 1,)
+
+            def rollback(self):
+                return None
+
+            def close(self):
+                self.closed = True
+
+        def connect():
+            connection = Connection(fail=not opened)
+            opened.append(connection)
+            return connection
+
+        gate = PostgresManualGate(connect)
+        self.assertFalse(gate("rover-1"))
+        self.assertTrue(gate("rover-1"))
+        self.assertEqual(len(opened), 2)
+        self.assertTrue(opened[0].closed)
+        self.assertEqual(opened[1].queries, 2)
+        self.assertEqual(opened[1].params, ("rover-1",))
+        self.assertIn("dispatching", opened[1].query)
+        self.assertIn("unknown", opened[1].query)
 
 
 if __name__ == "__main__":

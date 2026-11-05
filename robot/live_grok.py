@@ -24,7 +24,7 @@ from can_tracker import CanTracker, Match
 from range_estimation import estimate_jpegs
 from motion_control import heading_correction, project_initial_body
 
-MODEL = "x-ai/grok-4.7"
+MODEL = "grok-4.7"
 ACTIONS = ("approach", "align", "pickup", "transport", "place", "stop")
 EXPECTED = dict(APPROACH="approach", ALIGN="align", PICKUP="pickup",
                 TRANSPORT="transport", PLACE="place")
@@ -121,7 +121,7 @@ class GrokPolicy:
         """Grok inspects the live camera image and selects a robot primitive tool call."""
         self.calls += 1
         payload = {
-            "model": MODEL, "reasoning": {"effort": "low"}, "max_tokens": 512,
+            "model": MODEL, "reasoning_effort": "low", "max_tokens": 512,
             "tool_choice": "required",
             "tools": ROBOT_PRIMITIVE_TOOLS,
             "messages": [
@@ -139,7 +139,7 @@ class GrokPolicy:
                 ]},
             ],
         }
-        request = Request("https://openrouter.ai/api/v1/chat/completions",
+        request = Request("https://api.x.ai/v1/chat/completions",
             data=json.dumps(payload).encode(), method="POST",
             headers={"Authorization": "Bearer " + self.key, "Content-Type": "application/json"})
         start = time.monotonic()
@@ -158,7 +158,7 @@ class GrokPolicy:
     def choose(self, phase, observation, jpeg):
         self.calls += 1
         payload = {
-            "model": MODEL, "reasoning": {"effort": "low"}, "max_tokens": 512,
+            "model": MODEL, "reasoning_effort": "low", "max_tokens": 512,
             "tool_choice": {"type": "function", "function": {"name": "recovery_action"}},
             "tools": [{"type": "function", "function": {
                 "name": "recovery_action",
@@ -183,7 +183,7 @@ class GrokPolicy:
                 ]},
             ],
         }
-        request = Request("https://openrouter.ai/api/v1/chat/completions",
+        request = Request("https://api.x.ai/v1/chat/completions",
             data=json.dumps(payload).encode(), method="POST",
             headers={"Authorization": "Bearer " + self.key, "Content-Type": "application/json"})
         start = time.monotonic()
@@ -463,7 +463,7 @@ def run(serial, policy, *, output_dir=None, reference=None, reference_box=None, 
     Phases: APPROACH -> ALIGN -> PICKUP -> TRANSPORT -> PLACE -> COMPLETE.
     Each phase:
       1. Captures fresh camera + stationary telemetry observation.
-      2. Calls live OpenRouter x-ai/grok-4.7 (`recovery_action`).
+      2. Calls live native xAI grok-4.7 (`recovery_action`).
       3. Re-verifies fresh post-policy camera + telemetry and independent safety gates.
       4. Executes bounded physical actuation through SafetyController + Watchdog.
     """
@@ -723,7 +723,7 @@ def main():
         parser.error("--reference requires --reference-box for the selected can")
     if not math.isfinite(args.move_seconds) or not 0 <= args.move_seconds <= 6.0:
         parser.error("--move-seconds must be in 0..6 seconds; speed remains .05 m/s")
-    key = os.environ.get("OPENROUTER_API_KEY") or getpass.getpass("OpenRouter key (not saved): ")
+    key = os.environ.get("XAI_API_KEY") or getpass.getpass("xAI API key (not saved): ")
     policy = GrokPolicy(key)
     return run(args.sn, policy, reference=args.reference,
                reference_box=args.reference_box, allow_motion=args.allow_motion,

@@ -1,0 +1,11 @@
+{
+  "cameraId": "*",
+  "sessionId": "*",
+  "geometryVersion": "*",
+  "pickupAreaPx": null,
+  "robotPython": "/absolute/path/to/robot/.venv/bin/python",
+  "stateDir": "/absolute/path/to/private/camera-recovery-state",
+  "setupConfirmed": false,
+  "threshold": 0.8,
+  "model": "grok-4.7"
+}

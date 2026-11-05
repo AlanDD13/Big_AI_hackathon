@@ -14,7 +14,7 @@ Usage:
     with open_rover_tools() as tools:
         tools.dispatch("drive_chassis", {"x_mps": 0.04, "z_degps": 0, "duration_s": 1.0})
 
-`TOOLS` is the OpenAI/OpenRouter function schema to hand to Grok; `dispatch` executes
+`TOOLS` is the native xAI function schema to hand to Grok; `dispatch` executes
 one validated call and returns a JSON-safe result. Not a safety system: it does not
 replace the SafetyController/watchdog on Platon's branch and proves nothing about
 successful grasps.
@@ -99,13 +99,13 @@ class StableYOLOTracker:
                     "message": "Gripper close was commanded; holding is unverified. Loaded transport is disabled. Stop or explicitly release under operator supervision."
                 }
             return {
-                "detected": True,
-                "detectionFresh": True,
-                "canHeldInClaws": True,
-                "holdingVerified": True,
+                "detected": False,
+                "detectionFresh": False,
+                "canHeldInClaws": None,
+                "holdingVerified": False,
                 "gripperState": "close",
                 "infraredDistanceMm": int(tof_mm) if tof_mm is not None else None,
-                "message": "CAN IN CLAWS: Transport forward with drive_chassis, lower arm to floor with move_arm(dy=-35), open gripper, then stop_robot!"
+                "message": "Gripper close was commanded; holding is unverified. Loaded transport is authorized for the supervised route."
             }
 
         model = self._ensure_model()
@@ -422,6 +422,7 @@ class RoverTools:
         self.yaw = None
         self.attitude_at = None
         self.position = None
+        self.position_at = None
         self.tof_mm = None
         self.tof_at = None
         self.arm_delta_y = 0
@@ -454,7 +455,10 @@ class RoverTools:
 
         def on_position(msg):
             try:
-                self.position = (float(msg[0]), float(msg[1]))
+                position = (float(msg[0]), float(msg[1]))
+                if all(math.isfinite(value) for value in position):
+                    self.position = position
+                    self.position_at = time.monotonic()
             except (TypeError, ValueError, IndexError):
                 pass
 
@@ -516,6 +520,16 @@ class RoverTools:
                 "telemetryAgeS": None if self.attitude_at is None
                 else round(time.monotonic() - self.attitude_at, 2)}
 
+    def pose(self):
+        """Fresh session-local wheel odometry and yaw for measured routes."""
+        yaw = self._fresh_yaw()
+        if (self.position is None or self.position_at is None
+                or time.monotonic() - self.position_at > .5):
+            raise RoverError("position_telemetry_stale")
+        if not math.isfinite(yaw):
+            raise RoverError("invalid_yaw")
+        return (*self.position, yaw)
+
     # ---- primitives ------------------------------------------------------------
     def _zero(self):
         timer = getattr(self.rover.chassis, "_auto_timer", None)
@@ -532,7 +546,8 @@ class RoverTools:
         return {"stopped": True, "stationaryConfirmed": False,
                 "reason": str(reason)[:180], "armAndGripperReset": False}
 
-    def drive(self, x_mps, y_mps=0.0, z_degps=0.0, duration_s=1.0, hold_heading=True, guard_tof=True):
+    def drive(self, x_mps, y_mps=0.0, z_degps=0.0, duration_s=1.0, hold_heading=True,
+              guard_tof=True, reference_yaw_deg=None):
         if self._last_gripper_state == "close" and not self.allow_transport:
             self._zero()
             raise RoverError("holding_unverified_transport_disabled")
@@ -597,6 +612,9 @@ class RoverTools:
         straight = hold_heading and abs(z) < 1.5
         with self._lock:
             start_yaw = self._fresh_yaw()
+            reference_yaw = start_yaw if reference_yaw_deg is None else float(reference_yaw_deg)
+            if not math.isfinite(reference_yaw):
+                raise RoverError("invalid_heading_reference")
             start_pos = self.position
             stopped_by = None
             try:
@@ -608,7 +626,7 @@ class RoverTools:
                         stopped_by = "tof_minimum_guard"
                         break
                     if straight:
-                        error = _wrap(start_yaw - yaw)
+                        error = _wrap(reference_yaw - yaw)
                         if abs(error) > MAX_HEADING_ERR_DEG:
                             stopped_by = "heading_deviation_exceeded"
                             break
@@ -848,11 +866,11 @@ class RoverTools:
         # Guard: If can is ALREADY grasped and arm is lifted, do not re-grasp!
         if self._last_gripper_state == "close" and self.arm_delta_y >= -10:
             return {
-                "grasped": True if self.allow_transport else None,
-                "holdingVerified": bool(self.allow_transport),
+                "grasped": None,
+                "holdingVerified": False,
                 "alreadyCommanded": True,
                 "message": (
-                    "Can is already grasped and lifted! Proceed to transport forward with drive_chassis."
+                    "Gripper close and arm lift were already commanded; holding is unverified. Loaded transport is authorized."
                     if self.allow_transport
                     else "Gripper close was already commanded; holding is unverified and transport remains disabled."
                 )
@@ -882,7 +900,8 @@ class RoverTools:
                 if dy != 0:
                     try:
                         action = self.rover.robotic_arm.move(x=0, y=dy)
-                        action.wait_for_completed(timeout=3.0)
+                        if not action.wait_for_completed(timeout=3.0) or action.has_failed:
+                            raise RoverError('grasp_arm_lower_failed')
                         time.sleep(0.2)
                         self.arm_delta_y += dy
                     except Exception as exc:
@@ -890,7 +909,8 @@ class RoverTools:
 
             # 2. Open gripper jaws wide (12 cm span)
             try:
-                self.rover.gripper.open(power=50)
+                if self.rover.gripper.open(power=50) is not True:
+                    raise RoverError('grasp_gripper_open_failed')
                 time.sleep(0.8)
                 self.rover.gripper.pause()
                 self._last_gripper_state = "open"
@@ -901,13 +921,16 @@ class RoverTools:
         # At gentle 0.060 m/s for calc_dur (1.1-1.8s) = ~6.6 to 10.8 cm forward glide!
         # Jaws are open wide (12cm) so can funnels safely inside without knocking or bulldozing!
         drive_res = self.drive(x_mps=0.060, y_mps=0.0, z_degps=0.0, duration_s=calc_dur, hold_heading=True, guard_tof=False)
+        if drive_res.get('stoppedBy'):
+            raise RoverError('grasp_seating_drive_incomplete')
 
         # 4. Clamp gripper firmly around the can with high power
         with self._lock:
             self._zero()
             self._last_gripper_state = "close"
             try:
-                self.rover.gripper.close(power=80)
+                if self.rover.gripper.close(power=80) is not True:
+                    raise RoverError('grasp_gripper_close_failed')
                 time.sleep(1.4)
                 self.rover.gripper.pause()
                 self._last_gripper_state = "close"
@@ -918,21 +941,23 @@ class RoverTools:
             lift_done = False
             try:
                 action = self.rover.robotic_arm.move(x=0, y=35)
-                lift_done = bool(action.wait_for_completed(timeout=3.0))
+                lift_done = bool(action.wait_for_completed(timeout=3.0)) and not action.has_failed
+                if not lift_done:
+                    raise RoverError('grasp_arm_lift_failed')
                 time.sleep(0.3)
                 self.arm_delta_y += 35
             except Exception as exc:
                 raise RoverError("grasp_arm_lift_failed") from exc
 
         return {
-            "grasped": True if self.allow_transport else None,
-            "holdingVerified": bool(self.allow_transport),
+            "grasped": None,
+            "holdingVerified": False,
             "seatedDrive": drive_res,
             "gripperCloseCommanded": True,
             "gripperClamped": True,
             "armLifted": lift_done,
             "message": (
-                "Can seated into throat, clamped at power 80, and lifted off floor!"
+                "Seating, gripper close at power 80, and arm lift commands completed. Holding is unverified."
                 if self.allow_transport
                 else "Grasp macro commands completed; independent holding evidence is absent. Transport remains disabled."
             )

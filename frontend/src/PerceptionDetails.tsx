@@ -18,6 +18,7 @@ export default function PerceptionDetails({ object }: { object: BackendObject })
     {facts.advisory ? <div className="visual-advisory"><dl className="backend-facts">
       <div><dt>Object form</dt><dd>{label(facts.advisory.form)}</dd></div>
       <div><dt>Visual suitability</dt><dd>{facts.advisory.suitability}</dd></div>
+      <div><dt>Grabbability estimate</dt><dd>{facts.advisory.grabbabilityScore === null ? 'Unknown' : `${Math.round(facts.advisory.grabbabilityScore * 100)}% · model estimate`}</dd></div>
       <div><dt>Reason</dt><dd>{facts.advisory.reason}</dd></div>
       <div><dt>Source frame</dt><dd>{facts.advisory.sourceFrameId ?? '—'}</dd></div>
     </dl><p>Visual appearance only. Size, reach, grip and payload still require physical checks.</p></div> : <div className="evidence-empty">{facts.visualStatus === 'PENDING' ? 'Visual assessment pending.' : 'No visual assessment available.'}</div>}

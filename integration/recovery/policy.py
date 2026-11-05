@@ -1,14 +1,15 @@
-"""OpenRouter policy: proposals only; callers must independently gate execution."""
+"""Native xAI policy: proposals only; callers must independently gate execution."""
 import json
 import os
+import re
 
 import httpx
 from pydantic import ValidationError
 
 from .types import Mission, Observation, Phase, ToolCall
 
-MODEL = "x-ai/grok-4.7"
-ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
+MODEL = "grok-4.7"
+ENDPOINT = "https://api.x.ai/v1/chat/completions"
 MAX_RESPONSE_BYTES = 128 * 1024
 SYSTEM = (
     "Choose exactly one recovery_action based on the supplied mission, phase and "
@@ -33,21 +34,25 @@ def _unique_object(pairs):
 
 
 class GrokPolicy:
-    def __init__(self, api_key: str, client: httpx.Client, timeout: float = 20.0):
+    def __init__(self, api_key: str, client: httpx.Client, timeout: float = 20.0, *, model: str = MODEL):
         if not api_key or not 0 < timeout <= 20:
             raise ValueError("API key and timeout in (0, 20] are required")
+        if not re.fullmatch(r'grok-[A-Za-z0-9._-]+', model):
+            raise ValueError('A native Grok model ID is required')
         self._api_key = api_key
         self._client = client
         self._timeout = timeout
+        self.model = model
 
     @classmethod
     def from_env(cls, client: httpx.Client, timeout: float = 20.0):
-        return cls(os.environ.get("OPENROUTER_API_KEY", ""), client, timeout)
+        return cls(os.environ.get("XAI_API_KEY", ""), client, timeout,
+                   model=os.environ.get('GROK_RECOVERY_MODEL', MODEL))
 
     def choose(self, mission: Mission, phase: Phase, observation: Observation) -> ToolCall:
         payload = {
-            "model": MODEL,
-            "reasoning": {"effort": "low"},
+            "model": self.model,
+            "reasoning_effort": "low",
             "parallel_tool_calls": False,
             "tool_choice": {"type": "function", "function": {"name": "recovery_action"}},
             "tools": [{"type": "function", "function": {
@@ -74,7 +79,7 @@ class GrokPolicy:
                         raise PolicyError("provider response too large")
                     body.extend(chunk)
             data = json.loads(body, object_pairs_hook=_unique_object)
-            if not isinstance(data, dict) or data.get("model") != MODEL:
+            if not isinstance(data, dict) or data.get("model") != self.model:
                 raise ValueError("unexpected model")
             choices = data["choices"]
             if not isinstance(choices, list) or len(choices) != 1:

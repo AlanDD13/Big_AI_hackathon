@@ -98,6 +98,8 @@
         "classificationStatus": {"enum": ["PENDING", "COMPLETED", "UNAVAILABLE"]},
         "classification": {"anyOf": [{"$ref": "#/$defs/Classification"}, {"type": "null"}]},
         "classificationProvider": {"anyOf": [{"enum": ["grok", "fixture"]}, {"type": "null"}]},
+        "classificationModel": {"type": ["string", "null"], "pattern": "^grok-[A-Za-z0-9._-]+$"},
+        "recoveryStep": {"enum": ["FORWARD_30", "TURN_RIGHT_90", "FORWARD_154", "PICKUP", "RETURNED", "LOWERED", "RELEASED"]},
         "visualPickupStatus": {"enum": ["PENDING", "COMPLETED", "UNAVAILABLE"]},
         "visualPickupAdvisory": {
           "anyOf": [{"type": "null"}, {
@@ -108,6 +110,7 @@
               "visual_suitability": {"enum": ["POSSIBLE", "UNSUITABLE", "UNCERTAIN"]},
               "robot_grasp_estimate": {"enum": ["LIKELY", "UNLIKELY", "UNKNOWN"]},
               "estimate_confidence": {"enum": ["LOW", "MEDIUM", "HIGH"]},
+              "grabbability_score": {"type": ["number", "null"], "minimum": 0, "maximum": 1, "description": "Model estimate, not calibrated probability or physical pickup evidence"},
               "assumptions": {"type": "array", "maxItems": 5, "items": {"type": "string", "minLength": 1, "maxLength": 200}},
               "required_checks": {"type": "array", "maxItems": 5, "items": {"type": "string", "minLength": 1, "maxLength": 200}},
               "reason": {"type": "string", "minLength": 1, "maxLength": 500},
@@ -140,7 +143,8 @@
       "enum": [
         "object.observed", "object.classified", "object.updated", "object.removed",
         "alert.potential_target", "alert.target_revoked",
-        "camera.connected", "alert.detector_unavailable", "alert.camera_unavailable"
+        "camera.connected", "alert.detector_unavailable", "alert.camera_unavailable",
+        "alert.pickup_unavailable", "alert.recovery_started", "alert.recovery_completed", "alert.recovery_failed", "alert.recovery_step"
       ]
     },
     "timestamp": {"type": "number", "minimum": 0},
@@ -235,6 +239,44 @@
           }
         }
       }
-    }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "enum": [
+              "alert.pickup_unavailable",
+              "alert.recovery_started",
+              "alert.recovery_completed",
+              "alert.recovery_failed",
+              "alert.recovery_step"
+            ]
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/ObjectCore"
+              }
+            ],
+            "required": [
+              "reason"
+            ],
+            "not": {
+              "required": [
+                "action"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {"if": {"properties": {"type": {"const": "alert.recovery_step"}}, "required": ["type"]}, "then": {"properties": {"payload": {"required": ["recoveryStep"]}}}}
   ]
 }

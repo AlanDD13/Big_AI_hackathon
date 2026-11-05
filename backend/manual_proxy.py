@@ -6,6 +6,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 import json
 from math import isfinite
+import queue
+import threading
 from urllib.parse import urlsplit
 
 from fastapi.concurrency import run_in_threadpool
@@ -14,7 +16,7 @@ import anyio
 from psycopg import Error as PostgresError
 
 from backend.evidence import ID_RE
-from backend.manual_requests import InvalidManualRequest, parse_manual_request
+from backend.manual_requests import InvalidManualRequest, StaleManualIntent, parse_manual_request
 from backend.postgres_projection import StorageUnavailable
 
 
@@ -31,16 +33,57 @@ class ManualFailure(Exception):
 
 
 class PostgresManualGate:
+    """One connection, one fresh exclusion query per drive. The answer is never cached."""
+
+    _QUERY = """SELECT EXISTS(SELECT 1 FROM rover_backend.missions
+               WHERE rover_id = %s AND state IN ('dispatching','running','holding','unknown'))"""
+
     def __init__(self, connect):
         self._connect = connect
+        self._requests = queue.Queue()
+        self._thread = threading.Thread(target=self._serve, name="manual-gate", daemon=True)
+        self._thread.start()
 
     def __call__(self, rover_id):
-        with self._connect() as connection:
-            return connection.execute(
-                """SELECT EXISTS(SELECT 1 FROM rover_backend.missions
-                   WHERE rover_id = %s AND state IN ('dispatching','running','holding','unknown'))""",
-                (rover_id,),
-            ).fetchone()[0]
+        done = queue.Queue(maxsize=1)
+        self._requests.put((rover_id, done))
+        value, error = done.get()
+        if error is not None:
+            raise error
+        return value
+
+    def _serve(self):
+        connection = None
+        while True:
+            rover_id, done = self._requests.get()
+            try:
+                if connection is None or connection.closed:
+                    connection = self._connect()
+                try:
+                    value = self._exists(connection, rover_id)
+                except PostgresError:
+                    self._close(connection)
+                    connection = self._connect()
+                    value = self._exists(connection, rover_id)
+                done.put((value, None))
+            except BaseException as exc:
+                self._close(connection)
+                connection = None
+                done.put((None, exc))
+
+    def _exists(self, connection, rover_id):
+        active = connection.execute(self._QUERY, (rover_id,)).fetchone()[0]
+        connection.rollback()  # End the read so the next drive sees a newly committed mission.
+        return active
+
+    @staticmethod
+    def _close(connection):
+        if connection is None:
+            return
+        try:
+            connection.close()
+        except Exception:
+            pass
 
 
 @dataclass(repr=False)
@@ -257,7 +300,10 @@ class ManualProxy:
                 raise ManualFailure(503, "TELEMETRY_STALE")
             if not authorized():
                 raise ManualFailure(401, "UNAUTHORIZED")
-            parse_manual_request(action, payload, now=self._now())
+            # The gate already ran. A tick that died while it ran is not forwarded
+            # and does not stop-latch the lease; the next tick can still drive.
+            if action == "drive" and payload["expiresAt"] <= self._now():
+                raise ManualFailure(409, "INTENT_EXPIRED")
             try:
                 result = await self._call("POST", "/manual/" + action, payload)
                 boot = self._identity(result)
@@ -268,6 +314,11 @@ class ManualProxy:
                 if action == "lease" and boot != status["bridgeBootId"]:
                     raise ManualFailure(409, "BRIDGE_BOOT_MISMATCH")
                 if action == "lease":
+                    # Canonical lease ACKs omit status fields. If a bridge does
+                    # include them, they must not contradict a stationary grant.
+                    if (("stage" in result and result["stage"] != "MANUAL_IDLE")
+                            or ("telemetryFresh" in result and result["telemetryFresh"] is not True)):
+                        raise ManualFailure(503, "MANUAL_UNAVAILABLE")
                     caps = result.get("caps", {})
                     for key, max_value in [("maxAbsXMps", 0.35), ("maxAbsYMps", 0.35),
                                            ("maxAbsZDegps", 45.0), ("watchdogTimeoutMs", 300), ("maxIntentTtlMs", 500)]:
@@ -301,6 +352,15 @@ class ManualProxy:
                         raise ManualFailure(503, "MANUAL_UNAVAILABLE")
                     lease.expires = self._now() + lease.ttl
                 return result
+            except StaleManualIntent:
+                # _call performs the final validation before transport. Expiry
+                # can cross there even after the post-gate check above. This
+                # request was valid on arrival and has not been sent.
+                if action == "drive" and payload["expiresAt"] <= self._now():
+                    raise ManualFailure(409, "INTENT_EXPIRED") from None
+                self._unknown = True
+                self._lease = None
+                raise
             except BaseException:
                 # Lost ACK/cancellation/malformed result never grants reusable authority.
                 self._unknown = True

@@ -15,8 +15,8 @@ fixtures; it needs no keys, database, cameras, network or robot. Expected result
 `COMPLETE` after approach, align, pickup, transport, place. This tests control flow,
 not vision accuracy, grasping, navigation, or physical dynamics.
 
-`python -m integration.recovery --grok` explicitly uses `OPENROUTER_API_KEY`,
-OpenRouter `x-ai/grok-4.7`, low reasoning and one structured tool proposal at a
+`python -m integration.recovery --grok` explicitly uses `XAI_API_KEY`,
+native xAI `grok-4.7`, low reasoning and one structured tool proposal at a
 time. It still controls only the fixture. No key is loaded from another project.
 Provider tests use `httpx.MockTransport`; a live Grok policy run is not part of
 the offline acceptance evidence. The policy passes structured observations, not

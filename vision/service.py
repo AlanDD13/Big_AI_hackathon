@@ -12,6 +12,7 @@ import uuid
 from PIL import Image, ImageDraw
 
 from vision.cameras import FrameStore
+from vision.camera_recovery import CameraRecovery, RouteBinding
 from vision.classification import build_classifier_from_env
 from vision.models import Event, MappingEvidence
 from vision.perception import Tracker, YoloDetector
@@ -43,6 +44,7 @@ class ObjectState:
     classification_status: str = "PENDING"
     classification_attempt: int = -1
     classification_provider: str | None = None
+    classification_model: str | None = None
     visual_pickup: dict | None = None
     visual_pickup_status: str = "PENDING"
     mapping: dict | None = None
@@ -89,6 +91,23 @@ class VisionService:
         self.mapping_receipts = OrderedDict()
         self.active_confirmations = 0
         self.camera_online = {}
+        binding = RouteBinding.load(settings.recovery_config_path) if settings.recovery_config_path else None
+        if binding and binding.setup_confirmed and not settings.backend_url:
+            raise ValueError('Automatic recovery requires the backend notification connection')
+        self.recovery = CameraRecovery(binding, self._recovery_notice, clock=self.now,
+            reference=lambda object_id: self.objects[object_id].evidence_crop if object_id in self.objects else None)
+
+    def _recovery_notice(self, event_type, object_id, reason, step=None):
+        state = self.objects.get(object_id)
+        if state is not None:
+            self._emit_object(event_type, state, reason=reason, **({'recoveryStep': step} if step else {}))
+
+    def _update_recovery(self):
+        objects = [self.object_payload(state) for state in self.objects.values()]
+        for obj in objects:
+            if not self.grok_enabled.get(obj['cameraId'], False):
+                obj['classificationStatus'] = 'PENDING'
+        self.recovery.update(objects)
 
     async def set_grok_enabled(self, camera_id, enabled):
         self.grok_enabled[camera_id] = enabled
@@ -101,6 +120,7 @@ class VisionService:
             for state in self.objects.values():
                 if state.camera_id == camera_id and state.classification_status == 'PENDING':
                     state.classification_attempt = -1
+        self._update_recovery()
 
     def _classification_done(self, task):
         self.classification_tasks.discard(task)
@@ -141,6 +161,7 @@ class VisionService:
             "classificationStatus": state.classification_status,
             "classification": state.classification,
             "classificationProvider": state.classification_provider,
+            "classificationModel": state.classification_model,
             "visualPickupAdvisory": state.visual_pickup,
             "visualPickupStatus": state.visual_pickup_status,
             "mapping": state.mapping, "potentialTarget": state.potential_target,
@@ -274,6 +295,10 @@ class VisionService:
             "width": frame.width, "height": frame.height, "tracks": tracks,
             "frameRef": f"/api/frames/{frame.camera_id}/{frame.session_id}/{frame.frame_id}",
         })
+        self._update_recovery()
+        if frame.kind == 'FIXED':
+            self.recovery.observe_scene(frame.received_at,
+                any(track['detectorLabel'].lower() == 'can' for track in tracks))
 
     def _make_room(self):
         if len(self.objects) >= self.settings.max_objects:
@@ -290,6 +315,7 @@ class VisionService:
         state.metric_count, state.metric_static_s, state.metric_last_frame = 0, 0, -1
         state.revision += 1
         state.classification = None
+        state.classification_model = None
         state.classification_status = "PENDING"
         state.visual_pickup = None
         state.visual_pickup_status = "PENDING"
@@ -362,8 +388,16 @@ class VisionService:
             # pose, approach clearance and size remain independently unverified.
             return await method(crop, crop) if method else None
         try:
-            result, advisory = await asyncio.gather(self.classifier.classify(crop, context),
-                                                   pickup_advisory(), return_exceptions=True)
+            joint = getattr(self.classifier, 'assess_object', None)
+            if joint:
+                try:
+                    assessment = await joint(crop, context)
+                    result, advisory = assessment.classification, assessment.pickup
+                except Exception:
+                    result, advisory = None, None
+            else:
+                result, advisory = await asyncio.gather(self.classifier.classify(crop, context),
+                                                       pickup_advisory(), return_exceptions=True)
         except asyncio.CancelledError:
             state = self.objects.get(object_id)
             if state and state.revision == revision:
@@ -385,6 +419,8 @@ class VisionService:
         state.classification = result.model_dump(mode="json") if result else None
         state.classification_status = status
         state.classification_provider = self.classifier.provider
+        state.classification_model = ((getattr(self.classifier, 'last_model', None)
+            or getattr(self.classifier, '_model', None)) if result and self.classifier.provider == 'grok' else None)
         state.visual_pickup_status = "COMPLETED" if advisory is not None else "UNAVAILABLE"
         state.visual_pickup = ({**advisory.model_dump(mode="json"), "advisory": True,
                                 "pickupVerified": False, "sourceFrameId": frame.frame_id}
@@ -392,6 +428,7 @@ class VisionService:
         state.evidence_crop = crop
         self._evaluate(state)
         self._emit_object("object.classified", state)
+        self._update_recovery()
 
     async def apply_mapping(self, evidence: MappingEvidence):
         key = f"{evidence.camera_id}:{evidence.session_id}:{evidence.track_id}"
@@ -469,6 +506,7 @@ class VisionService:
                 self.invalidate(state, "STALE_MAPPING")
                 self._evaluate(state)
                 self._emit_object("object.updated", state)
+        self._update_recovery()
 
     async def sweeper(self):
         while not self.closed:
@@ -532,3 +570,4 @@ class VisionService:
             task.cancel()
         if self.classification_tasks:
             await asyncio.gather(*tuple(self.classification_tasks), return_exceptions=True)
+        await self.recovery.close()

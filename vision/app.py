@@ -122,12 +122,17 @@ def create_app(settings=None, detector=None, classifier=None, run_workers=True):
                 "detectorError": service.detector_error,
                 "classificationProvider": service.classifier.provider,
                 "classificationTransport": getattr(service.classifier, "transport", "xai"),
+                "classificationModel": getattr(service.classifier, '_model', None),
+                "lastClassificationModel": getattr(service.classifier, 'last_model', None),
                 "detectorProfile": getattr(service.detector, "profile", "default"),
                 "detectorModel": getattr(service.detector, "model_name", None),
                 "liveClassificationConfigured": bool(getattr(service.classifier, "_key", None)),
                 "automaticClassificationEnabled": any(service.grok_enabled.values()),
                 "automaticClassificationByCamera": dict(service.grok_enabled),
                 "pendingAutomaticClassifications": len(service.classification_tasks),
+                "cameraRecovery": {"armed": bool(service.recovery.binding and service.recovery.binding.setup_confirmed),
+                                   "activeObjectId": service.recovery.active_id,
+                                   "threshold": service.recovery.binding.threshold if service.recovery.binding else .8},
                 "delivery": {"delivered": publisher.delivered, "failed": publisher.failed,
                              "queued": publisher.queue.qsize(), "lastError": publisher.last_error}}
 

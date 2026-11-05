@@ -1,5 +1,12 @@
 # Backend and Grok — zekihxh
 
+The two-camera operator console now consumes live accepted recovery notices,
+completed-step SSE messages and native Grok voice audio. See
+[the operator console contract](../contracts/operator-console-v1.md) for routes
+and local startup, and [Grok model usage](../docs/GROK_MODELS.md) for native xAI
+configuration. Voice requires a backend `XAI_API_KEY`; empty state and API
+failures are shown explicitly. No preview mission is injected into the UI.
+
 Own `backend/**`: API, mission policy/state, event stream, Grok adapter, storage
 migrations, consumer clients, module dependencies, tests and local fakes.
 Consume mapped observations/plans and dispatch missions to the bridge.
@@ -40,6 +47,12 @@ and a planner. For disposable local testing, set
 `BACKEND_MISSION_FIXTURE_MAPPING=1` and seed an explicitly labelled fixture
 classification and approved pickup profile. The fixture produces a queue
 row only. Event cursors retain the existing session and boot scope.
+
+A track currently marked `LOST` or `EXCLUDED` by Vision cannot queue from its
+historical mapping samples. Admission returns `STATIONARITY_REQUIRED` before
+planning; stored samples remain available for audit. New mapping samples alone
+do not clear that Vision revocation. A later valid Vision state can restore
+admission only if the ordinary freshness, classification and profile gates pass.
 
 Vision ingest uses the same `Authorization: Bearer $PEER_TOKEN` check.
 `POST /api/detections` accepts `object.observed` and shows the object

@@ -16,8 +16,7 @@ from vision.classification import build_classifier_from_env
 
 def load_env_file(path):
     """Read selected runtime values as data, without evaluating a shell script."""
-    allowed = {'XAI_API_KEY', 'GROK_VISION_PROVIDER', 'GROK_VISION_MODEL',
-               'OPENROUTER_API_KEY', 'OPENROUTER_VISION_MODEL'}
+    allowed = {'XAI_API_KEY', 'GROK_VISION_PROVIDER', 'GROK_VISION_MODEL'}
     if not path.exists():
         return
     for line in path.read_text().splitlines():
@@ -63,7 +62,7 @@ def main():
     load_env_file(args.env_file)
     classifier = build_classifier_from_env()
     if not getattr(classifier, '_key', None):
-        parser.error('Configure XAI_API_KEY or OPENROUTER_API_KEY in the runtime environment')
+        parser.error('Configure XAI_API_KEY in the runtime environment')
     result = asyncio.run(inspect_image(args.image.read_bytes(), classifier))
     print(json.dumps(result, indent=2))
     if any(result[key]['status'] != 'COMPLETED' for key in ('classification', 'visualPickupAdvisory')):

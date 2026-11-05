@@ -187,6 +187,58 @@ class PostgresEvidenceTests(unittest.TestCase):
                 ("queued", "fixture-plan"),
             )
 
+    def test_vision_revocation_blocks_old_mapping_evidence_until_reacquired(self):
+        from backend.state import BackendState
+        from backend.stationarity import evaluate_stationarity
+        from backend.tests.test_vision_ingest import publication
+        from backend.vision_ingest import ACCEPTED, parse_vision_event
+        from backend.vision_store import PostgresVisionLog
+
+        for frame in range(11):
+            object_id = self.store.record_observation(
+                self.producer, f"revoke-frame-{frame}",
+                replace(self.sample, received_at=100.0 + frame / 2), frame_id=frame,
+            )
+        with self.database() as connection:
+            connection.execute("UPDATE rover_backend.objects SET state = '{\"pickupProfileId\":\"demo\"}' WHERE id=%s", (object_id,))
+        vision = BackendState(now=lambda: 105.0, vision_log=PostgresVisionLog(self.database))
+        boot = uuid4().hex
+        wire_id = f"{self.context.camera_id}:session:track"
+
+        class Mapping:
+            calls = 0
+            def plan(self, request, evidence):
+                self.calls += 1
+                return Route("fixture-revoked-plan", "fixture-rover", 106.0)
+
+        mapping = Mapping()
+        collection = PostgresCollectionStore(self.database, self.store.load, lambda: 105.0)
+        for sequence, status in enumerate(["LOST", "POTENTIAL_TARGET", "EXCLUDED", "POTENTIAL_TARGET"], 1):
+            message = publication(
+                "object.updated", sequence, boot, cameraId=self.context.camera_id,
+                sessionId="session", trackId="track", objectId=wire_id,
+                geometryVersion="geometry", frameId=20 + sequence, entityVersion=sequence,
+                status=status, potentialTarget=status == "POTENTIAL_TARGET", mapping=None,
+            )
+            vision.ingest_vision(parse_vision_event(message, ACCEPTED))
+            if status == "POTENTIAL_TARGET":
+                self.assertTrue(evaluate_stationarity(self.load(object_id).samples, evaluated_at=105.0).eligible)
+                continue
+            # Even another calibrated Mapping sample must not silently revive
+            # a track that Vision still marks LOST/EXCLUDED.
+            self.store.record_observation(self.producer, f"after-revoke-{sequence}",
+                                          replace(self.sample, received_at=105.0), frame_id=11 + sequence)
+            result = admit_collection(
+                CollectionRequest(wire_id, "fixture-zone", "manual"), scope=self.scope,
+                key=f"revoked-{sequence}", store=collection, mapping=mapping, now=lambda: 105.0,
+            )
+            self.assertEqual(result.outcome, "stationarity_required")
+            self.assertEqual(mapping.calls, 0)
+            with self.database() as connection:
+                self.assertGreaterEqual(connection.execute(
+                    "SELECT count(*) FROM rover_backend.observations WHERE object_id=%s", (object_id,)
+                ).fetchone()[0], 11)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -6,17 +6,17 @@ from vision.inspect_image import inspect_image, load_env_file
 
 
 def test_env_loader_reads_only_allowed_values_without_executing_shell(tmp_path, monkeypatch):
-    for key in ('OPENROUTER_API_KEY', 'GROK_VISION_PROVIDER', 'OPENROUTER_VISION_MODEL'):
+    for key in ('XAI_API_KEY', 'GROK_VISION_PROVIDER', 'GROK_VISION_MODEL'):
         monkeypatch.delenv(key, raising=False)
     marker = tmp_path / 'executed'
     config = tmp_path / '.env'
-    config.write_text('export OPENROUTER_API_KEY="local-test-key"\n'
-                      'GROK_VISION_PROVIDER=openrouter\n'
-                      'OPENROUTER_VISION_MODEL=x-ai/grok-4.7\n'
+    config.write_text('export XAI_API_KEY="local-test-key"\n'
+                      'GROK_VISION_PROVIDER=xai\n'
+                      'GROK_VISION_MODEL=grok-4.7\n'
                       f'touch {marker}\nUNRELATED_SECRET=ignored\n')
     load_env_file(config)
     import os
-    assert os.environ['OPENROUTER_API_KEY'] == 'local-test-key'
+    assert os.environ['XAI_API_KEY'] == 'local-test-key'
     assert not marker.exists()
     assert 'UNRELATED_SECRET' not in os.environ
 

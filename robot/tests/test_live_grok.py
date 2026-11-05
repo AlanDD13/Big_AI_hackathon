@@ -39,7 +39,8 @@ class LivePolicyTests(unittest.TestCase):
         self.assertEqual(policy.calls, 1)
         opener.open.assert_called_once()
         payload = json.loads(opener.open.call_args.args[0].data)
-        self.assertEqual(payload["reasoning"], {"effort": "low"})
+        self.assertEqual(payload["reasoning_effort"], "low")
+        self.assertEqual(opener.open.call_args.args[0].full_url, 'https://api.x.ai/v1/chat/completions')
         self.assertTrue(payload["messages"][1]["content"][1]["image_url"]["url"].startswith("data:image/jpeg;base64,"))
 
     def test_duplicate_argument_keys_rejected(self):

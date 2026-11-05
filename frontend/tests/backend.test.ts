@@ -124,3 +124,16 @@ test('camera-wide SSE notices display without an object and preserve existing ob
   assert.equal(h.streams.length, 1);
   h.client.close();
 });
+test('pickup rejection and recovery lifecycle notifications arrive through SSE', async () => {
+  const h = harness([response()]);
+  await flush();
+  for (const [index, kind] of ['pickup_unavailable', 'recovery_started', 'recovery_completed', 'recovery_failed'].entries()) {
+    const body = { alertId: `recovery-${index}`, objectId: object.objectId, backendRevision: 1, kind,
+      reason: 'GRABBABILITY_LOW_OR_UNKNOWN', object: { ...object, visualPickupAdvisory: { grabbability_score: .42 } } };
+    h.streams[0].send(`alert.${kind}`, { ...event(), entity: 'alert', type: `alert.${kind}`, backendRevision: 1, body });
+  }
+  assert.equal(h.states.at(-1)?.store?.alerts.length, 4);
+  assert.equal(h.states.at(-1)?.store?.objects.length, 1);
+  assert.equal(h.streams.length, 1);
+  h.client.close();
+});

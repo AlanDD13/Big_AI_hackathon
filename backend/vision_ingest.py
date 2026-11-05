@@ -66,7 +66,9 @@ _OBJECT_REQUIRED = {
     "eligibilityReason",
     "frameRef",
 }
-_OBJECT_OPTIONAL = {"visualPickupStatus", "visualPickupAdvisory", "demoSector"}
+_OBJECT_OPTIONAL = {
+    "visualPickupStatus", "visualPickupAdvisory", "demoSector", "recoveryStep", "classificationModel",
+}
 _STATUSES = {"OBSERVING", "STATIC_PENDING_REVIEW", "POTENTIAL_TARGET", "EXCLUDED", "LOST"}
 _MOTION = {"OBSERVING", "MOVING", "STATIONARY", "EXCLUDED", "UNKNOWN"}
 _CLASS_STATUS = {"PENDING", "COMPLETED", "UNAVAILABLE"}
@@ -79,10 +81,14 @@ _FORMS = {"FLAT_SHEET", "CRUMPLED", "OTHER", "UNCERTAIN"}
 _SUITABILITY = {"POSSIBLE", "UNSUITABLE", "UNCERTAIN"}
 _GRASP = {"LIKELY", "UNLIKELY", "UNKNOWN"}
 _PICKUP_STATUS = {"PENDING", "COMPLETED", "UNAVAILABLE"}
+RECOVERY_ALERTS = frozenset({'alert.pickup_unavailable', 'alert.recovery_started',
+                            'alert.recovery_completed', 'alert.recovery_failed', 'alert.recovery_step'})
+RECOVERY_STEPS = {'FORWARD_30', 'TURN_RIGHT_90', 'FORWARD_154', 'PICKUP', 'RETURNED', 'LOWERED', 'RELEASED'}
 
 DETECTIONS = frozenset({"object.observed"})
 CLASSIFICATIONS = frozenset({"object.classified"})
 VISION_EVENTS = frozenset({
+    "frame.detections",
     "object.updated",
     "object.removed",
     "alert.potential_target",
@@ -90,7 +96,7 @@ VISION_EVENTS = frozenset({
     "alert.detector_unavailable",
     "alert.camera_unavailable",
     "camera.connected",
-})
+}) | RECOVERY_ALERTS
 ACCEPTED = DETECTIONS | CLASSIFICATIONS | VISION_EVENTS
 _OBJECT_TYPES = DETECTIONS | frozenset({
     "object.classified",
@@ -98,7 +104,7 @@ _OBJECT_TYPES = DETECTIONS | frozenset({
     "object.removed",
     "alert.potential_target",
     "alert.target_revoked",
-})
+}) | RECOVERY_ALERTS
 
 
 @dataclass(frozen=True)
@@ -151,7 +157,9 @@ def parse_vision_event(payload: object, allowed_types: frozenset[str]) -> Parsed
         kind = "target_revoked" if event_type == "alert.target_revoked" else None
         if event_type == "alert.potential_target":
             kind = "potential_target"
-        reason = body.get("reason") if event_type in {"alert.target_revoked", "object.removed"} else None
+        if event_type in RECOVERY_ALERTS:
+            kind = event_type.removeprefix('alert.')
+        reason = body.get("reason") if event_type in {"alert.target_revoked", "object.removed"} | RECOVERY_ALERTS else None
         action = "HOLD_BEFORE_PICKUP" if event_type == "alert.target_revoked" else None
         return ParsedVisionEvent(
             canonical,
@@ -179,7 +187,7 @@ def _object_projection(
     timestamp: float,
 ) -> dict[str, object]:
     allowed = set(_OBJECT_REQUIRED | _OBJECT_OPTIONAL)
-    if event_type in {"object.removed", "alert.target_revoked"}:
+    if event_type in {"object.removed", "alert.target_revoked"} | RECOVERY_ALERTS:
         allowed.add("reason")
     if event_type == "alert.target_revoked":
         allowed.add("action")
@@ -187,6 +195,8 @@ def _object_projection(
     missing = _OBJECT_REQUIRED - set(body)
     if event_type == "object.removed" and "reason" not in body:
         missing.add("reason")
+    if event_type in RECOVERY_ALERTS and 'reason' not in body:
+        missing.add('reason')
     if event_type == "alert.target_revoked":
         if "reason" not in body:
             missing.add("reason")
@@ -194,6 +204,13 @@ def _object_projection(
             missing.add("action")
     if unknown or missing:
         raise InvalidVision("Object payload has missing or unknown fields")
+    if event_type == 'alert.recovery_step':
+        _enum(body.get('recoveryStep'), 'recoveryStep', RECOVERY_STEPS)
+    elif 'recoveryStep' in body:
+        raise InvalidVision('recoveryStep belongs only to step completion events')
+    model = body.get('classificationModel')
+    if model is not None and (not isinstance(model, str) or not re.fullmatch(r'grok-[A-Za-z0-9_.-]{1,120}', model)):
+        raise InvalidVision('Invalid native Grok classification model')
     if event_type in {"object.observed", "object.classified", "object.updated", "alert.potential_target"}:
         if "reason" in body or "action" in body:
             raise InvalidVision("This event must not carry reason or action")
@@ -254,7 +271,7 @@ def _object_projection(
         _reason(body["reason"], "reason")
         if body["action"] != "HOLD_BEFORE_PICKUP":
             raise InvalidVision("alert.target_revoked action must be HOLD_BEFORE_PICKUP")
-    if event_type == "object.removed":
+    if event_type in {"object.removed"} | RECOVERY_ALERTS:
         _reason(body["reason"], "reason")
 
     floor_point = None if mapping is None else mapping["floorPointM"]
@@ -297,12 +314,14 @@ def _object_projection(
         "classificationStatus": classification_status,
         "classification": classification,
         "classificationProvider": provider,
+        "classificationModel": model,
         "potentialTarget": _bool(body["potentialTarget"], "potentialTarget"),
         "dispatchEligible": False,
         "eligibilityReason": _optional_reason(body["eligibilityReason"]),
         "frameRef": _text(body["frameRef"], "frameRef", 512),
         "visualPickupStatus": visual_status,
         "visualPickupAdvisory": advisory,
+        "recoveryStep": body.get('recoveryStep'),
         "evidenceUrl": None,
         "stationary": {
             "sampleCount": 0,
@@ -322,6 +341,10 @@ def _notice(
     event_type: str,
     body: Mapping[str, object],
 ) -> ParsedVisionEvent:
+    if event_type == 'frame.detections':
+        _detection_checkpoint(body)
+        return ParsedVisionEvent(canonical, event_id, boot_id, sequence, event_type,
+                                 None, None, None, None, None, None, None, str(body['cameraId']))
     if event_type == "camera.connected":
         _exact_keys(body, {"cameraId"})
         camera_id = _ascii(body["cameraId"], "cameraId")
@@ -346,6 +369,52 @@ def _notice(
             "camera_unavailable", _reason(body["reason"], "reason"), None, camera_id,
         )
     raise InvalidVision("Event type is not accepted on this route")
+
+
+def _detection_checkpoint(body):
+    """Validate mapping's frame envelope but never project it as metric evidence."""
+    _exact_keys(body, {'cameraId', 'sessionId', 'geometryVersion', 'frameId', 'cameraKind',
+        'capturedAt', 'receivedAt', 'timestampBasis', 'width', 'height', 'tracks', 'frameRef'})
+    camera = _ascii(body['cameraId'], 'cameraId')
+    session = _ascii(body['sessionId'], 'sessionId')
+    _ascii(body['geometryVersion'], 'geometryVersion')
+    frame = _integer(body['frameId'], 'frameId', minimum=0)
+    _enum(body['cameraKind'], 'cameraKind', {'FIXED', 'ROVER'})
+    _enum(body['timestampBasis'], 'timestampBasis', {'SOURCE', 'RECEIVE'})
+    for key in ('capturedAt', 'receivedAt'):
+        _number(body[key], key, minimum=0)
+    width, height = (_integer(body[key], key, minimum=1) for key in ('width', 'height'))
+    if max(width, height) > 8192 or body['frameRef'] != f'/api/frames/{camera}/{session}/{frame}':
+        raise InvalidVision('Invalid frame dimensions or reference')
+    tracks = body['tracks']
+    if not isinstance(tracks, list) or len(tracks) > 512:
+        raise InvalidVision('Invalid frame tracks')
+    identities = set()
+    for track in tracks:
+        if not isinstance(track, dict):
+            raise InvalidVision('Invalid frame track')
+        _exact_keys(track, {'trackId', 'objectId', 'detectorLabel', 'detectorScore', 'bboxPx',
+                           'contactPointPx', 'motionState', 'pixelStationarySeconds', 'exclusionReason'})
+        track_id = _ascii(track['trackId'], 'trackId')
+        if track_id in identities or track['objectId'] != f'{camera}:{session}:{track_id}':
+            raise InvalidVision('Invalid frame track identity')
+        identities.add(track_id)
+        _text(track['detectorLabel'], 'detectorLabel', 128)
+        if _number(track['detectorScore'], 'detectorScore', minimum=0) > 1:
+            raise InvalidVision('Invalid detector score')
+        box = _bbox(track['bboxPx'])
+        if not 0 <= box[0] < box[2] <= width or not 0 <= box[1] < box[3] <= height:
+            raise InvalidVision('Invalid track bounding box')
+        point = track['contactPointPx']
+        if point is not None:
+            if not isinstance(point, list) or len(point) != 2:
+                raise InvalidVision('Invalid contact point')
+            if not 0 <= _number(point[0], 'contactPointPx') <= width or not 0 <= _number(point[1], 'contactPointPx') <= height:
+                raise InvalidVision('Invalid contact point')
+        _enum(track['motionState'], 'motionState', _MOTION)
+        _number(track['pixelStationarySeconds'], 'pixelStationarySeconds', minimum=0)
+        if track['exclusionReason'] is not None:
+            _text(track['exclusionReason'], 'exclusionReason', 64)
 
 
 def _classification(value: object) -> dict[str, object] | None:
@@ -415,7 +484,7 @@ def _advisory(value: object) -> dict[str, object] | None:
     if not isinstance(value, dict):
         raise InvalidVision("visualPickupAdvisory must be an object or null")
     required = {"object_form", "visual_suitability", "reason", "advisory", "pickupVerified", "sourceFrameId"}
-    optional = {"robot_grasp_estimate", "estimate_confidence", "assumptions", "required_checks"}
+    optional = {"robot_grasp_estimate", "estimate_confidence", "assumptions", "required_checks", "grabbability_score"}
     if set(value) - required - optional or required - set(value):
         raise InvalidVision("visualPickupAdvisory has missing or unknown fields")
     if not isinstance(value["advisory"], bool) or not isinstance(value["pickupVerified"], bool):
@@ -432,6 +501,11 @@ def _advisory(value: object) -> dict[str, object] | None:
         stored["robot_grasp_estimate"] = _enum(value["robot_grasp_estimate"], "robot_grasp_estimate", _GRASP)
     if "estimate_confidence" in value:
         stored["estimate_confidence"] = _enum(value["estimate_confidence"], "estimate_confidence", _CONFIDENCE)
+    if 'grabbability_score' in value:
+        score = value['grabbability_score']
+        stored['grabbability_score'] = None if score is None else _number(score, 'grabbability_score', minimum=0)
+        if score is not None and stored['grabbability_score'] > 1:
+            raise InvalidVision('grabbability_score must be between 0 and 1')
     if "assumptions" in value:
         stored["assumptions"] = _phrases(value["assumptions"], "assumptions")
     if "required_checks" in value:
@@ -513,7 +587,10 @@ def _integer(value: object, name: str, *, minimum: int) -> int:
 def _number(value: object, name: str, *, minimum: float | None = None, maximum: float | None = None) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise InvalidVision(f"{name} must be a finite number")
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError as exc:
+        raise InvalidVision(f"{name} must be a finite number") from exc
     if number != number or number in {float("inf"), float("-inf")}:
         raise InvalidVision(f"{name} must be a finite number")
     if minimum is not None and number < minimum:

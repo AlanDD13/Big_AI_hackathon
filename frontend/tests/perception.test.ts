@@ -41,3 +41,12 @@ test('pending or malformed assessments cannot retain old classification/advisory
   assert.equal(perceptionFacts(state.objects[0]).advisory, null);
   assert.equal(parseSnapshot(state).objects.length, 1);
 });
+test('grabbability estimate stays separate from detector and classification scores', () => {
+  const old = visionFixture('Advisory').objects[0];
+  const object = { ...old, visualPickupAdvisory: { ...(old.visualPickupAdvisory as object), grabbability_score: .91 } };
+  assert.equal(perceptionFacts(object).advisory?.grabbabilityScore, .91);
+  for (const score of [null, true, '0.91', -1, 1.1, NaN]) {
+    assert.equal(perceptionFacts({ ...object, visualPickupAdvisory: { ...object.visualPickupAdvisory, grabbability_score: score } }).advisory?.grabbabilityScore, null);
+  }
+  assert.equal(perceptionFacts({ ...object, visualPickupStatus: 'PENDING' }).advisory, null);
+});
