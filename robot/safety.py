@@ -13,6 +13,10 @@ import time
 import uuid
 
 
+# Match backend admission without adding grace to expired commands.
+MAX_FUTURE_CLOCK_SKEW_S = 0.1
+
+
 class SafetyError(RuntimeError):
     def __init__(self, code, http_status=409, http_code=None):
         super().__init__(code)
@@ -482,7 +486,8 @@ class SafetyController:
                 error, http_status, http_code = "STALE_SEQUENCE", 409, "STALE_INTENT"
             elif not all(finite(v) for v in (issued_at, expires_at, x, y, yaw)):
                 error, http_status, http_code = "INVALID_NUMBER", 422, "INVALID_NUMBER"
-            elif not (0 < expires_at - issued_at <= self.limits.max_intent_s) or issued_at > wall_now or expires_at <= wall_now:
+            elif (not (0 < expires_at - issued_at <= self.limits.max_intent_s)
+                  or issued_at > wall_now + MAX_FUTURE_CLOCK_SKEW_S or expires_at <= wall_now):
                 error, http_status, http_code = "EXPIRED_OR_INVALID_DEADLINE", 409, "LEASE_EXPIRED"
             elif abs(x) > self.limits.max_x or abs(y) > self.limits.max_y or abs(yaw) > self.limits.max_yaw:
                 error, http_status, http_code = "VELOCITY_LIMIT", 422, "VELOCITY_LIMIT"
