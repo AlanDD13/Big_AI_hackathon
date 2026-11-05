@@ -186,19 +186,61 @@ def _fit_polygon(contour: np.ndarray) -> list[tuple[float, float]]:
     return [(float(x), float(y)) for x, y in ordered]
 
 
-def _floor_polygon(image: np.ndarray) -> list[tuple[float, float]]:
-    candidates = [contour for contour in (_color_contour(image), _edge_contour(image)) if contour is not None]
-    contour = max(candidates, key=cv2.contourArea) if candidates else None
+def _wood_floor_contour(image: np.ndarray) -> np.ndarray | None:
+    """Isolate the light wooden floor. Dark clothes, furniture, and screens stay out."""
+    height, width = image.shape[:2]
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    hue, saturation, value = cv2.split(hsv)
+    lightness = lab[:, :, 0]
+    warmth = lab[:, :, 2]
+    wood = (
+        (hue >= 5)
+        & (hue <= 45)
+        & (saturation >= 8)
+        & (saturation <= 170)
+        & (value >= 85)
+        & (lightness >= 100)
+        & (warmth >= 128)
+    )
+    if int(wood.sum()) < 0.04 * height * width:
+        return None
+    median = np.median(lab[wood], axis=0)
+    delta = lab.astype(np.int16) - median.reshape(1, 1, 3).astype(np.int16)
+    chroma = np.sqrt(delta[:, :, 1].astype(np.float32) ** 2 + delta[:, :, 2].astype(np.float32) ** 2)
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    activity = cv2.GaussianBlur(
+        cv2.convertScaleAbs(cv2.Laplacian(gray, cv2.CV_16S, ksize=3)),
+        (21, 21),
+        0,
+    )
+    keep = (chroma < 22) & (lightness >= 95) & (value >= 75) & (activity < 28)
+    mask = keep.astype(np.uint8) * 255
+    opened = cv2.morphologyEx(
+        mask,
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 19)),
+    )
+    closed = cv2.morphologyEx(
+        opened,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25)),
+    )
+    contour = _largest_contour(closed)
     if contour is None:
-        height, width = image.shape[:2]
-        margin_x = width * 0.08
-        margin_y = height * 0.18
-        return [
-            (margin_x, margin_y),
-            (width - margin_x, margin_y),
-            (width - margin_x, height - 4.0),
-            (margin_x, height - 4.0),
-        ]
+        return None
+    area = cv2.contourArea(contour)
+    frame = float(height * width)
+    if area < 0.08 * frame or area > 0.92 * frame:
+        return None
+    return contour
+
+
+def _floor_polygon(image: np.ndarray) -> list[tuple[float, float]]:
+    """Convex outline of the wooden floor only. An uncertain frame draws no grid."""
+    contour = _wood_floor_contour(image)
+    if contour is None:
+        return []
     return _fit_polygon(contour)
 
 
@@ -290,6 +332,8 @@ def _draw_floor(canvas: np.ndarray, points: list[tuple[float, float]], polygon: 
             name = f"{chr(ord('A') + row)}{column + 1}"
             cx = min_x + (column + 0.5) * span_x / GRID_COLUMNS
             cy = min_y + (row + 0.5) * span_y / GRID_ROWS
+            if cv2.pointPolygonTest(polygon, (float(cx), float(cy)), False) <= 0:
+                continue
             _draw_badge(canvas, name, (int(cx) - 28, int(cy) + 8), (255, 255, 255))
 
 
@@ -308,6 +352,9 @@ def _cycle(model: object | None) -> None:
     image, jpeg, source = _load_frame()
     height, width = image.shape[:2]
     points = _floor_polygon(image)
+    if len(points) < 3:
+        print("floor_not_isolated", flush=True)
+        return
     polygon = np.float32(points).reshape(-1, 1, 2)
     mask = np.zeros((height, width), dtype=np.uint8)
     cv2.fillPoly(mask, [polygon.astype(np.int32)], 255)

@@ -357,6 +357,9 @@ def main() -> int:
     image, source = _live_frame()
     height, width = image.shape[:2]
     points = tracker._floor_polygon(image)
+    if len(points) < 3:
+        print("floor_not_isolated", flush=True)
+        return 1
     polygon = np.float32(points).reshape(-1, 1, 2)
     mask = np.zeros((height, width), dtype=np.uint8)
     cv2.fillPoly(mask, [polygon.astype(np.int32)], 255)
