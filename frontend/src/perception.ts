@@ -11,6 +11,7 @@ export function perceptionFacts(object: BackendObject) {
   const form = choice(advisory.object_form, ['FLAT_SHEET', 'CRUMPLED', 'OTHER', 'UNCERTAIN']);
   const suitability = choice(advisory.visual_suitability, ['POSSIBLE', 'UNSUITABLE', 'UNCERTAIN']);
   const validAdvisory = object.visualPickupStatus === 'COMPLETED' && advisory.advisory === true && advisory.pickupVerified === false && form !== null && suitability !== null && string(advisory.reason) !== null;
+  const graspScore = number(advisory.grabbability_score);
   return {
     detectorScore: score !== null && score >= 0 && score <= 1 ? score : null,
     classificationStatus: choice(object.classificationStatus, ['PENDING', 'COMPLETED', 'UNAVAILABLE']),
@@ -20,6 +21,7 @@ export function perceptionFacts(object: BackendObject) {
     reason: completed ? string(classification.reason) : null,
     provider: completed ? string(object.classificationProvider) : null,
     visualStatus: choice(object.visualPickupStatus, ['PENDING', 'COMPLETED', 'UNAVAILABLE']),
-    advisory: validAdvisory ? { form, suitability, reason: string(advisory.reason)!, sourceFrameId: number(advisory.sourceFrameId) } : null,
+    advisory: validAdvisory ? { form, suitability, reason: string(advisory.reason)!, sourceFrameId: number(advisory.sourceFrameId),
+      grabbabilityScore: graspScore !== null && graspScore >= 0 && graspScore <= 1 ? graspScore : null } : null,
   };
 }

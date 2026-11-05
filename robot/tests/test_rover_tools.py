@@ -62,6 +62,15 @@ class T(unittest.TestCase):
         self.t.attitude_at = time.monotonic() - 5
         with self.assertRaises(rt.RoverError): self.t.drive(0.04, 0, 1)
         self.assertEqual(self.r.chassis.cmds, [])
+    def test_mission_pose_requires_fresh_finite_position_and_attitude(self):
+        self.r.chassis.cbs["pos"]([1, 2, 0])
+        self.assertEqual(self.t.pose(), (1, 2, 0))
+        self.t.position_at = time.monotonic() - 3
+        with self.assertRaisesRegex(rt.RoverError, "position_telemetry_stale"):
+            self.t.pose()
+        self.r.chassis.cbs["pos"]([float("nan"), 2, 0])
+        with self.assertRaisesRegex(rt.RoverError, "position_telemetry_stale"):
+            self.t.pose()
     def test_dispatch_validation(self):
         for bad in (("nope", {}), ("drive_chassis", {"x_mps": 1}), ("control_gripper", {"state": "x", "power": 5}), ("move_arm", [])):
             with self.assertRaises(rt.RoverError): self.t.dispatch(*bad)
@@ -115,6 +124,35 @@ class T(unittest.TestCase):
                 self.t.grasp_can()
         self.assertEqual(self.r.robotic_arm.moves, [])
         self.assertEqual(self.t._last_gripper_state, "close")
+    def test_false_close_ack_aborts_before_lift(self):
+        self.t.arm_delta_y = -35
+        with patch.object(self.t, "drive", return_value={"stoppedBy": None}), patch.object(
+                self.r.gripper, "close", return_value=False):
+            with self.assertRaisesRegex(rt.RoverError, "grasp_gripper_close_failed"):
+                self.t.grasp_can()
+        self.assertEqual(self.r.robotic_arm.moves, [])
+    def test_failed_lowering_aborts_before_gripper_or_drive(self):
+        for completed, failed in ((False, False), (True, True)):
+            with self.subTest(completed=completed, failed=failed):
+                action = type('BadAction', (), {'has_failed': failed,
+                    'wait_for_completed': lambda _self, **kw: completed})()
+                with patch.object(self.r.robotic_arm, 'move', return_value=action), patch.object(self.t, 'drive') as drive:
+                    with self.assertRaisesRegex(rt.RoverError, 'grasp_arm_lower_failed'):
+                        self.t.grasp_can()
+                drive.assert_not_called()
+                self.assertEqual(self.r.gripper.calls, [])
+    def test_failed_lift_is_not_command_completion(self):
+        self.t.arm_delta_y = -35
+        for completed, failed in ((False, False), (True, True)):
+            with self.subTest(completed=completed, failed=failed):
+                self.t._last_gripper_state = 'open'
+                self.t.arm_delta_y = -35
+                action = type('BadAction', (), {'has_failed': failed,
+                    'wait_for_completed': lambda _self, **kw: completed})()
+                with patch.object(self.r.robotic_arm, 'move', return_value=action), patch.object(
+                        self.t, 'drive', return_value={'stoppedBy': None}):
+                    with self.assertRaisesRegex(rt.RoverError, 'grasp_arm_lift_failed'):
+                        self.t.grasp_can()
     def test_loaded_transport_enabled_when_authorized(self):
         self.t.allow_transport = True
         self.t.gripper("close")
@@ -125,6 +163,6 @@ class T(unittest.TestCase):
         self.t.arm_delta_y = -35
         with patch.object(self.t, "drive", return_value={"stoppedBy": None}):
             grasp_res = self.t.grasp_can()
-        self.assertTrue(grasp_res["grasped"])
-        self.assertTrue(grasp_res["holdingVerified"])
+        self.assertIsNone(grasp_res["grasped"])
+        self.assertFalse(grasp_res["holdingVerified"])
 if __name__ == "__main__": unittest.main()

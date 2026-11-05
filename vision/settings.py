@@ -26,6 +26,7 @@ class Settings:
     local_sources: dict = field(default_factory=dict)
     rover_bridge_url: str | None = None
     rover_camera_id: str = "rover-1"
+    recovery_config_path: str | None = None
     clock: object | None = None
 
     def __post_init__(self):
@@ -57,6 +58,7 @@ class Settings:
             raise ValueError("ROVER_CAMERA_ID must identify a configured ROVER camera")
         return cls(token=token, cameras=cameras, local_sources=sources,
                    automatic_classification=automatic == 'true',
+                   recovery_config_path=os.getenv('VISION_RECOVERY_CONFIG') or None,
                    rover_bridge_url=os.getenv("ROVER_BRIDGE_URL") or None, rover_camera_id=rover_id,
                    mapping_url=os.getenv("MAPPING_URL") or None,
                    backend_url=os.getenv("BACKEND_URL") or None,

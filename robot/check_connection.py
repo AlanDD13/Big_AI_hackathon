@@ -32,6 +32,16 @@ def find_rover(serial, timeout=8):
 
 @contextmanager
 def rover_session(serial, verbose=False):
+    try:
+        from sdk_owner import sdk_owner
+    except ImportError:
+        from robot.sdk_owner import sdk_owner
+    with sdk_owner(serial), _connected_rover_session(serial, verbose) as session:
+        yield session
+
+
+@contextmanager
+def _connected_rover_session(serial, verbose=False):
     from robomaster import client, config, conn, logger, protocol, robot
 
     logger.setLevel(logging.DEBUG if verbose else logging.WARNING)
