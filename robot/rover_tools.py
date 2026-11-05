@@ -44,73 +44,85 @@ ATTITUDE_MAX_AGE_S = 2.0
 HOME_ARM_Y = -35.0               # elevated starting position with wide forward view
 FLOOR_ARM_Y = -70.0              # floor level for gripper grasp
 
-_YOLO_MODEL = None
 
+class StableYOLOTracker:
+    def __init__(self):
+        self.model = None
+        self.track = None
+        self.miss_count = 0
+        self.alpha = 0.45          # exponential moving average smoothing
+        self.max_misses = 10       # hold box across up to 10 dropped/blurred frames (~0.35s)
 
-def get_yolo_model():
-    global _YOLO_MODEL
-    if _YOLO_MODEL is None:
-        try:
-            from ultralytics import YOLO
-            for cand in ("/tmp/pavia-robot/yoloe-26s-paper.pt",
-                         "/Users/alandd/Desktop/Pavia_grok_hackathon/vision/.local/yoloe-26s-paper.pt",
-                         "/Users/alandd/Desktop/Pavia_grok_hackathon/yoloe-26s-seg-pf.pt"):
-                if Path(cand).exists():
-                    _YOLO_MODEL = YOLO(cand)
-                    break
-        except Exception:
-            _YOLO_MODEL = False
-    return _YOLO_MODEL if _YOLO_MODEL is not False else None
+    def _ensure_model(self):
+        if self.model is None:
+            try:
+                from ultralytics import YOLO
+                for cand in ("/tmp/pavia-robot/yoloe-26s-paper.pt",
+                             "/Users/alandd/Desktop/Pavia_grok_hackathon/vision/.local/yoloe-26s-paper.pt",
+                             "/Users/alandd/Desktop/Pavia_grok_hackathon/yoloe-26s-seg-pf.pt"):
+                    if Path(cand).exists():
+                        self.model = YOLO(cand)
+                        break
+            except Exception:
+                self.model = False
+        return self.model if self.model is not False else None
 
+    def update(self, img, tof_mm=None, gripper_state="open"):
+        if gripper_state == "close":
+            return {
+                "detected": True,
+                "canHeldInClaws": True,
+                "gripperState": "close",
+                "infraredDistanceMm": int(tof_mm) if tof_mm is not None else None,
+                "recommendedAction": "CAN_IN_CLAWS: Transport forward, lower arm (move_arm dy=-35), open gripper (state='open'), then stop_robot!"
+            }
 
-def clamp(value, low, high):
-    return max(low, min(high, value))
-
-
-def _wrap(angle):
-    return (angle + 180.0) % 360.0 - 180.0
-
-
-def track_can_in_corridor(img, tof_mm=None, gripper_state="open"):
-    """Detect upright beverage can using sub-pixel YOLO neural network."""
-    if gripper_state == "close":
-        return {
-            "detected": True,
-            "canHeldInClaws": True,
-            "gripperState": "close",
-            "infraredDistanceMm": int(tof_mm) if tof_mm is not None else None,
-            "recommendedAction": "CAN_IN_CLAWS: Transport forward, lower arm (move_arm dy=-35), open gripper (state='open'), then stop_robot!"
-        }
-
-    model = get_yolo_model()
-    if model is None or img is None or getattr(img, "size", 0) == 0:
-        return {"detected": False, "gripperState": "open", "canHeldInClaws": False}
-
-    try:
-        results = model.predict(img, conf=0.15, verbose=False)
-        if not results or len(results) == 0:
+        model = self._ensure_model()
+        if model is None or img is None or getattr(img, "size", 0) == 0:
             return {"detected": False, "gripperState": "open", "canHeldInClaws": False}
 
-        res = results[0]
-        best_can = None
+        best_box = None
         best_score = 0.0
 
-        for b in res.boxes:
-            label = res.names[int(b.cls[0])]
-            score = float(b.conf[0])
-            if label.lower() == "can" and score > best_score:
-                best_can = b
-                best_score = score
+        try:
+            results = model.predict(img, conf=0.08, verbose=False)
+            if results and len(results) > 0:
+                for b in results[0].boxes:
+                    label = results[0].names[int(b.cls[0])]
+                    score = float(b.conf[0])
+                    if label.lower() == "can" and score > best_score:
+                        best_box = [float(v) for v in b.xyxy[0]]
+                        best_score = score
+                if best_box is None:
+                    for b in results[0].boxes:
+                        label = results[0].names[int(b.cls[0])]
+                        score = float(b.conf[0])
+                        if label.lower() in ("cup", "plastic bottle") and score > best_score:
+                            best_box = [float(v) for v in b.xyxy[0]]
+                            best_score = score
+        except Exception:
+            pass
 
-        if best_can is None:
-            for b in res.boxes:
-                label = res.names[int(b.cls[0])]
-                score = float(b.conf[0])
-                if label.lower() in ("cup", "plastic bottle") and score > best_score:
-                    best_can = b
-                    best_score = score
+        # Hysteresis: acquire new track at score >= 0.15, maintain existing track down to 0.08
+        min_conf = 0.08 if self.track else 0.15
+        if best_box is not None and best_score >= min_conf:
+            self.miss_count = 0
+            if self.track is None:
+                self.track = {"box": best_box, "score": best_score}
+            else:
+                # Exponential moving average filter for smooth coordinates
+                prev_box = self.track["box"]
+                self.track["box"] = [
+                    self.alpha * best_box[i] + (1.0 - self.alpha) * prev_box[i]
+                    for i in range(4)
+                ]
+                self.track["score"] = 0.3 * best_score + 0.7 * self.track["score"]
+        else:
+            self.miss_count += 1
+            if self.miss_count > self.max_misses:
+                self.track = None
 
-        if best_can is None:
+        if self.track is None:
             return {
                 "detected": False,
                 "gripperState": "open",
@@ -118,8 +130,7 @@ def track_can_in_corridor(img, tof_mm=None, gripper_state="open"):
                 "message": "No drink can detected. Rotate to scan."
             }
 
-        xyxy = best_can.xyxy[0].tolist()
-        x1, y1, x2, y2 = float(xyxy[0]), float(xyxy[1]), float(xyxy[2]), float(xyxy[3])
+        x1, y1, x2, y2 = self.track["box"]
         cx = round((x1 + x2) / 2.0, 1)
         by = round(y2, 1)
         ty = round(y1, 1)
@@ -133,7 +144,7 @@ def track_can_in_corridor(img, tof_mm=None, gripper_state="open"):
         return {
             "detected": True,
             "label": "can",
-            "score": round(best_score, 3),
+            "score": round(self.track["score"], 2),
             "centerXPx": cx,
             "bottomYPx": by,
             "topYPx": ty,
@@ -151,8 +162,21 @@ def track_can_in_corridor(img, tof_mm=None, gripper_state="open"):
                       else f"TURN: Turn by {rec_turn:+.1f} deg to center the can.")
             )
         }
-    except Exception:
-        return {"detected": False, "gripperState": "open", "canHeldInClaws": False}
+
+
+_TRACKER_INSTANCE = StableYOLOTracker()
+
+
+def track_can_in_corridor(img, tof_mm=None, gripper_state="open"):
+    return _TRACKER_INSTANCE.update(img, tof_mm, gripper_state)
+
+
+def clamp(value, low, high):
+    return max(low, min(high, value))
+
+
+def _wrap(angle):
+    return (angle + 180.0) % 360.0 - 180.0
 
 
 def draw_hud(cv2_frame, tracker_info=None, tof_mm=None):
@@ -418,7 +442,7 @@ class RoverTools:
         # Stop immediately and tell caller to call grasp_can() instead of ramming the can.
         in_grasp_range = False
         if guard_tof and self.latest_tracker and self.latest_tracker.get("detected"):
-            if self.latest_tracker.get("isInGraspRange") or self.latest_tracker.get("distanceToClawsPx", 999) <= 100:
+            if self.latest_tracker.get("isInGraspRange") or self.latest_tracker.get("distanceToClawsPx", 999) <= 70:
                 in_grasp_range = True
 
         if guard_tof and x > 0 and in_grasp_range:
@@ -432,15 +456,15 @@ class RoverTools:
         # Close-range gentle speed limiter & claw pre-opening
         is_close = False
         if guard_tof and self.latest_tracker and self.latest_tracker.get("detected") \
-                and self.latest_tracker.get("distanceToClawsPx", 999) <= 160:
+                and self.latest_tracker.get("distanceToClawsPx", 999) <= 100:
             is_close = True
         elif guard_tof and self._use_tof and self.tof_mm is not None and self.tof_at \
-                and time.monotonic() - self.tof_at < 0.5 and 0 < self.tof_mm <= 300:
+                and time.monotonic() - self.tof_at < 0.5 and 0 < self.tof_mm <= 200:
             is_close = True
 
         if x > 0 and is_close:
-            x = min(x, 0.035)             # gentle 3.5 cm/s
-            duration = min(duration, 0.5) # max 0.5s (~1.75 cm per call)
+            x = min(x, 0.06)             # gentle 6.0 cm/s
+            duration = min(duration, 0.8) # max 0.8s (~4.8 cm per call)
             # Ensure gripper is pre-opened wide so claws act as an open funnel and cannot ram the can
             if self._last_gripper_state != "open":
                 try:
