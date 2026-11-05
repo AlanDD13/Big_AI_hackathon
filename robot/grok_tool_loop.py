@@ -166,7 +166,7 @@ def update_brain_monitor(step, max_steps, name, args, outcome, steps):
 
 
 def generate_html_summary(log_dir, steps, result, calls):
-    """Generate a clean visual timeline of photos, Grok reasoning, and movements for post-mortem analysis."""
+    """Generate a clean visual timeline of photos, Grok reasoning, YOLO telemetry, and infrared ToF."""
     rows = ""
     for s in steps:
         step_num = s["step"]
@@ -174,12 +174,34 @@ def generate_html_summary(log_dir, steps, result, calls):
         args = json.dumps(s["args"])
         outcome = json.dumps(s["outcome"].get("result", s["outcome"]))
         thought = s.get("thought", "")
+        tof = s.get("infraredLightMm")
+        tof_str = f"{tof:.0f} mm ({tof/10.0:.1f} cm)" if tof is not None and tof > 0 else "None (Out of range / off-center)"
+        yolo = s.get("yoloPosition") or {}
+        if yolo.get("detected"):
+            box_str = json.dumps(yolo.get("box"))
+            yolo_str = f"""
+            <div style="font-size: 12px; color: #58a6ff; font-weight: bold; margin-bottom: 4px;">🎯 YOLO Can Detected: {yolo.get('score', 0):.2f}</div>
+            <div style="font-size: 11px; font-family: monospace; color: #8b949e;">Box: {box_str}</div>
+            <div style="font-size: 11px; font-family: monospace; color: #8b949e;">Center X: {yolo.get('centerXPx')} px (dx: {yolo.get('offsetFromCenterPx'):+.0f} px)</div>
+            <div style="font-size: 11px; font-family: monospace; color: #8b949e;">Bottom Y: {yolo.get('bottomYPx')} px (dy to claws: {yolo.get('distanceToClawsPx')} px)</div>
+            <div style="font-size: 11px; font-family: monospace; color: {'#3fb950' if yolo.get('isInGraspRange') else ('#d29922' if yolo.get('isInCorridor') else '#f85149')};">
+                Status: {'GRASP READY' if yolo.get('isInGraspRange') else ('IN CORRIDOR' if yolo.get('isInCorridor') else 'OFF-CENTER')}
+            </div>
+            """
+        else:
+            yolo_str = "<div style=\"font-size: 12px; color: #8b949e;\">No target detected</div>"
+
         img_name = f"step-{step_num:02d}.jpg"
         rows += f"""
         <tr style="border-bottom: 1px solid #30363d;">
             <td style="padding: 12px; font-weight: bold; color: #58a6ff; vertical-align: top;">Step {step_num}</td>
             <td style="padding: 12px; vertical-align: top;">
                 <img src="{img_name}" style="width: 240px; border-radius: 8px; border: 1px solid #30363d;" alt="Step {step_num}">
+            </td>
+            <td style="padding: 12px; vertical-align: top; width: 220px;">
+                <div style="font-size: 12px; color: #d2a8ff; font-weight: bold; margin-bottom: 4px;">📡 Infrared Laser ToF:</div>
+                <div style="font-size: 12px; font-family: monospace; color: #c9d1d9; margin-bottom: 12px;">{tof_str}</div>
+                {yolo_str}
             </td>
             <td style="padding: 12px; vertical-align: top;">
                 <div style="font-family: monospace; color: #7ee787; font-size: 14px; margin-bottom: 6px;">{tool}({args})</div>
@@ -203,12 +225,12 @@ def generate_html_summary(log_dir, steps, result, calls):
 </head>
 <body>
     <div class="header">
-        <h1>Mission Summary & Analysis</h1>
+        <h1>Autonomous Mission Metrics & Analysis</h1>
         <div><strong>Result:</strong> <span style="color: {'#2ea043' if result == 'STOPPED_BY_GROK' else '#f85149'}">{result}</span> | <strong>Grok Calls:</strong> {calls} | <strong>Run:</strong> {log_dir.name}</div>
     </div>
     <table>
         <thead>
-            <tr><th>#</th><th>Camera Frame</th><th>Action & Outcome</th></tr>
+            <tr><th>#</th><th>Camera Frame</th><th>Sensors (IR ToF & YOLO)</th><th>Action & Outcome</th></tr>
         </thead>
         <tbody>
             {rows}
@@ -217,6 +239,7 @@ def generate_html_summary(log_dir, steps, result, calls):
 </body>
 </html>"""
     (log_dir / "summary.html").write_text(html, encoding="utf-8")
+    (BRAIN_DIR / "summary.html").write_text(html, encoding="utf-8")
 
 
 def main():
@@ -257,6 +280,8 @@ def main():
                 (BRAIN_DIR / f"rover_step_{step:02d}.jpg").write_bytes(jpeg)
 
                 # 2. Build context
+                current_tof = tools.tof_mm
+                current_tracker = tools.latest_tracker
                 status = {
                     "step": step,
                     "maxSteps": MAX_STEPS,
@@ -287,13 +312,25 @@ def main():
                     last_outcome = {"tool": name, "error": str(exc)}
                 except Exception as exc:
                     last_outcome = {"tool": name, "error": type(exc).__name__}
-                    steps.append({"step": step, "tool": name, "args": args, "outcome": last_outcome, "thought": thought})
+                    step_record = {
+                        "step": step, "tool": name, "args": args, "outcome": last_outcome,
+                        "thought": thought, "reqId": request_id, "infraredLightMm": current_tof,
+                        "infraredLightCm": round(current_tof / 10.0, 1) if current_tof is not None else None,
+                        "yoloPosition": current_tracker, "screenshotFile": f"step-{step:02d}.jpg"
+                    }
+                    steps.append(step_record)
                     print("HARDWARE_ERROR", last_outcome, flush=True)
                     result = "HARDWARE_ERROR"
                     break
 
                 past_actions.append(f"{name}({json.dumps(args)})")
-                steps.append({"step": step, "tool": name, "args": args, "outcome": last_outcome, "reqId": request_id, "thought": thought})
+                step_record = {
+                    "step": step, "tool": name, "args": args, "outcome": last_outcome,
+                    "thought": thought, "reqId": request_id, "infraredLightMm": current_tof,
+                    "infraredLightCm": round(current_tof / 10.0, 1) if current_tof is not None else None,
+                    "yoloPosition": current_tracker, "screenshotFile": f"step-{step:02d}.jpg"
+                }
+                steps.append(step_record)
                 print(f"[STEP {step}/{MAX_STEPS}] Executed: {json.dumps(last_outcome)}", flush=True)
 
                 # Update live monitor in brain
@@ -315,6 +352,35 @@ def main():
 
     report = {"result": result, "grokCalls": calls, "steps": steps, "log": str(LOG)}
     (LOG / "report.json").write_text(json.dumps(report, indent=2))
+    (BRAIN_DIR / "report.json").write_text(json.dumps(report, indent=2))
+
+    metrics_export = {
+        "result": result,
+        "grokCalls": calls,
+        "timestamp": time.time(),
+        "steps": [
+            {
+                "step": s["step"],
+                "screenshot": s["screenshotFile"],
+                "infraredLightMm": s["infraredLightMm"],
+                "infraredLightCm": s["infraredLightCm"],
+                "yoloDetected": bool(s["yoloPosition"] and s["yoloPosition"].get("detected")),
+                "yoloScore": s["yoloPosition"].get("score") if s["yoloPosition"] else None,
+                "yoloBox": s["yoloPosition"].get("box") if s["yoloPosition"] else None,
+                "yoloCenterXPx": s["yoloPosition"].get("centerXPx") if s["yoloPosition"] else None,
+                "yoloBottomYPx": s["yoloPosition"].get("bottomYPx") if s["yoloPosition"] else None,
+                "yoloOffsetFromCenterPx": s["yoloPosition"].get("offsetFromCenterPx") if s["yoloPosition"] else None,
+                "yoloDistanceToClawsPx": s["yoloPosition"].get("distanceToClawsPx") if s["yoloPosition"] else None,
+                "tool": s["tool"],
+                "args": s["args"],
+                "outcome": s["outcome"].get("result", s["outcome"]),
+            }
+            for s in steps
+        ]
+    }
+    (LOG / "mission_metrics.json").write_text(json.dumps(metrics_export, indent=2))
+    (BRAIN_DIR / "mission_metrics.json").write_text(json.dumps(metrics_export, indent=2))
+
     generate_html_summary(LOG, steps, result, calls)
     print(f"\nFINAL RESULT: {result} | Grok calls: {calls} | Saved report to {LOG}/report.json", flush=True)
     print(f"📊 Visual post-mortem analysis generated at: {LOG}/summary.html", flush=True)
