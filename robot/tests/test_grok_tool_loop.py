@@ -64,6 +64,16 @@ class GrokToolLoopTests(unittest.TestCase):
         self.assertEqual(args, {"reason": "operator verification"})
         self.assertEqual(len(opener.requests), 1)
 
+    def test_camera_reference_is_data_and_pickup_requires_alignment(self):
+        opener = Opener({"tool_calls": [tool()]})
+        with patch.object(self.runner, 'TARGET_REFERENCE', b'reference-jpeg'):
+            self.runner.ask_grok(opener, 'fake', b'live-jpeg', {'pickupOnly': True})
+        payload = json.loads(opener.requests[0].data)
+        images = [part for part in payload['messages'][1]['content'] if part['type'] == 'image_url']
+        self.assertEqual(len(images), 2)
+        self.assertIn('isInCorridor AND isInGraspRange', payload['messages'][0]['content'])
+        self.assertNotIn('distanceToJawsCm <= 9 cm', payload['messages'][0]['content'])
+
     def test_provider_failure_is_not_retried(self):
         opener = Opener(error=TimeoutError("unknown provider outcome"))
         with self.assertRaises(TimeoutError):

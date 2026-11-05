@@ -43,6 +43,12 @@ completed assessments remain; explicit stateless peer calls are independent.
 Overrides are in-memory and restart from VISION_AUTOMATIC_CLASSIFICATION.
 This control does not authorize movement or pickup. Health exposes per-camera
 automaticClassificationByCamera and aggregate automaticClassificationEnabled.
+The separately armed measured-route integration is specified in
+[`contracts/camera-recovery-v1.md`](../contracts/camera-recovery-v1.md): any
+configured fixed camera, numeric grabbability estimate, supported can profile,
+durable scene/job deduplication, return/release, and frontend rejection/lifecycle
+alerts. Its explicit measured setup does not change generic mapped mission
+eligibility. Consumers must be upgraded before enabling its producer.
 Backend durable
 snapshot/SSE/session rules are in
 [`contracts/backend-stream-v1.md`](../contracts/backend-stream-v1.md).

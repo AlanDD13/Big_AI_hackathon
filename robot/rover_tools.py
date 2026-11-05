@@ -866,8 +866,8 @@ class RoverTools:
         # Guard: If can is ALREADY grasped and arm is lifted, do not re-grasp!
         if self._last_gripper_state == "close" and self.arm_delta_y >= -10:
             return {
-                "grasped": True if self.allow_transport else None,
-                "holdingVerified": bool(self.allow_transport),
+                "grasped": None,
+                "holdingVerified": False,
                 "alreadyCommanded": True,
                 "message": (
                     "Can is already grasped and lifted! Proceed to transport forward with drive_chassis."
@@ -900,7 +900,8 @@ class RoverTools:
                 if dy != 0:
                     try:
                         action = self.rover.robotic_arm.move(x=0, y=dy)
-                        action.wait_for_completed(timeout=3.0)
+                        if not action.wait_for_completed(timeout=3.0) or action.has_failed:
+                            raise RoverError('grasp_arm_lower_failed')
                         time.sleep(0.2)
                         self.arm_delta_y += dy
                     except Exception as exc:
@@ -908,7 +909,8 @@ class RoverTools:
 
             # 2. Open gripper jaws wide (12 cm span)
             try:
-                self.rover.gripper.open(power=50)
+                if self.rover.gripper.open(power=50) is not True:
+                    raise RoverError('grasp_gripper_open_failed')
                 time.sleep(0.8)
                 self.rover.gripper.pause()
                 self._last_gripper_state = "open"
@@ -919,13 +921,16 @@ class RoverTools:
         # At gentle 0.060 m/s for calc_dur (1.1-1.8s) = ~6.6 to 10.8 cm forward glide!
         # Jaws are open wide (12cm) so can funnels safely inside without knocking or bulldozing!
         drive_res = self.drive(x_mps=0.060, y_mps=0.0, z_degps=0.0, duration_s=calc_dur, hold_heading=True, guard_tof=False)
+        if drive_res.get('stoppedBy'):
+            raise RoverError('grasp_seating_drive_incomplete')
 
         # 4. Clamp gripper firmly around the can with high power
         with self._lock:
             self._zero()
             self._last_gripper_state = "close"
             try:
-                self.rover.gripper.close(power=80)
+                if self.rover.gripper.close(power=80) is not True:
+                    raise RoverError('grasp_gripper_close_failed')
                 time.sleep(1.4)
                 self.rover.gripper.pause()
                 self._last_gripper_state = "close"
@@ -936,15 +941,17 @@ class RoverTools:
             lift_done = False
             try:
                 action = self.rover.robotic_arm.move(x=0, y=35)
-                lift_done = bool(action.wait_for_completed(timeout=3.0))
+                lift_done = bool(action.wait_for_completed(timeout=3.0)) and not action.has_failed
+                if not lift_done:
+                    raise RoverError('grasp_arm_lift_failed')
                 time.sleep(0.3)
                 self.arm_delta_y += 35
             except Exception as exc:
                 raise RoverError("grasp_arm_lift_failed") from exc
 
         return {
-            "grasped": True if self.allow_transport else None,
-            "holdingVerified": bool(self.allow_transport),
+            "grasped": None,
+            "holdingVerified": False,
             "seatedDrive": drive_res,
             "gripperCloseCommanded": True,
             "gripperClamped": True,

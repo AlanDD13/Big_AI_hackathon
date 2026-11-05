@@ -85,6 +85,7 @@ class VisualPickupResult(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
     robot_grasp_estimate: Literal['LIKELY', 'UNLIKELY', 'UNKNOWN'] = 'UNKNOWN'
     estimate_confidence: Confidence = Confidence.LOW
+    grabbability_score: float | None = Field(default=None, ge=0, le=1, strict=True)
     assumptions: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(default_factory=list, max_length=5)
     required_checks: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(default_factory=list, max_length=5)
 
@@ -233,7 +234,11 @@ class GrokClassifier:
             'crumpled lightweight paper may offer a grasp surface. A can with unknown contents '
             'needs an empty/weight check. Do not claim dimensions or weight are measured from '
             'an uncalibrated photo, and arm travel does not prove current reachability. '
-            'Return estimate_confidence, assumptions and required_checks. Use UNKNOWN for '
+            'Return estimate_confidence and grabbability_score: a number from 0 to 1 estimating '
+            'whether this robot could grasp this target, or null when evidence is insufficient. '
+            'This score is a model estimate, not a calibrated probability or detector score. '
+            'Do not assign a high score when unresolved size, weight, shape or carrying checks '
+            'could change the grasp decision. Return assumptions and required_checks. Use UNKNOWN for '
             'ambiguous/borderline cases. Keep required checks explicit for a conditional LIKELY. '
             'Actual pickup requires independent physical and robot validation. '
             'Robot parameters (trusted configuration): ' + json.dumps(robot_profile_from_env())
@@ -253,6 +258,7 @@ class GrokClassifier:
             'and carrying conservatively. Do not infer ownership. In pickup describe '
             'object_form and visible suitability, then estimate whether this specific '
             'EP Core could grasp it: LIKELY, UNLIKELY or UNKNOWN, with confidence, explicit '
+            'grabbability_score (0 to 1, or null if unknown), '
             'assumptions and required_checks. Compare usable jaw opening, conservative '
             'payload, grip force and arm constraints from the trusted robot configuration. '
             'Use typical object knowledge only as an explicit assumption, never a measured '
@@ -262,7 +268,9 @@ class GrokClassifier:
             'carried objects are UNSUITABLE and UNLIKELY. Ambiguous or borderline cases '
             'are UNKNOWN. Arm travel does not prove current reachability. There is no '
             'measured object size/weight or robot pose here. These are estimates only, '
-            'never pickup authorization or verified success. Keep descriptions under 20 words, '
+            'never pickup authorization or verified success. The numeric score estimates grasp '
+            'feasibility, is not calibrated, and must stay low/unknown when unresolved checks '
+            'could change the result. Keep descriptions under 20 words, '
             'each reason under 25 words, and at most 3 assumptions/checks of 12 words each. '
             'Robot parameters: '
             + json.dumps(robot_profile_from_env())

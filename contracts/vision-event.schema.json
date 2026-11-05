@@ -108,6 +108,7 @@
               "visual_suitability": {"enum": ["POSSIBLE", "UNSUITABLE", "UNCERTAIN"]},
               "robot_grasp_estimate": {"enum": ["LIKELY", "UNLIKELY", "UNKNOWN"]},
               "estimate_confidence": {"enum": ["LOW", "MEDIUM", "HIGH"]},
+              "grabbability_score": {"type": ["number", "null"], "minimum": 0, "maximum": 1, "description": "Model estimate, not calibrated probability or physical pickup evidence"},
               "assumptions": {"type": "array", "maxItems": 5, "items": {"type": "string", "minLength": 1, "maxLength": 200}},
               "required_checks": {"type": "array", "maxItems": 5, "items": {"type": "string", "minLength": 1, "maxLength": 200}},
               "reason": {"type": "string", "minLength": 1, "maxLength": 500},
@@ -140,7 +141,8 @@
       "enum": [
         "object.observed", "object.classified", "object.updated", "object.removed",
         "alert.potential_target", "alert.target_revoked",
-        "camera.connected", "alert.detector_unavailable", "alert.camera_unavailable"
+        "camera.connected", "alert.detector_unavailable", "alert.camera_unavailable",
+        "alert.pickup_unavailable", "alert.recovery_started", "alert.recovery_completed", "alert.recovery_failed"
       ]
     },
     "timestamp": {"type": "number", "minimum": 0},
@@ -231,6 +233,42 @@
             "properties": {
               "cameraId": {"$ref": "#/$defs/AsciiId"},
               "reason": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Z0-9_]+$"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "enum": [
+              "alert.pickup_unavailable",
+              "alert.recovery_started",
+              "alert.recovery_completed",
+              "alert.recovery_failed"
+            ]
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/ObjectCore"
+              }
+            ],
+            "required": [
+              "reason"
+            ],
+            "not": {
+              "required": [
+                "action"
+              ]
             }
           }
         }

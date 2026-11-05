@@ -348,7 +348,8 @@ class BackendState:
         return body
 
     def _vision_alert_unlocked(self, event: ParsedVisionEvent, body: dict[str, object]) -> int | None:
-        if event.alert_kind not in {"potential_target", "target_revoked"}:
+        if event.alert_kind not in {"potential_target", "target_revoked", "pickup_unavailable",
+                                    "recovery_started", "recovery_completed", "recovery_failed"}:
             return None
         assert event.object_id is not None
         assert event.revision is not None

@@ -81,3 +81,11 @@ Cursor continuation: [handoff](../docs/CURSOR_HANDOFF.md) and
 
 Paper detection, Grok 4.7 over OpenRouter, live test results and the viewer's
 size calibration/pickup advisory are documented in [PAPER_TEST.md](PAPER_TEST.md).
+# Automatic camera-to-route demo
+
+See [camera-recovery-v1](../contracts/camera-recovery-v1.md) for the opt-in
+camera-independent trigger, 80% default grabbability estimate threshold, setup,
+failure reconciliation and frontend alerts. Configure `VISION_RECOVERY_CONFIG`
+using [camera-recovery.example.json](camera-recovery.example.json). It is
+disabled until the measured physical setup is explicitly confirmed. This runs
+the tested can route; arbitrary object positions need a different planned route.

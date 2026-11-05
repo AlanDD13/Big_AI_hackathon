@@ -30,7 +30,7 @@ class Publisher:
         return self.settings.backend_url, "/api/vision-events"
 
     def enqueue(self, event):
-        if not self.destination(event)[0]:
+        if not self.destination(event)[0] and not (event.type == 'frame.detections' and self.settings.backend_url):
             return
         if self.queue.full():
             self.failed += 1
@@ -40,6 +40,14 @@ class Publisher:
 
     async def deliver(self, event, client):
         base, path = self.destination(event)
+        # Backend consumes the same producer sequence as mapping. Omitting the
+        # frame events would make every later classification look like a gap.
+        if event.type == 'frame.detections' and self.settings.backend_url:
+            await self._deliver_to(event, client, self.settings.backend_url, '/api/vision-events')
+        if base:
+            await self._deliver_to(event, client, base, path)
+
+    async def _deliver_to(self, event, client, base, path):
         headers = {"Authorization": f"Bearer {self.settings.peer_token}"}
         for attempt in range(3):
             try:
