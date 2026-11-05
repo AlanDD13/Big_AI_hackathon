@@ -61,7 +61,13 @@ export default function ConnectedManual({ ready, onRefresh }: { ready: boolean; 
     { name: 'Turn left', icon: RotateCcw, strafe: 0, forward: 0, turn: -1 },
     { name: 'Turn right', icon: RotateCw, strafe: 0, forward: 0, turn: 1 },
   ];
-  return <section className="backend-workspace connected-manual" ref={workspace} tabIndex={-1} aria-label="Connected manual control">
+  return <section className="backend-workspace connected-manual" ref={workspace} tabIndex={-1} aria-label="Connected manual control" onBlurCapture={e => {
+    const next = e.relatedTarget;
+    // Window blur does not fire when focus moves to another part of this page.
+    // Held keyboard input must lose authority when its workspace loses focus.
+    if (!(next instanceof Node) || !e.currentTarget.contains(next) ||
+      (keys.current.size > 0 && next instanceof HTMLElement && next.closest('input,button,textarea,select'))) release('blur');
+  }}>
     <div className="page-heading"><div><div className="eyebrow">WAREHOUSE / MANUAL</div><h1>Manual control</h1><p>Hold to drive the configured simulator through the backend.</p></div><button className="button secondary" onClick={() => { release(); void onRefresh(); }}>Refresh connection</button></div>
     <div className="fleet-readiness" role="status"><Gamepad2 size={20}/><div><strong>{simulator ? 'Backend simulator' : status?.executionMode === 'physical' ? 'Physical bridge · controls disabled' : 'Bridge not verified'}</strong><p>{state.message}</p></div><span className="badge neutral">{status?.stage ?? 'Unavailable'}</span></div>
     <div className="connected-manual-grid"><section className="panel"><div className="panel-heading"><h2>Joystick control</h2><span className={`badge ${state.lease ? 'green' : 'neutral'}`}>{state.lease ? 'Control held' : 'Released'}</span></div>
