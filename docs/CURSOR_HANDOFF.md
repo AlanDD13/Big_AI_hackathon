@@ -1,167 +1,181 @@
-# Continue Alan's work in Cursor
+# Cursor handoff — native Grok operator console
 
-For the current LangGraph testing task, start with
-[`CURSOR_LANGGRAPH_HANDOFF.md`](CURSOR_LANGGRAPH_HANDOFF.md). It records PR19,
-the isolated test clone and offline-first commands, and supersedes older
-LangGraph/board-status assumptions below for that task.
+Updated 2026-11-05, Europe/Rome. This replaces the older 2026-11-04 handoff.
 
-Updated 2026-11-04, 18:36 Europe/Rome. This replaces the earlier handoff.
-Check live Git/board state before acting; other agents are working concurrently.
+## Resume prompt
 
-## Start here
+> Read this file, AGENTS.md, docs/CONTRACTS.md, docs/GROK_MODELS.md and
+> contracts/operator-console-v1.md. Inspect current Git status first and preserve
+> untracked files. Continue the native xAI operator-console integration. The user
+> explicitly requested no other agents and no further board posts; do not spawn
+> agents or write to the board. Core implementation and offline/browser checks
+> are complete. Finish private runtime setup and supervised live acceptance.
+> Do not launch physical motion just to check the UI. Never put secrets in chat,
+> commits, the frontend, screenshots or this handoff. Do not claim a fixture is a
+> live camera, live Grok inference or confirmed physical pickup.
 
-Open `/Users/alandd/Desktop/Pavia_grok_hackathon` in a new Cursor Agent chat.
-Paste:
+## Git and workspace
 
-> Read docs/CURSOR_HANDOFF.md, root AGENTS.md, vision/AGENTS.md and
-> docs/CONTRACTS.md. Inspect Git status and the current remote PR heads before
-> editing. Preserve all local edits and untracked files. Resume Alan's existing
-> vision work and coordinate integration within ownership rules. The vision
-> branch already received main in remote commit efc3613; do not publish the
-> redundant temporary merge described below. Board handling is delegated to
-> Grok: do not restart a watcher/coordinator. Use the existing project skills
-> when relevant. Read the board at required boundaries, run relevant tests,
-> and report exact commits and remaining limitations. Keep draft PRs draft
-> until reviewed; Alan remains the lead for merge and ownership decisions.
+- Repository: `AlanDD13/Big_AI_hackathon` (private).
+- Primary checkout: `/Users/alandd/Desktop/Pavia_grok_hackathon`.
+- Current implementation worktree: `/private/tmp/pavia-main-checkpoint-1105`,
+  branch `task/AlanDD13/operator-backend-grok`.
+- At the user's request, the existing frontend and camera-route integration were
+  committed and pushed to `main` **before** starting these backend changes:
+  checkpoint `191f3eeb13296532e6e3c955b74791575e4b635b`.
+- This handoff ships with the subsequent native xAI/backend implementation.
+  Use `git log -5 --oneline` and `git status --short` to identify its exact commit;
+  check remote state rather than relying on older PR/handoff snapshots.
+- Preserve the primary checkout's pre-existing untracked `.agents/`,
+  `docs/EVALUATION_FIT.md`, `docs/FILMING_IDEAS.md`,
+  `docs/HACKATHON_ALTERNATIVES.md`, `mobileclip2_b.ts` and model checkpoints.
+- The implementation worktree has an untracked `frontend/node_modules` symlink
+  to the primary checkout's dependencies. Do not commit it or temporary fixtures.
+- The lead authorized this cross-layer work and pushing to main. Do not reset,
+  force-push, merge unrelated work, deploy or touch shared database schemas.
 
-Use `/hackathon-vision` for perception work and `/hackathon-board` for board
-coordination. Read current local instructions before using older skill text.
-`vision/CHECKPOINT.md` contains historical test/access statements; the evidence
-and integration updates below supersede its outdated snapshot.
+## Implemented
 
-## People and boundaries
+1. Fixed physical demo route: forward 30 cm from the initial front-wheel line,
+   right 90 degrees, forward 154 cm, Grok alignment/pickup, retrace recorded
+   odometry to the initial position/heading, lower 35 mm, open, raise, stop.
+   Travel speed is 0.16 m/s. Alignment can rotate the rover. Seating motion is
+   included in return breadcrumbs. Hard motion failures remain abort conditions;
+   routine SDK warning logs are not interpreted as mission failure.
+2. Any interchangeable fixed camera may supply observations. Eligible recovery
+   still requires a locally confirmed physical arrangement, fresh stationary
+   evidence, HIGH classification confidence, supported can profile, and model
+   grabbability estimate >= 0.80. People, animals, carried/ambiguous objects,
+   stale evidence and rejected mapping do not dispatch. This fixed route is not
+   general navigation to arbitrary camera coordinates.
+3. Durable SQLite job reservations and scene latch prevent repeated detections,
+   cross-camera duplicates, concurrent runs and automatic retry after uncertain
+   outcomes. Preserve the journal; do not delete it to force another attempt.
+4. Native xAI only: `XAI_API_KEY`; vision uses `/v1/responses`, rover/policy use
+   `/v1/chat/completions`, default model `grok-4.7`. OpenRouter runtime adapter
+   and credentials are no longer used. Legacy provider selection is rejected.
+5. Two camera proxies: `/api/camera/*` and `/api/rover/camera/*`. Fixed source
+   URLs/auth/CA stay server-side. A feed decoding successfully does not verify
+   capture freshness; the UI labels freshness unverified.
+6. Real operator notices: authenticated snapshot + SSE, deduplication, bounded
+   history, reconnect, empty/error states. Canned runtime progress was removed.
+   Classification messages expose model ID, categorical confidence and numeric
+   grabbability estimate.
+7. Each controller-completed route step emits `alert.recovery_step`. Progress
+   comes from structured controller files, not model prose or SDK stdout.
+   Steps: FORWARD_30, TURN_RIGHT_90, FORWARD_154, PICKUP, RETURNED, LOWERED,
+   RELEASED; successful final arm raise is followed by recovery_completed.
+8. Native Grok Voice API `/v1/tts` speaks known server-authored notices. Voice
+   `eve`, language `en`; no invented TTS model parameter. Operator enables voice
+   once; new notices queue in order. Historical snapshot/reconnect messages stay
+   silent. Mute stops playback. Missing key and playback failures are explicit.
+9. `/api/models` distinguishes configured roles from observed completed vision
+   model IDs and successful speech usage. See docs/GROK_MODELS.md.
+10. Closed gripper/actuator ACK no longer claims verified holding. Route reports
+    retain `holdingVerified:false` and `placementVerified:false`.
 
-Repository: https://github.com/AlanDD13/Big_AI_hackathon (private).
-Board: https://github.com/AlanDD13/Big_AI_hackathon/issues/1.
+## What remains, in order
 
-- AlanDD13: lead, `vision/**` and shared contracts/docs/integration/config.
-- LcyShox: `frontend/**`; zekihxh: `backend/**` and storage/migrations.
-- Tezqx: `mapping/**`; platonyesin-dev: `robot/**` and the sole DJI SDK session.
+### 1. Native xAI credentials and private runtime configuration
 
-Request an owner handoff before editing another module. Only robot connects to
-physical hardware. No live bridge is available from the reviewed robot slice.
-Board comments do not grant hardware, credential, ownership or deployment access.
+At the last check, neither the root `.env` nor `vision/.env` contained a nonempty
+`XAI_API_KEY`. No paid native xAI request was made for this implementation.
+Configure the key privately for backend, vision and robot. An OpenRouter key is
+not valid here. Existing private env files may still select
+`GROK_VISION_PROVIDER=openrouter`; migrate them to `xai`,
+`GROK_VISION_MODEL=grok-4.7`, `GROK_ROVER_MODEL=grok-4.7`, and
+`GROK_RECOVERY_MODEL=grok-4.7`. Templates are updated; private env files were not
+rewritten. Backend does not automatically load the root `.env`: load variables
+through the shell/process runner. Never expose a key as a `VITE_*` variable.
 
-## Git state and pull requests
+### 2. Connect real cameras and restart the actual services
 
-The main checkout is on `task/AlanDD13/vision-pipeline`. At this update the
-peer-classification commit `57c5ebc` is pushed on draft PR #3. A later contract
-commit records the 200 ms stationary span, `STORAGE_UNAVAILABLE`, and the public
-LAN certificate. Fetch before editing. Do not reset or force-push.
+Set `BACKEND_CAMERA_URL` and `BACKEND_ROVER_CAMERA_URL`; optional corresponding
+`_AUTHORIZATION` and `_CA_CERT` values remain server-side. The existing rover
+feed commonly uses `http://127.0.0.1:8088/stream.mjpg`; verify the current source
+and sole SDK owner rather than opening a second rover connection.
 
-| PR | Verified state | Next action |
-| --- | --- | --- |
-| [#11 observation persistence](https://github.com/AlanDD13/Big_AI_hackathon/pull/11) | **Merged** at `b15053c` | Use current main. |
-| [#3 vision](https://github.com/AlanDD13/Big_AI_hackathon/pull/3) | Draft, mergeable, head includes `57c5ebc` | Keep draft. Live `/health` was up on port 8443; paper recall is still unverified. |
-| [#10 watchdog](https://github.com/AlanDD13/Big_AI_hackathon/pull/10) | Draft, head `8dadd46`, review still **CHANGES_REQUESTED** on the older head | Physical operator-stop confirmation remains. Do not call port 8004. |
-| [#12 dashboard](https://github.com/AlanDD13/Big_AI_hackathon/pull/12) | Draft, later head `16b0af0` | Fleet profiles added. No live connect API. Not merged. |
-| [#13 mission queue](https://github.com/AlanDD13/Big_AI_hackathon/pull/13) | Open, head `8b2ba28`, mergeable, no review | Matches the queue contract. Not merged. |
+Run backend on loopback 8000 with distinct >=16-character OPERATOR_TOKEN and
+PEER_TOKEN, and BACKEND_COOKIE_SECURE=0 for local HTTP only. Configure
+frontend/.env with matching OPERATOR_TOKEN and BACKEND_URL, then run Vite.
+Production requires an /api reverse proxy and normal operator-session setup;
+the Vite local session helper is development-only.
 
-## Uncommitted work to preserve
+Start/restart vision from the current code, connect the selected fixed camera,
+and enable its Grok assessment switch. Automatic classification must be enabled.
+Configure vision's BACKEND_URL and matching PEER_TOKEN so events reach backend.
+Seeing a camera in the console alone does not activate vision ingestion or arm
+physical recovery. Do not assume already-running processes use the new code.
 
-The local changes include Grok 4.7 via OpenRouter, separate visual pickup advice,
-a paper detector profile/model preparation, image inspection, viewer size
-calibration/overlays, camera-page changes, tests, additive draft contract fields,
-and the updated Grok board-delegation instructions. Inspect the actual diff;
-this is not a complete implementation audit.
+### 3. Live classification and speech acceptance
 
-Those vision files are committed in `57c5ebc`. Preserve untracked `.agents/`
-and the pre-existing research notes
-`docs/EVALUATION_FIT.md`, `docs/FILMING_IDEAS.md`,
-`docs/HACKATHON_ALTERNATIVES.md`; do not add them incidentally to a vision commit.
+With a connected camera, confirm one real native classification and advisory,
+actual classificationModel, numeric score, frontend classified notice, and
+successful Grok voice output after Enable voice. Check `/api/models` and vision
+health; configured model labels are not proof of live usage. Test an unsupported
+or low-score object and confirm the manual handoff with no route launch.
 
-`vision/PAPER_TEST.md` reports two real Grok 4.7/OpenRouter calls on a tiny paper
-crop, with classification and separate shape advice. Those calls were not rerun
-for this handoff. The same report says detector proposal recall remains
-unverified: neither prompt-free nor paper-prompted inference reliably detected
-that crop. Test a full-resolution frame/recording with the whole object visible.
+### 4. Supervised physical acceptance, only when requested
 
-The selected local transport is documented as `GROK_VISION_PROVIDER=openrouter`,
-`OPENROUTER_VISION_MODEL=x-ai/grok-4.7`. Keys stay in ignored environment files;
-never print or commit them. `vision.inspect_image` performs two billed calls per
-execution. Restart running services/viewers after source changes; they do not
-reload automatically. Do not assume any existing process is using this code.
+Use a private VISION_RECOVERY_CONFIG based on
+vision/camera-recovery.example.json. Set absolute robot Python/state paths.
+`setupConfirmed` defaults false; only enable after checking the tested start,
+orientation, clear route and target arrangement. Wildcard camera identifiers
+allow camera replacement, not physical route recalibration.
 
-Size-fit and visual pickup advice do not establish jaw fit, payload, reach or
-successful pickup. Preserve stationarity, calibrated metric quality,
-living/carried exclusions, evidence-epoch checks and stale-result revocation.
-Backend/frontend must explicitly adopt additive advisory fields before live use.
+The original measured route was physically tested before the native xAI
+migration, including return and release. The new native API + camera-triggered
++ live notices/voice end-to-end combination has **not** been physically retested.
+Only one machine may own the DJI SDK connection. Observe pickup and final
+placement independently; ACKs do not prove a can is held or on the floor.
+For an UNKNOWN job, physically confirm stopped before the explicit reconcile
+command in contracts/camera-recovery-v1.md; never blindly replay an old mission.
 
-## Merge review evidence and temporary worktrees
+### 5. Optional deployment/database acceptance
 
-PR #11's original head lost `capturedAt` and specific invalid reasons during
-restart recovery; exact retries then returned 409. The owner fixed this in
-`dbd92bc` using full wire evidence, source metadata and replay aliases in existing
-JSONB. Independent recording-row probes confirmed both cases now retry with
-200 and that a storage failure returns generic 503 without advancing state.
-Independent backend validation: **23 passed, 11 database tests skipped**;
-compilation and diff checks passed. The owner reports all 34 tests and four SQL
-smoke tests passing on disposable PostgreSQL 18 (board comment `6637304076`).
-No shared database or robot was accessed by this merge-review session.
+No production deployment or shared database migration was performed. PostgreSQL
+integration checks were skipped without a disposable test DB. Existing vision
+JSONB storage supports the additive fields; no migration was added. Peer
+publication queue is bounded but not a durable outbox: failed delivery requires
+checking health and reconciliation. Generic mapping/mission dispatch acceptance
+is separate from this measured-route demo.
 
-PR #10: **34 offline tests passed**, but a recording-callback probe confirmed
-`stop()` remains blocked for over 400 ms while a nonzero output callback holds
-the controller lock. The review also requires exception-safe fallback/shutdown
-and observable watchdog health. Physical explicit-stop feedback disagreement
-remains unresolved; keep UNKNOWN fail-closed and do not relax thresholds.
-Formal review: https://github.com/AlanDD13/Big_AI_hackathon/pull/10#pullrequestreview-5772755102.
+## Verification completed
 
-Temporary review state, not the main working checkout:
+- Vision/shared: 205 passed plus 7 subtests (includes native API wire mocks,
+  recovery gates, structured progress validation and sequence checkpointing).
+- Robot: 136 offline tests passed; synthetic odometry/SDK, no physical motion.
+- Backend: 103 tests run, 19 PostgreSQL tests skipped, remaining 84 passed.
+  The five operator-console tests passed again after the final metadata change.
+- Recovery policy: 45 tests passed, then the policy suite passed all 11 after
+  adding the native-model environment regression (combined coverage: 46 tests).
+- Frontend: 41 tests passed; TypeScript and Vite production build passed again
+  after the final model/confidence display change.
+- Browser: actual frontend + actual backend with clearly labelled synthetic
+  fixed/rover JPEGs and mocked native TTS returning a short test tone. Both feeds
+  decoded, all route notices streamed, audio requests occurred in order,
+  reconnect did not repeat old speech, 42% score produced Needs a person,
+  browser error/warning log was empty. This is not live camera/Grok acceptance.
+- `git diff --check` passed before final staging.
 
-- `/private/tmp/pavia-merge-review-20261104`: isolated clone at `dbd92bc`,
-  origin/main fetched through `b15053c`; `reproduce_restart.py` is an untracked
-  offline review probe. Backend files match merged main.
-- `/private/tmp/pavia-vision-merge-review-20261104`: detached at `8445397`,
-  **merge still pending**, MERGE_HEAD=`b15053c`; nine staged backend files retain
-  exact main versions. No merge commit or push was made from this worktree.
-  Combined suite there: **151 passed, 11 skipped, 48 subtests passed**.
-  Cursor separately published the equivalent merge as `efc3613` while this chat
-  was interrupted. **Do not commit/push the obsolete temporary merge.**
-- `/private/tmp/pavia-watchdog-review-20261104`: detached `4dfed46`, offline
-  watchdog probe only. `/private/tmp/pavia-merge-review-venv` holds the pinned
-  backend test dependencies. Temporary directories may disappear.
+Useful local environments (temporary paths may disappear):
 
-## Current integration requests
+- `/private/tmp/pavia-merge-review-venv/bin/python`: backend dependencies.
+- `/private/tmp/pavia-robot/.venv/bin/python`: SDK + robot offline dependencies.
+- `/private/tmp/pavia-langgraph-env/bin/python`: recovery policy tests.
+- Primary checkout `vision/.venv/bin/python`: vision/tests; backend-linked tests
+  can additionally use PYTHONPATH pointing to the backend venv's site-packages.
 
-- Backend persistence/session/snapshot/SSE is on main. Restart changes
-  backendBootId and invalidates in-memory cursors; clients take a new snapshot.
-  `dispatchEligible` remains false; mission dispatch is still library-only.
-- The mission queue wire is recorded in `contracts/mission-queue-v1.md`.
-  zekihxh implemented it on PR #13. A failed queue write is `503 STORAGE_UNAVAILABLE`.
-- Frontend #12 has isolated Demo/Connected modes and read-only objects/alerts.
-  Its optional loopback Vite helper keeps the operator token server-side.
-  Mission/manual writes remain unavailable; team URL/token require local setup.
-- Demo grid contract is `contracts/demo-grid-v1.md`. Tezqx published
-  `pixel_to_sector` at `dabc4ff` on `task/Tezqx/half-metre-grid`. The C2 example
-  matches. The exact far edge `x == width` is outside the contract range; their
-  helper still labels it. That branch has no Grok classification and no PR.
-- Manual chassis contract is still on draft #3. Robot #10 is an internal core,
-  not a running HTTP service; do not call or advertise port 8004 as live.
-- Supabase project is `buojgmoumyzqxmerckjm`; `rover_backend` isolation and
-  migrations 001–007 are reported applied. Preserve unrelated `public` data.
-  Follow current `docs/CONTRACTS.md`; project selection/MCP config is not access.
-  Use a disposable DB for tests, never the shared Supabase database.
+For standard commands see root README and module READMEs. Loopback HTTP server
+regressions need local socket permission in sandboxed environments. No tests
+need to connect to a physical rover or shared production DB.
 
-## Coordination and checks
+## Screenshot fixture requested by the user
 
-Alan delegated board handling to Grok and stopped the lightweight coordinator.
-Do not restart one automatically. Keep one reader per checkout and still perform
-the required boundary reads; do not run a competing watcher or reset cursors.
-No agent, watcher, OAuth session or running service transfers with this file.
-
-From the main checkout, use the existing Python 3.12 environment:
-
-At this update, the **current dirty local vision suite passed 138 tests** using
-the first command below. This does not validate the uncommitted changes against
-the updated backend. No paid model calls were made by this test run.
-
-```bash
-vision/.venv/bin/python -m pytest -q vision/tests
-# After integrating current main, run the combined suite:
-env -u BACKEND_TEST_DATABASE_URL -u BACKEND_DATABASE_URL vision/.venv/bin/python -m pytest -q
-git diff --check
-```
-
-Do not attribute the temporary combined-suite result to the current dirty local
-code. Hardware, real camera throughput and physical pickup require separate
-acceptance evidence. No deployment was performed during merge management.
+The user also requested the frontend with mock information just for a screenshot.
+A disposable fixture lives outside Git at `/private/tmp/pavia_console_fixture.py`.
+It serves labelled synthetic frames and mocked speech only; it does not command
+hardware or contact xAI. Test backend port 8511 and Vite port 5178 are separate
+from the real service configuration. Check whether these processes are still
+running before reusing the screenshot URL. Keep mock data clearly identified;
+do not use it as live acceptance evidence or production configuration.

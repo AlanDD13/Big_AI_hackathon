@@ -7,5 +7,5 @@
   "stateDir": "/absolute/path/to/private/camera-recovery-state",
   "setupConfirmed": false,
   "threshold": 0.8,
-  "model": "x-ai/grok-4.7"
+  "model": "grok-4.7"
 }

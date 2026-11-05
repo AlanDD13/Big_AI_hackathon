@@ -200,10 +200,12 @@ weight, reach, force, grasp success or dispatchability. It never opens a mission
 gate. Absent fields in older snapshots mean no assessment, never "graspable".
 Backend/frontend owners must explicitly adopt these fields before live ingestion.
 
-Grok transport can be direct xAI or OpenRouter. Both retain
-classificationProvider:grok; `/health` reports classificationTransport separately.
-OpenRouter uses `OPENROUTER_API_KEY`, `GROK_VISION_PROVIDER=openrouter` and
-`OPENROUTER_VISION_MODEL=x-ai/grok-4.7`; no fallback to another model family.
+Grok transport is native xAI only, with `classificationProvider:grok` and
+`classificationTransport:xai` in `/health`. Configure `XAI_API_KEY`,
+`GROK_VISION_PROVIDER=xai` and `GROK_VISION_MODEL=grok-4.7`. There is no provider
+fallback. Optional `classificationModel` records the completed inference model.
+See [model usage](../docs/GROK_MODELS.md) and the
+[operator console contract](operator-console-v1.md) for grabbability and step notices.
 
 Object states: OBSERVING, STATIC_PENDING_REVIEW, POTENTIAL_TARGET, EXCLUDED, LOST.
 `alert.potential_target` fires once on an eligibility transition; movement/loss/

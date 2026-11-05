@@ -35,7 +35,7 @@ This second assessment uses the target crop, to prevent a neighbouring can from
 being mistaken for paper. The general classification still sees context for
 living/carrying checks.
 
-Response 200 has provider:grok, transport:openrouter, model:x-ai/grok-4.7,
+Response 200 has provider:grok, transport:xai, model:grok-4.7,
 assessmentId, requestId and:
 
 ```json
@@ -67,13 +67,13 @@ uncalibrated for this specific unit. These are estimates, not verified limits.
 
 Image limits: JPEG/PNG only, <=4 MiB each, <=6 MiB decoded aggregate, <=16M
 pixels per image; JSON <=8 MiB. Two peer requests admitted at once, 5-second body
-read deadline, 30-second OpenRouter whole-call deadline (including queue wait).
+read deadline, 20-second native xAI whole-call deadline (including queue wait).
 The helper allows 35 seconds. Excess capacity/provider timeout/unavailable model
 returns 503, never fabricated classification; a partial result may accompany 503.
 Other errors: 401 wrong bearer, 415 content type, 413 body limit, 422 malformed
 fields/images. Redirects are not followed by the client helper.
 
-## Python client (no OpenRouter key)
+## Python client (no provider key on the caller)
 
 ```python
 from vision.cctv_monitor import detect_frame_objects, classify_object_remote

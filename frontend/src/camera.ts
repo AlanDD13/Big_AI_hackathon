@@ -1,6 +1,6 @@
 export const CAMERA_STATUS = '/api/camera/status';
 export const CAMERA_FEED = '/api/camera/feed';
-// Rover feed paths are the intended backend link. They are not served yet.
+// Rover feed paths are the intended backend link. They are served by the backend.
 export const ROVER_CAMERA_STATUS = '/api/rover/camera/status';
 export const ROVER_CAMERA_FEED = '/api/rover/camera/feed';
 export function parseCameraStatus(value: unknown): { configured: boolean; captureFreshness: 'unverified' } {

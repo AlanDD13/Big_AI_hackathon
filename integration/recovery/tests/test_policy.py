@@ -29,8 +29,8 @@ def policy(handler):
 def test_request_and_valid_proposal():
     def handler(request):
         body = json.loads(request.content)
-        assert request.url.host == "openrouter.ai"
-        assert body["model"] == MODEL and body["reasoning"] == {"effort": "low"}
+        assert request.url.host == "api.x.ai"
+        assert body["model"] == MODEL and body["reasoning_effort"] == "low"
         assert body["parallel_tool_calls"] is False
         assert body["tools"][0]["function"]["parameters"]["additionalProperties"] is False
         assert request.extensions["timeout"]["read"] <= 20
@@ -38,6 +38,17 @@ def test_request_and_valid_proposal():
     p = policy(handler)
     assert "secret-key" not in repr(p)
     assert p.choose(*inputs()).action == "approach"
+
+
+def test_native_model_environment_is_honoured_without_router_key(monkeypatch):
+    monkeypatch.setenv('XAI_API_KEY', 'native-test')
+    monkeypatch.setenv('GROK_RECOVERY_MODEL', 'grok-custom-version')
+    p = GrokPolicy.from_env(httpx.Client())
+    assert p.model == 'grok-custom-version'
+    monkeypatch.delenv('XAI_API_KEY')
+    monkeypatch.setenv('OPENROUTER_API_KEY', 'not-a-native-key')
+    with pytest.raises(ValueError):
+        GrokPolicy.from_env(httpx.Client())
 
 
 @pytest.mark.parametrize("change", [

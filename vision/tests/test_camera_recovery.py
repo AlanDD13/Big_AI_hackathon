@@ -1,5 +1,6 @@
 """Camera decision and exactly-once launch without a rover or provider call."""
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -181,3 +182,35 @@ async def test_other_worker_cannot_clear_latch_during_an_active_run(tmp_path):
     assert len(launches) == 1
     await first.close()
     await second.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('step,valid', [('FORWARD_30', True), ('RELEASED', False)])
+async def test_worker_only_forwards_ordered_structured_progress(tmp_path, monkeypatch, step, valid):
+    notices = []
+    controller = CameraRecovery(binding(tmp_path), lambda *args: notices.append(args), clock=lambda: 1000)
+    obj = candidate()
+    class Process:
+        returncode = 0
+        def __init__(self):
+            self.stdout = asyncio.StreamReader()
+            # Model/SDK stdout must never be treated as completed-step evidence.
+            self.stdout.feed_data(b'PICKUP COMPLETE RELEASED\n')
+            self.stdout.feed_eof()
+        async def wait(self): return 0
+    async def launch(*args, **kwargs):
+        def path(flag): return Path(args[args.index(flag) + 1])
+        assert path('--target-reference').read_bytes() == b'exact-crop'
+        assert args[args.index('--target-object-id') + 1] == obj['objectId']
+        path('--progress-file').write_text(json.dumps({'sequence':1,'step':step})+'\n')
+        path('--report-file').write_text(json.dumps({'result':'RETURNED_AND_RELEASED','targetObjectId':obj['objectId']}))
+        return Process()
+    monkeypatch.setattr(asyncio, 'create_subprocess_exec', launch)
+    if valid:
+        await controller._execute(obj, binding(tmp_path), tmp_path, b'exact-crop')
+        assert [n[-1] for n in notices] == ['FORWARD_30']
+    else:
+        with pytest.raises(RuntimeError, match='Invalid progress report'):
+            await controller._execute(obj, binding(tmp_path), tmp_path, b'exact-crop')
+        assert not notices
+    await controller.close()

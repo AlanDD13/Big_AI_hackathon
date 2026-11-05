@@ -277,9 +277,9 @@ There is intentionally no automatic journal reset/release or replay operation.
 
 ### Live Grok local hardware diagnostic
 
-`live_grok.py` uses the actual rover camera and telemetry, OpenRouter
-`x-ai/grok-4.7` with low reasoning, and one strictly validated `recovery_action`
-proposal. A key is read from `OPENROUTER_API_KEY` or a non-echoed prompt and is
+`live_grok.py` uses the actual rover camera and telemetry, native xAI API
+`grok-4.7` with low reasoning, and one strictly validated `recovery_action`
+proposal. A key is read from `XAI_API_KEY` or a non-echoed prompt and is
 never saved. TLS verification and redirect rejection remain enabled. There is
 no provider retry or model fallback. Explanatory prose is ignored; only a single
 validated tool with the bound target ID is considered.
@@ -335,12 +335,12 @@ An experimental opt-in tool-calling runner for supervised hardware work (3JKCK7W
 
 Run:
 ```bash
-python3 robot/grok_tool_loop.py 25 grok
+python3 robot/grok_tool_loop.py 25 grok-4.7
 ```
 
 Fixed measured route and return (same sole SDK session):
 ```bash
-python3 robot/grok_tool_loop.py 25 grok --route-return
+python3 robot/grok_tool_loop.py 25 grok-4.7 --route-return
 ```
 
 `run_route_mission(tools, grok_loop)` advances the initial front-wheel line

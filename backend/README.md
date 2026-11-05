@@ -1,5 +1,12 @@
 # Backend and Grok — zekihxh
 
+The two-camera operator console now consumes live accepted recovery notices,
+completed-step SSE messages and native Grok voice audio. See
+[the operator console contract](../contracts/operator-console-v1.md) for routes
+and local startup, and [Grok model usage](../docs/GROK_MODELS.md) for native xAI
+configuration. Voice requires a backend `XAI_API_KEY`; empty state and API
+failures are shown explicitly. No preview mission is injected into the UI.
+
 Own `backend/**`: API, mission policy/state, event stream, Grok adapter, storage
 migrations, consumer clients, module dependencies, tests and local fakes.
 Consume mapped observations/plans and dispatch missions to the bridge.

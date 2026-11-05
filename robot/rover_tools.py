@@ -14,7 +14,7 @@ Usage:
     with open_rover_tools() as tools:
         tools.dispatch("drive_chassis", {"x_mps": 0.04, "z_degps": 0, "duration_s": 1.0})
 
-`TOOLS` is the OpenAI/OpenRouter function schema to hand to Grok; `dispatch` executes
+`TOOLS` is the native xAI function schema to hand to Grok; `dispatch` executes
 one validated call and returns a JSON-safe result. Not a safety system: it does not
 replace the SafetyController/watchdog on Platon's branch and proves nothing about
 successful grasps.
@@ -99,13 +99,13 @@ class StableYOLOTracker:
                     "message": "Gripper close was commanded; holding is unverified. Loaded transport is disabled. Stop or explicitly release under operator supervision."
                 }
             return {
-                "detected": True,
-                "detectionFresh": True,
-                "canHeldInClaws": True,
-                "holdingVerified": True,
+                "detected": False,
+                "detectionFresh": False,
+                "canHeldInClaws": None,
+                "holdingVerified": False,
                 "gripperState": "close",
                 "infraredDistanceMm": int(tof_mm) if tof_mm is not None else None,
-                "message": "CAN IN CLAWS: Transport forward with drive_chassis, lower arm to floor with move_arm(dy=-35), open gripper, then stop_robot!"
+                "message": "Gripper close was commanded; holding is unverified. Loaded transport is authorized for the supervised route."
             }
 
         model = self._ensure_model()
@@ -870,7 +870,7 @@ class RoverTools:
                 "holdingVerified": False,
                 "alreadyCommanded": True,
                 "message": (
-                    "Can is already grasped and lifted! Proceed to transport forward with drive_chassis."
+                    "Gripper close and arm lift were already commanded; holding is unverified. Loaded transport is authorized."
                     if self.allow_transport
                     else "Gripper close was already commanded; holding is unverified and transport remains disabled."
                 )
@@ -957,7 +957,7 @@ class RoverTools:
             "gripperClamped": True,
             "armLifted": lift_done,
             "message": (
-                "Can seated into throat, clamped at power 80, and lifted off floor!"
+                "Seating, gripper close at power 80, and arm lift commands completed. Holding is unverified."
                 if self.allow_transport
                 else "Grasp macro commands completed; independent holding evidence is absent. Transport remains disabled."
             )

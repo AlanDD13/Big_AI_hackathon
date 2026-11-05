@@ -66,7 +66,7 @@ _OBJECT_REQUIRED = {
     "eligibilityReason",
     "frameRef",
 }
-_OBJECT_OPTIONAL = {"visualPickupStatus", "visualPickupAdvisory"}
+_OBJECT_OPTIONAL = {"visualPickupStatus", "visualPickupAdvisory", "recoveryStep", "classificationModel"}
 _STATUSES = {"OBSERVING", "STATIC_PENDING_REVIEW", "POTENTIAL_TARGET", "EXCLUDED", "LOST"}
 _MOTION = {"OBSERVING", "MOVING", "STATIONARY", "EXCLUDED", "UNKNOWN"}
 _CLASS_STATUS = {"PENDING", "COMPLETED", "UNAVAILABLE"}
@@ -80,7 +80,8 @@ _SUITABILITY = {"POSSIBLE", "UNSUITABLE", "UNCERTAIN"}
 _GRASP = {"LIKELY", "UNLIKELY", "UNKNOWN"}
 _PICKUP_STATUS = {"PENDING", "COMPLETED", "UNAVAILABLE"}
 RECOVERY_ALERTS = frozenset({'alert.pickup_unavailable', 'alert.recovery_started',
-                            'alert.recovery_completed', 'alert.recovery_failed'})
+                            'alert.recovery_completed', 'alert.recovery_failed', 'alert.recovery_step'})
+RECOVERY_STEPS = {'FORWARD_30', 'TURN_RIGHT_90', 'FORWARD_154', 'PICKUP', 'RETURNED', 'LOWERED', 'RELEASED'}
 
 DETECTIONS = frozenset({"object.observed"})
 CLASSIFICATIONS = frozenset({"object.classified"})
@@ -201,6 +202,13 @@ def _object_projection(
             missing.add("action")
     if unknown or missing:
         raise InvalidVision("Object payload has missing or unknown fields")
+    if event_type == 'alert.recovery_step':
+        _enum(body.get('recoveryStep'), 'recoveryStep', RECOVERY_STEPS)
+    elif 'recoveryStep' in body:
+        raise InvalidVision('recoveryStep belongs only to step completion events')
+    model = body.get('classificationModel')
+    if model is not None and (not isinstance(model, str) or not re.fullmatch(r'grok-[A-Za-z0-9_.-]{1,120}', model)):
+        raise InvalidVision('Invalid native Grok classification model')
     if event_type in {"object.observed", "object.classified", "object.updated", "alert.potential_target"}:
         if "reason" in body or "action" in body:
             raise InvalidVision("This event must not carry reason or action")
@@ -291,12 +299,14 @@ def _object_projection(
         "classificationStatus": classification_status,
         "classification": classification,
         "classificationProvider": provider,
+        "classificationModel": model,
         "potentialTarget": _bool(body["potentialTarget"], "potentialTarget"),
         "dispatchEligible": False,
         "eligibilityReason": _optional_reason(body["eligibilityReason"]),
         "frameRef": _text(body["frameRef"], "frameRef", 512),
         "visualPickupStatus": visual_status,
         "visualPickupAdvisory": advisory,
+        "recoveryStep": body.get('recoveryStep'),
         "evidenceUrl": None,
         "stationary": {
             "sampleCount": 0,

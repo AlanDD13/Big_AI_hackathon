@@ -44,6 +44,7 @@ class ObjectState:
     classification_status: str = "PENDING"
     classification_attempt: int = -1
     classification_provider: str | None = None
+    classification_model: str | None = None
     visual_pickup: dict | None = None
     visual_pickup_status: str = "PENDING"
     mapping: dict | None = None
@@ -96,10 +97,10 @@ class VisionService:
         self.recovery = CameraRecovery(binding, self._recovery_notice, clock=self.now,
             reference=lambda object_id: self.objects[object_id].evidence_crop if object_id in self.objects else None)
 
-    def _recovery_notice(self, event_type, object_id, reason):
+    def _recovery_notice(self, event_type, object_id, reason, step=None):
         state = self.objects.get(object_id)
         if state is not None:
-            self._emit_object(event_type, state, reason=reason)
+            self._emit_object(event_type, state, reason=reason, **({'recoveryStep': step} if step else {}))
 
     def _update_recovery(self):
         objects = [self.object_payload(state) for state in self.objects.values()]
@@ -160,6 +161,7 @@ class VisionService:
             "classificationStatus": state.classification_status,
             "classification": state.classification,
             "classificationProvider": state.classification_provider,
+            "classificationModel": state.classification_model,
             "visualPickupAdvisory": state.visual_pickup,
             "visualPickupStatus": state.visual_pickup_status,
             "mapping": state.mapping, "potentialTarget": state.potential_target,
@@ -313,6 +315,7 @@ class VisionService:
         state.metric_count, state.metric_static_s, state.metric_last_frame = 0, 0, -1
         state.revision += 1
         state.classification = None
+        state.classification_model = None
         state.classification_status = "PENDING"
         state.visual_pickup = None
         state.visual_pickup_status = "PENDING"
@@ -416,6 +419,8 @@ class VisionService:
         state.classification = result.model_dump(mode="json") if result else None
         state.classification_status = status
         state.classification_provider = self.classifier.provider
+        state.classification_model = ((getattr(self.classifier, 'last_model', None)
+            or getattr(self.classifier, '_model', None)) if result and self.classifier.provider == 'grok' else None)
         state.visual_pickup_status = "COMPLETED" if advisory is not None else "UNAVAILABLE"
         state.visual_pickup = ({**advisory.model_dump(mode="json"), "advisory": True,
                                 "pickupVerified": False, "sourceFrameId": frame.frame_id}

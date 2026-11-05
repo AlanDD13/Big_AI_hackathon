@@ -33,7 +33,7 @@ class RouteBinding:
     state_dir: Path
     setup_confirmed: bool = False
     threshold: float = .8
-    model: str = 'x-ai/grok-4.7'
+    model: str = 'grok-4.7'
 
     def __post_init__(self):
         import re
@@ -157,13 +157,16 @@ class CameraRecovery:
             self.db.execute('INSERT OR IGNORE INTO scene_latch VALUES (1, 0)')
             self.db.commit()
 
-    def _notice(self, kind, obj, reason):
-        key = (obj['objectId'], obj['revision'], kind)
+    def _notice(self, kind, obj, reason, step=None):
+        key = (obj['objectId'], obj['revision'], kind, step)
         if key not in self.notices:
             self.notices[key] = None
             if len(self.notices) > 4096:
                 self.notices.popitem(last=False)
-            self.notify(kind, obj['objectId'], reason)
+            if step:
+                self.notify(kind, obj['objectId'], reason, step)
+            else:
+                self.notify(kind, obj['objectId'], reason)
 
     def update(self, objects):
         self.objects = objects
@@ -252,9 +255,11 @@ class CameraRecovery:
         reference_path.write_bytes(reference)
         report_path = directory / 'report.json'
         phase_path = directory / 'phase'
+        progress_path = directory / 'progress.jsonl'
         args = [str(config.python), '-u', str(runner), '25', config.model, '--route-return',
                 '--report-file', str(report_path), '--target-reference', str(reference_path),
-                '--target-object-id', obj['objectId'], '--phase-file', str(phase_path), '--no-browser']
+                '--target-object-id', obj['objectId'], '--phase-file', str(phase_path),
+                '--progress-file', str(progress_path), '--no-browser']
         with (directory / 'stdout.log').open('wb') as stdout, (directory / 'sdk.log').open('wb') as stderr:
             self.process = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE, stderr=stderr)
             async def pump():
@@ -264,8 +269,25 @@ class CameraRecovery:
             reader = asyncio.create_task(pump())
             waiter = asyncio.create_task(self.process.wait())
             cancelled = False
+            progress_read = 0
+            def progress():
+                nonlocal progress_read
+                if not progress_path.exists(): return
+                if progress_path.stat().st_size > 16384:
+                    raise RuntimeError('Invalid progress report')
+                lines = progress_path.read_text().splitlines(keepends=True)
+                for line in lines[progress_read:]:
+                    if not line.endswith('\n'): break
+                    value = json.loads(line)
+                    steps = ['FORWARD_30', 'TURN_RIGHT_90', 'FORWARD_154', 'PICKUP', 'RETURNED', 'LOWERED', 'RELEASED']
+                    if (value.get('sequence') != progress_read + 1 or progress_read >= len(steps)
+                            or value.get('step') != steps[progress_read]):
+                        raise RuntimeError('Invalid progress report')
+                    progress_read += 1
+                    self._notice('alert.recovery_step', obj, 'ROUTE_STEP_COMPLETED', value['step'])
             try:
                 while self.process.returncode is None:
+                    progress()
                     if phase_path.exists() and phase_path.read_text() == 'PICKUP':
                         self.pickup_started = True
                     if not self.pickup_started:
@@ -280,6 +302,7 @@ class CameraRecovery:
                     except TimeoutError:
                         pass
                 await reader
+                progress()
                 if cancelled or self.process.returncode != 0:
                     raise RuntimeError('Route outcome is uncertain')
                 report = json.loads(report_path.read_text())

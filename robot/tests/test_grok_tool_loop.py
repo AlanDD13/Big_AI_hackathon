@@ -63,6 +63,7 @@ class GrokToolLoopTests(unittest.TestCase):
         self.assertEqual(name, "stop_robot")
         self.assertEqual(args, {"reason": "operator verification"})
         self.assertEqual(len(opener.requests), 1)
+        self.assertEqual(opener.requests[0].full_url, 'https://api.x.ai/v1/chat/completions')
 
     def test_camera_reference_is_data_and_pickup_requires_alignment(self):
         opener = Opener({"tool_calls": [tool()]})

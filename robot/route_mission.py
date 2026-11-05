@@ -129,7 +129,7 @@ def _return_to(tools, target, frame_offset):
     raise MissionError("return_action_budget")
 
 
-def run_route_mission(tools, grok_loop):
+def run_route_mission(tools, grok_loop, *, on_step=None):
     """30 cm forward, right 90°, 154 cm forward, pickup, retrace, place.
 
     ``grok_loop(recorded_tools)`` runs in the caller's existing rover session
@@ -144,32 +144,39 @@ def run_route_mission(tools, grok_loop):
         start = _pose(tools)
         print("[ROUTE] Forward 30cm from initial front-wheel line", flush=True)
         corner = _forward(tools, .30)
+        if on_step: on_step('FORWARD_30')
         frame_offset = math.degrees(math.atan2(corner[1] - start[1],
                                              corner[0] - start[0])) - start[2]
         print("[ROUTE] Turning right 90deg", flush=True)
         _turn_to(tools, start[2] + 90)
+        if on_step: on_step('TURN_RIGHT_90')
         turned = _pose(tools)
         print("[ROUTE] Forward 154cm", flush=True)
         end = _forward(tools, 1.54)
+        if on_step: on_step('FORWARD_154')
         breadcrumbs = [start, corner, turned, end]
         recorded = _RecordedTools(tools, breadcrumbs)
         print("[ROUTE] Starting Grok pickup loop", flush=True)
         pickup = grok_loop(recorded)
         if pickup.get("result") != "PICKUP_COMMANDED" or not recorded.pickup_commanded:
             raise MissionError("pickup_incomplete:" + str(pickup.get("result")))
+        if on_step: on_step('PICKUP')
         print("[ROUTE] Grasp macro completed; retracing recorded route with gripper closed", flush=True)
         for waypoint in reversed(breadcrumbs[:-1]):
             _return_to(tools, waypoint, frame_offset)
         _turn_to(tools, start[2])
+        if on_step: on_step('RETURNED')
         print("[ROUTE] Returned to starting odometry pose and heading", flush=True)
         tools.stop("place_at_start")
         print("[ROUTE] Lowering can to floor", flush=True)
         lowered = tools.arm(dx_mm=0, dy_mm=-35)
         _check_motion("move_arm", lowered)
+        if on_step: on_step('LOWERED')
         print("[ROUTE] Opening gripper to release can", flush=True)
         released = tools.gripper("open", power=50)
         if released.get("ack") is not True or released.get("state") != "open":
             raise MissionError("release_unconfirmed")
+        if on_step: on_step('RELEASED')
         raised = tools.arm(dx_mm=0, dy_mm=35)
         _check_motion("move_arm", raised)
         print("[ROUTE] Release commanded at start; empty arm raised", flush=True)

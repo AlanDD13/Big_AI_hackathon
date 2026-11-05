@@ -1,5 +1,23 @@
 # Dashboard — LcyShox
 
+## Current operator console
+
+The default app now shows two real backend camera proxies and a live rover
+message panel. Classification, grabbability estimates, completed route steps,
+manual handoffs and native Grok voice come from authenticated backend APIs.
+The app displays waiting/unavailable states when services are missing; it does
+not inject preview progress. Enable voice to hear new events; historical
+messages stay silent after reconnection.
+
+Use Node 24+, `npm ci`, `npm run dev`, `npm test` and `npm run build` in this
+directory. Copy `.env.example` to a private `.env` and configure the backend URL
+and matching operator token. Keys such as `XAI_API_KEY` belong on the servers.
+See [operator console setup and API](../contracts/operator-console-v1.md) and
+[the Grok model inventory](../docs/GROK_MODELS.md).
+
+The sections below describe earlier dashboard exploration retained in supporting
+components/tests. They are not the default operator app or live mission state.
+
 Own `frontend/**`: UI, module dependencies/lockfile, tests and API mocks.
 Build map rendering, video, objects, mission status, text requests, notifications,
 cancel and stop. Calculating map coordinates/routes belongs to `mapping/`.

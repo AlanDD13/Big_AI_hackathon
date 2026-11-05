@@ -47,12 +47,7 @@ def load_env_config():
 ENV = load_env_config()
 
 # Model configured dynamically from environment / .env file
-MODEL = (
-    os.environ.get("ROVER_MODEL")
-    or ENV.get("ROVER_MODEL")
-    or ENV.get("OPENROUTER_FAST_MODEL")
-    or ENV.get("OPENROUTER_VISION_MODEL")
-)
+MODEL = os.environ.get('GROK_ROVER_MODEL') or ENV.get('GROK_ROVER_MODEL') or 'grok-4.7'
 MAX_STEPS = 20
 TARGET_REFERENCE = None
 TARGET_OBJECT_ID = None
@@ -143,10 +138,10 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 def load_key():
-    key = os.environ.get("OPENROUTER_API_KEY") or ENV.get("OPENROUTER_API_KEY")
+    key = os.environ.get("XAI_API_KEY") or ENV.get("XAI_API_KEY")
     if key:
         return key
-    raise RuntimeError("missing_api_key: please set OPENROUTER_API_KEY in your .env file")
+    raise RuntimeError("missing_api_key: please set XAI_API_KEY in your .env file")
 
 
 def json_default(obj):
@@ -201,13 +196,13 @@ def ask_grok(opener, key, jpeg, status):
             {"role": "user", "content": user_content},
         ],
     }
-    effort = os.environ.get("OPENROUTER_REASONING_EFFORT") or ENV.get("OPENROUTER_REASONING_EFFORT")
+    effort = os.environ.get("GROK_REASONING_EFFORT") or ENV.get("GROK_REASONING_EFFORT")
     if effort and effort.lower() != "none":
-        payload["reasoning"] = {"effort": effort}
+        payload["reasoning_effort"] = effort
     elif "grok" in MODEL.lower():
-        payload["reasoning"] = {"effort": "low"}
+        payload["reasoning_effort"] = "low"
     request = Request(
-        "https://openrouter.ai/api/v1/chat/completions",
+        "https://api.x.ai/v1/chat/completions",
         data=json.dumps(payload, default=json_default).encode("utf-8"),
         method="POST",
         headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
@@ -442,11 +437,14 @@ def main():
     parser.add_argument('--target-reference', type=Path)
     parser.add_argument('--target-object-id')
     parser.add_argument('--phase-file', type=Path)
+    parser.add_argument('--progress-file', type=Path)
     parser.add_argument('--no-browser', action='store_true')
     args = parser.parse_args()
     if args.steps < 1 or not args.model:
-        parser.error("positive steps and a model (argument or ROVER_MODEL) are required")
-    MAX_STEPS, MODEL = args.steps, args.model
+        parser.error("positive steps and a model (argument or GROK_ROVER_MODEL) are required")
+    MAX_STEPS, MODEL = args.steps, args.model.removeprefix('x-ai/')
+    if not MODEL.startswith('grok-') or any(char.isspace() for char in MODEL):
+        parser.error('Use a native Grok model, for example grok-4.7')
     TARGET_REFERENCE = None
     TARGET_OBJECT_ID = args.target_object_id
     PHASE_FILE = args.phase_file
@@ -483,6 +481,13 @@ def main():
         print("="*60 + "\n", flush=True)
 
         loop_report = {}
+        progress_sequence = 0
+        def step_completed(step):
+            nonlocal progress_sequence
+            progress_sequence += 1
+            if args.progress_file:
+                with args.progress_file.open('a') as output:
+                    output.write(json.dumps({'sequence': progress_sequence, 'step': step}) + '\n')
         def pickup(recorded_tools):
             nonlocal loop_report
             loop_report = run_grok_loop(recorded_tools, opener, key, pickup_only=True)
@@ -490,7 +495,7 @@ def main():
 
         try:
             if args.route_return:
-                report = run_route_mission(tools, pickup)
+                report = run_route_mission(tools, pickup, on_step=step_completed)
             else:
                 report = run_grok_loop(tools, opener, key)
         except Exception as exc:
@@ -503,7 +508,7 @@ def main():
     result = report["result"]
     steps = report.get("steps", [])
     calls = report.get("grokCalls", 0)
-    report.update(log=str(LOG))
+    report.update(log=str(LOG), provider="xai", model=MODEL)
     if TARGET_OBJECT_ID:
         report.update(targetObjectId=TARGET_OBJECT_ID, targetAssociationVerified=False)
     (LOG / "report.json").write_text(json.dumps(report, indent=2))

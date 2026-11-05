@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict
+import asyncio
 import json
 import os
 import secrets
@@ -37,6 +38,7 @@ from backend.vision_ingest import (
     ACCEPTED, CLASSIFICATIONS, DETECTIONS, VISION_EVENTS, InvalidVision, VisionConflict, parse_vision_event,
 )
 from backend.vision_store import PostgresVisionLog
+from backend.speech import GrokSpeech, SpeechUnavailable
 
 
 def _match_secret(presented: str, expected: str) -> bool:
@@ -74,6 +76,8 @@ def create_app(
     mapping_client: MappingClient | None = None,
     manual_proxy: ManualProxy | None = None,
     camera_proxy: CameraProxy | None = None,
+    rover_camera_proxy: CameraProxy | None = None,
+    speech: GrokSpeech | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app):
@@ -111,6 +115,8 @@ def create_app(
     )
     mapping = mapping_client if mapping_client is not None else UnavailableMapping()
     camera = camera_proxy if camera_proxy is not None else CameraProxy(CameraConfig())
+    rover_camera = rover_camera_proxy if rover_camera_proxy is not None else CameraProxy(CameraConfig())
+    voice = speech if speech is not None else GrokSpeech()
 
     def cookie_session(request: Request) -> str | None:
         session_id = request.cookies.get("session")
@@ -190,6 +196,88 @@ def create_app(
                 yield _sse(item)
 
         return StreamingResponse(generate(), media_type="text/event-stream")
+
+    @app.get('/api/rover/notices')
+    def rover_notices(request: Request):
+        session_id = cookie_session(request)
+        if session_id is None:
+            return _error(401, 'UNAUTHORIZED', 'Operator session is missing or expired')
+        return JSONResponse(app.state.backend.notice_snapshot(session_id), headers={'Cache-Control': 'no-store'})
+
+    @app.get('/api/rover/notices/events')
+    def rover_notice_events(request: Request, after: str | None = None):
+        session_id = cookie_session(request)
+        if session_id is None:
+            return _error(401, 'UNAUTHORIZED', 'Operator session is missing or expired')
+        cursor = request.headers.get('last-event-id') or after
+        async def generate():
+            # Flush the stream immediately, even before the first observation.
+            yield ': connected\n\n'
+            current = cursor
+            deadline = None if app.state.idle_timeout is None else time.monotonic() + app.state.idle_timeout
+            heartbeat_at = time.monotonic()
+            while app.state.backend.session_open(session_id):
+                items, current = app.state.backend.notice_batch(session_id, current)
+                for item in items:
+                    lines = [f'event: {item.event}']
+                    if item.event_id: lines.insert(0, f'id: {item.event_id}')
+                    lines.append('data: ' + json.dumps(item.data, allow_nan=False))
+                    yield '\n'.join(lines) + '\n\n'
+                    if item.event == 'snapshot_required': return
+                if deadline is not None and time.monotonic() >= deadline: return
+                if time.monotonic() - heartbeat_at >= 15:
+                    yield ': keepalive\n\n'
+                    heartbeat_at = time.monotonic()
+                await asyncio.sleep(.25)
+        return StreamingResponse(generate(), media_type='text/event-stream',
+                                 headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+    @app.get('/api/rover/notices/{notice_id}/audio')
+    async def notice_audio(notice_id: str, request: Request):
+        if cookie_session(request) is None:
+            return _error(401, 'UNAUTHORIZED', 'Operator session is missing or expired')
+        notice = app.state.backend.notice(notice_id)
+        if notice is None:
+            return _error(404, 'NOTICE_UNAVAILABLE', 'Notice is unavailable')
+        try:
+            audio = await voice.audio(notice['text'])
+        except SpeechUnavailable:
+            return _error(503, 'SPEECH_UNAVAILABLE', 'Grok voice is currently unavailable')
+        return Response(audio, media_type='audio/mpeg', headers={'Cache-Control': 'private, max-age=3600',
+                        'X-Voice-Provider': 'xai', 'X-Voice-Id': voice.voice})
+
+    @app.get('/api/models')
+    def models(request: Request):
+        session_id = cookie_session(request)
+        if session_id is None:
+            return _error(401, 'UNAUTHORIZED', 'Operator session is missing or expired')
+        observed = sorted({o['classificationModel'] for o in app.state.backend.snapshot(session_id)['objects']
+                           if o.get('classificationModel')})
+        return {'provider': 'xai', 'vision': os.getenv('GROK_VISION_MODEL', 'grok-4.7'),
+                'rover': os.getenv('GROK_ROVER_MODEL', 'grok-4.7'),
+                'recovery': os.getenv('GROK_RECOVERY_MODEL', 'grok-4.7'),
+                'speech': {'service': 'Grok Voice API', 'voice': voice.voice,
+                           'configured': voice.configured, 'used': voice.used},
+                'observedVisionModels': observed,
+                'detector': 'local YOLOE; not a Grok model', 'status': 'configured roles'}
+
+    @app.get('/api/rover/camera/status')
+    def rover_camera_status(request: Request):
+        if cookie_session(request) is None:
+            return _error(401, 'UNAUTHORIZED', 'Operator session is missing or expired')
+        return {'configured': rover_camera.config.configured, 'captureFreshness': 'unverified'}
+
+    @app.get('/api/rover/camera/feed')
+    async def rover_camera_feed(request: Request):
+        session_id = cookie_session(request)
+        if session_id is None:
+            return _error(401, 'UNAUTHORIZED', 'Operator session is missing or expired')
+        try:
+            feed = await rover_camera.open()
+        except CameraUnavailable:
+            return _error(503, 'CAMERA_UNAVAILABLE', 'Rover camera is unavailable')
+        return CameraStreamingResponse(feed, lambda: app.state.backend.session_open(session_id),
+                                       headers={'Cache-Control': 'no-store'})
 
     @app.get("/api/evidence/{evidence_id}")
     def evidence(evidence_id: str, request: Request) -> Response:
@@ -477,6 +565,13 @@ def app_from_env() -> FastAPI:
             authorization=os.environ.get("BACKEND_CAMERA_AUTHORIZATION", ""),
             ca_cert=os.environ.get("BACKEND_CAMERA_CA_CERT", ""),
         )),
+        rover_camera_proxy=CameraProxy(CameraConfig(
+            url=os.environ.get('BACKEND_ROVER_CAMERA_URL', ''),
+            authorization=os.environ.get('BACKEND_ROVER_CAMERA_AUTHORIZATION', ''),
+            ca_cert=os.environ.get('BACKEND_ROVER_CAMERA_CA_CERT', ''),
+        )),
+        speech=GrokSpeech(os.getenv('XAI_API_KEY', ''), voice=os.getenv('GROK_TTS_VOICE', 'eve'),
+                          language=os.getenv('GROK_TTS_LANGUAGE', 'en')),
     )
 
 

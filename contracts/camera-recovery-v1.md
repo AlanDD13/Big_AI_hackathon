@@ -77,14 +77,17 @@ Additive `vision.v1` full-object alerts:
 | --- | --- |
 | `alert.pickup_unavailable` | Rejected, uncertain, unsupported, unarmed or busy; no new route launched |
 | `alert.recovery_started` | A job was durably reserved and the route task scheduled |
+| `alert.recovery_step` | A controller-confirmed route step completed; see operator-console-v1 |
 | `alert.recovery_completed` | Return and release commands completed; placement remains unverified |
 | `alert.recovery_failed` | Outcome needs an operator check; automatic retries blocked |
 
 Each has a required uppercase `reason`, ordinary object lineage and optional
 grabbability score in its advisory. Backend persists/replays these through
 existing JSONB storage and publishes the corresponding dashboard SSE event.
-The frontend subscribes to all four, shows unread alerts and the model score
-in object details. An alert does not grant ordinary mission dispatch authority.
+The current operator console derives live messages and voice from these events,
+with classification confidence, the inference model and grabbability estimate.
+See [operator-console-v1](operator-console-v1.md). An alert does not grant
+ordinary mission dispatch authority.
 
 `Publisher` mirrors `frame.detections` to backend `/api/vision-events` as well
 as mapping `/detections`. Backend validates `vision-detections.schema.json`

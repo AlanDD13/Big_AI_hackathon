@@ -30,6 +30,11 @@ The vision producer's versioned interface is specified in
 [`contracts/vision-v1.md`](../contracts/vision-v1.md). Stateless peer
 classification for mapping is in
 [`contracts/vision-peer-classification-v1.md`](../contracts/vision-peer-classification-v1.md).
+The live two-camera operator console, authenticated notices/audio, completed
+route steps and model metadata are specified in
+[`contracts/operator-console-v1.md`](../contracts/operator-console-v1.md).
+Native xAI configuration and model usage evidence are documented in
+[`docs/GROK_MODELS.md`](GROK_MODELS.md); active OpenRouter transport is removed.
 Camera test control (implemented in merged PR #22): `GET/PUT /api/cameras/{cameraId}/grok`
 accepts that camera's scoped upload bearer or the vision master bearer, never
 another camera's scoped token or PEER_TOKEN. PUT requires exactly

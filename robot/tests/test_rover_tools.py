@@ -155,6 +155,10 @@ class T(unittest.TestCase):
                         self.t.grasp_can()
     def test_loaded_transport_enabled_when_authorized(self):
         self.t.allow_transport = True
+        tracker = rt.StableYOLOTracker().update(None, gripper_state='close', allow_transport=True)
+        self.assertIsNone(tracker['canHeldInClaws'])
+        self.assertFalse(tracker['holdingVerified'])
+        self.assertFalse(tracker['detectionFresh'])
         self.t.gripper("close")
         out = self.t.drive(0.04, 0, 0.5)
         self.assertEqual(out["xMps"], 0.04)

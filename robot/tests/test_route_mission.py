@@ -84,7 +84,9 @@ class RouteTests(unittest.TestCase):
 
     def test_lower_release_and_raise_only_after_return(self):
         tools = Tools()
-        result = run_route_mission(tools, self.pickup)
+        steps = []
+        result = run_route_mission(tools, self.pickup, on_step=steps.append)
+        self.assertEqual(steps, ['FORWARD_30', 'TURN_RIGHT_90', 'FORWARD_154', 'PICKUP', 'RETURNED', 'LOWERED', 'RELEASED'])
         placement = tools.actions[-5:]
         self.assertEqual(placement[0], ("stop", "place_at_start"))
         self.assertEqual(placement[1][:3], ("arm", 0, -35))

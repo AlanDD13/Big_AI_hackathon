@@ -1,3 +1,7 @@
+> Historical test notes: active requests now use native xAI with `XAI_API_KEY`,
+> `GROK_VISION_PROVIDER=xai` and `GROK_VISION_MODEL=grok-4.7`. The provider
+> settings below describe the earlier test only.
+
 # Paper recognition and pickup checks
 
 Use Grok **4.7** via OpenRouter, not the deprecated 4.1 Fast model. Runtime

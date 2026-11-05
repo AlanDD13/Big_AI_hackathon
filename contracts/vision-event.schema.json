@@ -98,6 +98,8 @@
         "classificationStatus": {"enum": ["PENDING", "COMPLETED", "UNAVAILABLE"]},
         "classification": {"anyOf": [{"$ref": "#/$defs/Classification"}, {"type": "null"}]},
         "classificationProvider": {"anyOf": [{"enum": ["grok", "fixture"]}, {"type": "null"}]},
+        "classificationModel": {"type": ["string", "null"], "pattern": "^grok-[A-Za-z0-9._-]+$"},
+        "recoveryStep": {"enum": ["FORWARD_30", "TURN_RIGHT_90", "FORWARD_154", "PICKUP", "RETURNED", "LOWERED", "RELEASED"]},
         "visualPickupStatus": {"enum": ["PENDING", "COMPLETED", "UNAVAILABLE"]},
         "visualPickupAdvisory": {
           "anyOf": [{"type": "null"}, {
@@ -142,7 +144,7 @@
         "object.observed", "object.classified", "object.updated", "object.removed",
         "alert.potential_target", "alert.target_revoked",
         "camera.connected", "alert.detector_unavailable", "alert.camera_unavailable",
-        "alert.pickup_unavailable", "alert.recovery_started", "alert.recovery_completed", "alert.recovery_failed"
+        "alert.pickup_unavailable", "alert.recovery_started", "alert.recovery_completed", "alert.recovery_failed", "alert.recovery_step"
       ]
     },
     "timestamp": {"type": "number", "minimum": 0},
@@ -246,7 +248,8 @@
               "alert.pickup_unavailable",
               "alert.recovery_started",
               "alert.recovery_completed",
-              "alert.recovery_failed"
+              "alert.recovery_failed",
+              "alert.recovery_step"
             ]
           }
         },
@@ -273,6 +276,7 @@
           }
         }
       }
-    }
+    },
+    {"if": {"properties": {"type": {"const": "alert.recovery_step"}}, "required": ["type"]}, "then": {"properties": {"payload": {"required": ["recoveryStep"]}}}}
   ]
 }

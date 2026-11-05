@@ -11,7 +11,7 @@ from .simulator import ScriptedPolicy, Simulator, fixture_mission
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--grok", action="store_true", help="Use OPENROUTER_API_KEY with Grok 4.7")
+    parser.add_argument("--grok", action="store_true", help="Use XAI_API_KEY with Grok 4.7")
     args = parser.parse_args()
     with httpx.Client(follow_redirects=False) as client:
         policy = GrokPolicy.from_env(client) if args.grok else ScriptedPolicy()

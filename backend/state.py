@@ -18,6 +18,7 @@ from backend.evidence import EvidenceConflict, object_id_for, sample_for
 from backend.postgres_projection import ObservationSource, StorageUnavailable
 from backend.stationarity import MetricSample, evaluate_stationarity
 from backend.vision_ingest import ParsedVisionEvent, VisionConflict
+from backend.operator_notices import notices_for
 
 
 CURSOR_TTL_SECONDS = 15 * 60
@@ -68,6 +69,8 @@ class BackendState:
         self._sessions: dict[str, float] = {}
         self._seq = 0
         self._events: list[dict[str, object]] = []
+        self._notices: dict[str, dict[str, object]] = {}
+        self._notice_floor = 0
         self._cursors: dict[str, tuple[str, int, float]] = {}
         self._cursor_by_position: dict[tuple[str, int], str] = {}
         self._vision_events: dict[str, str] = {}
@@ -349,11 +352,12 @@ class BackendState:
 
     def _vision_alert_unlocked(self, event: ParsedVisionEvent, body: dict[str, object]) -> int | None:
         if event.alert_kind not in {"potential_target", "target_revoked", "pickup_unavailable",
-                                    "recovery_started", "recovery_completed", "recovery_failed"}:
+                                    "recovery_started", "recovery_completed", "recovery_failed", "recovery_step"}:
             return None
         assert event.object_id is not None
         assert event.revision is not None
-        key = (event.object_id, event.revision, event.alert_kind)
+        transition = event.alert_kind + ':' + str(body.get('recoveryStep')) if event.alert_kind == 'recovery_step' else event.alert_kind
+        key = (event.object_id, event.revision, transition)
         if key in self._vision_alerts:
             return None
         self._vision_alerts.add(key)
@@ -432,6 +436,32 @@ class BackendState:
                 "robots": [],
                 "alerts": [dict(item) for item in self._alerts.values()],
             }
+
+    def notice(self, notice_id):
+        with self._lock:
+            value = self._notices.get(notice_id)
+            return {k: v for k, v in value.items() if not k.startswith('_')} if value else None
+
+    def notice_snapshot(self, session_id):
+        with self._lock:
+            return {'backendBootId': self.boot_id,
+                    'cursor': self._cursor_unlocked(session_id, self._seq),
+                    'notices': [{k: v for k, v in item.items() if not k.startswith('_')}
+                                for item in self._notices.values()]}
+
+    def notice_batch(self, session_id, cursor):
+        """Read a bounded batch and advance its cursor atomically, without waiting."""
+        with self._lock:
+            position = self._cursor_position_unlocked(session_id, cursor)
+            if position is None or position < self._notice_floor:
+                return [StreamItem('snapshot_required', None, {'reason': 'REPLAY_UNAVAILABLE'})], cursor
+            items = []
+            for notice in self._notices.values():
+                if notice['_sourceSequence'] > position:
+                    public = {k: v for k, v in notice.items() if not k.startswith('_')}
+                    event_id = self._cursor_unlocked(session_id, notice['_sourceSequence'])
+                    items.append(StreamItem('rover.notice', event_id, public))
+            return items, self._cursor_unlocked(session_id, self._seq)
 
     def follow(self, session_id: str, cursor: str | None, *, idle_timeout: float | None) -> Iterator[StreamItem]:
         """Replay events strictly after a session cursor, then wait for new ones."""
@@ -626,6 +656,16 @@ class BackendState:
             }
         )
         self._changed.notify_all()
+        if event_type != 'rover.notice':
+            for notice in notices_for(event_type, body):
+                if notice['id'] in self._notices:
+                    continue
+                notice.update(createdAt=self._now(), backendBootId=self.boot_id,
+                              audioUrl=f"/api/rover/notices/{notice['id']}/audio", _sourceSequence=self._seq)
+                self._notices[notice['id']] = notice
+                if len(self._notices) > 200:
+                    removed = self._notices.pop(next(iter(self._notices)))
+                    self._notice_floor = max(self._notice_floor, removed['_sourceSequence'])
 
     def _next_revision_unlocked(self, entity: str, entity_id: str) -> int:
         key = (entity, entity_id)
