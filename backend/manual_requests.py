@@ -14,6 +14,10 @@ class InvalidManualRequest(ValueError):
     pass
 
 
+class StaleManualIntent(InvalidManualRequest):
+    pass
+
+
 def _identifier(value: object) -> bool:
     return isinstance(value, str) and ID_RE.fullmatch(value) is not None
 
@@ -35,11 +39,11 @@ def parse_manual_request(action: str, payload: object, *, now: float) -> dict[st
         raise InvalidManualRequest("A valid roverId is required")
     required = {
         "lease": {"roverId", "requestedTtlMs"},
-        "drive": {"roverId", "leaseId", "leaseGeneration", "sequence", "issuedAt",
+        "drive": {"roverId", "leaseId", "leaseGeneration", "bridgeBootId", "sequence", "issuedAt",
                   "expiresAt", "xMps", "yMps", "zDegps", "frame"},
-        "release": {"roverId", "leaseId", "leaseGeneration", "reason"},
+        "release": {"roverId", "leaseId", "leaseGeneration", "bridgeBootId", "reason"},
         "stop": {"roverId", "reason"},
-        "rearm": {"roverId"},
+        "rearm": {"roverId", "bridgeBootId"},
     }
     if action not in required or set(payload) != required[action]:
         raise InvalidManualRequest("Manual request fields do not match the contract")
@@ -48,6 +52,11 @@ def parse_manual_request(action: str, payload: object, *, now: float) -> dict[st
     if action in {"drive", "release"}:
         if not _identifier(payload["leaseId"]) or not _integer(payload["leaseGeneration"], 1):
             raise InvalidManualRequest("A valid lease identity is required")
+    if action in {"drive", "release", "rearm"}:
+        boot = payload["bridgeBootId"]
+        if (not isinstance(boot, str) or len(boot) != 32
+                or any(char not in "0123456789abcdef" for char in boot)):
+            raise InvalidManualRequest("A valid bridgeBootId is required")
     if action == "drive":
         if not _integer(payload["sequence"], 1) or payload["frame"] != "BODY":
             raise InvalidManualRequest("A positive sequence and BODY frame are required")
@@ -55,9 +64,10 @@ def parse_manual_request(action: str, payload: object, *, now: float) -> dict[st
             if not _number(payload[field]) or abs(payload[field]) > cap:
                 raise InvalidManualRequest("Velocity is nonfinite or exceeds the chassis slice caps")
         issued, expires = payload["issuedAt"], payload["expiresAt"]
-        if (not _number(issued) or not _number(expires)
-                or not 0 < expires - issued <= 0.5 or issued > now or expires <= now):
-            raise InvalidManualRequest("Intent must be current with a lifetime at most 500 ms")
+        if not _number(issued) or not _number(expires):
+            raise InvalidManualRequest("Intent timestamps must be finite numbers")
+        if not 0 < expires - issued <= 0.5 or issued > now or expires <= now:
+            raise StaleManualIntent("Intent must be current with a lifetime at most 500 ms")
     if action == "release" and (not isinstance(payload["reason"], str)
                                 or payload["reason"] not in {"user_release", "blur", "tab_hidden"}):
         raise InvalidManualRequest("Invalid release reason")

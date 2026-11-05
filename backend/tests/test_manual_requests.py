@@ -6,6 +6,7 @@ from backend.manual_requests import InvalidManualRequest, parse_manual_request
 
 def intent(**changes):
     return {"roverId": "rover-1", "leaseId": "lease-1", "leaseGeneration": 1,
+            "bridgeBootId": "a" * 32,
             "sequence": 1, "issuedAt": 100.0, "expiresAt": 100.2,
             "xMps": 0.2, "yMps": 0.0, "zDegps": 0.0, "frame": "BODY", **changes}
 
@@ -18,9 +19,9 @@ class ManualRequestTests(unittest.TestCase):
         bodies = {
             "lease": {"roverId": "rover-1", "requestedTtlMs": 2000},
             "drive": intent(),
-            "release": {"roverId": "rover-1", "leaseId": "lease-1", "leaseGeneration": 1, "reason": "blur"},
+            "release": {"roverId": "rover-1", "leaseId": "lease-1", "leaseGeneration": 1, "bridgeBootId": "a" * 32, "reason": "blur"},
             "stop": {"roverId": "rover-1", "reason": "operator_stop"},
-            "rearm": {"roverId": "rover-1"},
+            "rearm": {"roverId": "rover-1", "bridgeBootId": "a" * 32},
         }
         for action, body in bodies.items():
             with self.subTest(action=action):
