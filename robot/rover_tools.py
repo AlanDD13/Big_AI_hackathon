@@ -86,6 +86,16 @@ class StableYOLOTracker:
 
     def update(self, img, tof_mm=None, gripper_state="open"):
         now = time.monotonic()
+        if gripper_state == "close":
+            return {
+                "detected": True,
+                "detectionFresh": True,
+                "canHeldInClaws": True,
+                "gripperState": "close",
+                "infraredDistanceMm": int(tof_mm) if tof_mm is not None else None,
+                "message": "CAN IN CLAWS: Transport forward with drive_chassis, lower arm to floor with move_arm(dy=-35), open gripper, then stop_robot!"
+            }
+
         model = self._ensure_model()
         if model is None or img is None or getattr(img, "size", 0) == 0:
             return {"detected": False, "detectionFresh": False,
@@ -100,15 +110,28 @@ class StableYOLOTracker:
                 for b in results[0].boxes:
                     label = results[0].names[int(b.cls[0])]
                     score = float(b.conf[0])
+                    box = [float(v) for v in b.xyxy[0]]
+                    bw = box[2] - box[0]
+                    bh = box[3] - box[1]
+                    by = box[3]
+                    # Filter: ignore background noise on upper wall/ceiling or tiny specks
+                    if by < 110.0 or bh < 30.0 or bw < 14.0 or (bh / max(bw, 1.0) < 0.6):
+                        continue
                     if label.lower() == "can" and score > best_score:
-                        best_box = [float(v) for v in b.xyxy[0]]
+                        best_box = box
                         best_score = score
                 if best_box is None:
                     for b in results[0].boxes:
                         label = results[0].names[int(b.cls[0])]
                         score = float(b.conf[0])
+                        box = [float(v) for v in b.xyxy[0]]
+                        bw = box[2] - box[0]
+                        bh = box[3] - box[1]
+                        by = box[3]
+                        if by < 110.0 or bh < 30.0 or bw < 14.0 or (bh / max(bw, 1.0) < 0.6):
+                            continue
                         if label.lower() in ("cup", "plastic bottle") and score > best_score:
-                            best_box = [float(v) for v in b.xyxy[0]]
+                            best_box = box
                             best_score = score
         except Exception:
             pass
@@ -153,9 +176,19 @@ class StableYOLOTracker:
         ty = round(y1, 1)
 
         offset_px = round(cx - 320.0, 1)
-        rec_turn = round(offset_px * 0.15, 1)
-        in_corridor = (CORRIDOR_MIN_X <= cx <= CORRIDOR_MAX_X)
-        # Grasp ready zone: can bottom must reach close to claw entry corridor (y >= 300) and be centered!
+
+        # Distance vs close-range logic:
+        # At distance (by < 260), tighten corridor to +/- 20px so robot targets squarely onto the center line.
+        # At close range (by >= 260), claws are 12 cm wide! Span covers +/- 45px.
+        # CRITICAL SAFETY: NEVER TURN AT CLOSE RANGE (by >= 260) because rotating sweeps claws sideways into the can!
+        if by >= 260.0:
+            in_corridor = (abs(offset_px) <= 45.0)
+            rec_turn = 0.0  # ZERO TURNING AT CLOSE RANGE!
+        else:
+            in_corridor = (abs(offset_px) <= 20.0)
+            rec_turn = round(offset_px * 0.14, 1) if not in_corridor else 0.0
+
+        # Grasp ready zone: can bottom must reach close to claw entry corridor (y >= 300) and be inside claw span!
         in_grasp = (by >= GRASP_BOTTOM_Y and in_corridor)
         dist_to_claws = max(0, int(CLAW_ENTRY_Y - by))
 
@@ -835,7 +868,7 @@ class RoverTools:
             raise RoverError("arguments_must_be_object")
         try:
             if name == "grasp_can":
-                return self.grasp_can(args.get("forward_duration_s", 0.9))
+                return self.grasp_can(args.get("forward_duration_s", None))
             if name == "drive_chassis":
                 return self.drive(args["x_mps"], args.get("y_mps", 0.0), args.get("z_degps", 0.0), args["duration_s"])
             if name == "turn_degrees":
